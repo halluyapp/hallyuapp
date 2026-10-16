@@ -99,8 +99,8 @@ export default function Welcome() {
             : 'Accounts, posts and watchlists are stored on this device only.'}
         </Text>
         <View style={styles.tmdb}>
-          <Ionicons name="film-outline" size={12} color={colors.textDisabled} />
-          <Text variant="caption" tone="disabled">
+          <Ionicons name="film-outline" size={12} color={colors.textTertiary} />
+          <Text variant="caption" tone="tertiary">
             Catalog data by TMDB
           </Text>
         </View>

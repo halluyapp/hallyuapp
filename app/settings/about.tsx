@@ -103,7 +103,7 @@ export default function About() {
             detail={isBackendConfigured() ? 'Backend + local cache' : 'On this device'}
           />
         </SettingsGroup>
-        <Text variant="caption" tone="disabled" align="center" style={{ marginBottom: space.x8, paddingHorizontal: space.margin }}>
+        <Text variant="caption" tone="tertiary" align="center" style={{ marginBottom: space.x8, paddingHorizontal: space.margin }}>
           Hallyu is an independent fan project and is not affiliated with any broadcaster, streaming service or agency. Drama titles, posters and stills belong to their respective owners.
         </Text>
       </ScrollScreen>

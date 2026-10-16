@@ -68,7 +68,7 @@ export default function Settings() {
             <SettingsRow icon="trash-outline" label="Delete account" tone="danger" onPress={() => router.push('/settings/delete-account')} />
           </SettingsGroup>
         ) : null}
-        <Text variant="caption" tone="disabled" align="center" style={{ marginBottom: space.x8 }}>
+        <Text variant="caption" tone="tertiary" align="center" style={{ marginBottom: space.x8 }}>
           Hallyu {version} · Made for drama people
         </Text>
       </ScrollScreen>

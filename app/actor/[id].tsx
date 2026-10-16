@@ -145,7 +145,7 @@ export default function ActorPage() {
         </View>
       ) : null}
       {actor.provider ? (
-        <Text variant="caption" tone="disabled" style={{ paddingHorizontal: space.margin, paddingBottom: space.x4 }}>
+        <Text variant="caption" tone="tertiary" style={{ paddingHorizontal: space.margin, paddingBottom: space.x4 }}>
           Biography and credits via TMDB.
         </Text>
       ) : null}

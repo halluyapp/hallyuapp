@@ -190,8 +190,8 @@ export default function WorldScreen() {
         </View>
 
         <View style={{ paddingHorizontal: space.margin, marginTop: space.x4, flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
-          <Ionicons name="film-outline" size={14} color={colors.textDisabled} />
-          <Text variant="caption" tone="disabled" style={{ flex: 1 }}>
+          <Ionicons name="film-outline" size={14} color={colors.textTertiary} />
+          <Text variant="caption" tone="tertiary" style={{ flex: 1 }}>
             Titles, art and ratings by TMDB. Hallyu is not endorsed or certified by TMDB.
           </Text>
         </View>
