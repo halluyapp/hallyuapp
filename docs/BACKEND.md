@@ -28,7 +28,7 @@ playback are deliberately out of scope: `titles.trailer_url` still exists, and n
 ```
 supabase/
 ├── config.toml                     project configuration for `supabase start` / `db reset`
-├── migrations/                     39 ordered migrations — the schema, applied in filename order
+├── migrations/                     40 ordered migrations — the schema, applied in filename order
 ├── seed.sql                        reference rows only (4 worlds, 1 provider, 4 official rooms)
 ├── env.example                     every credential name, placeholder values only
 ├── functions/
@@ -84,6 +84,8 @@ supabase/
 | 35 | `20260101123500_35_feed_pagination.sql` | `feed_page` with keyset cursors, the cursor codec, `comment_page` |
 | 36 | `20260101123600_36_audit_and_deletion.sql` | a survivable audit log (`actor_handle`), and `delete_account`/`purge_deleted_accounts` completed for the new tables |
 | 37 | `20260101123700_37_storage_removal_queue.sql` | `media_removal_queue` and the claim/complete RPCs — storage deletion goes through the Storage API — plus the `profiles_guard_privileges` trigger |
+| 38 | `20260101123800_38_browse_ranking.sql` | `browse_titles` — the ranked browse surface behind Explore, with the sort degrading to the app-wide ordering rather than failing |
+| 39 | `20260101123900_39_video_publishing.sql` | `video_creators` (the allowlist), `video_access_requests` (the queue), the grant/revoke/review RPCs, and the video gates on `begin_media_upload` + `post_media` |
 
 ## Freshness, ranking and discovery
 
@@ -163,7 +165,7 @@ failure is recorded without stopping the others.
 ## Verification
 
 ```sh
-node scripts/verify-sql.mjs             # parses all 37 migrations; RLS, search_path, dynamic SQL, credentials
+node scripts/verify-sql.mjs             # parses all 40 migrations; RLS, search_path, dynamic SQL, credentials
 node scripts/verify-db-types.mjs        # proves supabase/types/database.ts matches the migrations
 node scripts/verify-backend-surface.mjs # proves every required capability exists and is not a placeholder
 node scripts/verify-backend.mjs         # live integration test against a real project

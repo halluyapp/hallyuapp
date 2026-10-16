@@ -1957,6 +1957,115 @@ export type Database = {
           },
         ];
       };
+      video_access_requests: {
+        Row: {
+          created_at: string;
+          decided_at: string | null;
+          decided_by: string | null;
+          decision_note: string | null;
+          id: string;
+          note: string | null;
+          status: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          decided_at?: string | null;
+          decided_by?: string | null;
+          decision_note?: string | null;
+          id?: string;
+          note?: string | null;
+          status?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          decided_at?: string | null;
+          decided_by?: string | null;
+          decision_note?: string | null;
+          id?: string;
+          note?: string | null;
+          status?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'video_access_requests_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'video_access_requests_decided_by_fkey';
+            columns: ['decided_by'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      video_creators: {
+        Row: {
+          created_at: string;
+          granted_at: string;
+          granted_by: string | null;
+          monthly_byte_budget: number;
+          note: string | null;
+          revoke_reason: string | null;
+          revoked_at: string | null;
+          revoked_by: string | null;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          granted_at?: string;
+          granted_by?: string | null;
+          monthly_byte_budget?: number;
+          note?: string | null;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          granted_at?: string;
+          granted_by?: string | null;
+          monthly_byte_budget?: number;
+          note?: string | null;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'video_creators_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: true;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'video_creators_granted_by_fkey';
+            columns: ['granted_by'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'video_creators_revoked_by_fkey';
+            columns: ['revoked_by'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       watchlist_items: {
         Row: {
           added_at: string;
@@ -2549,6 +2658,10 @@ export type Database = {
         Args: Record<never, never>;
         Returns: Json;
       };
+      grant_video_access: {
+        Args: { p_monthly_byte_budget?: number; p_note?: string; p_user: string };
+        Returns: Database['public']['Tables']['video_creators']['Row'];
+      };
       handle_is_available: {
         Args: { p_handle: string };
         Returns: boolean;
@@ -2594,6 +2707,18 @@ export type Database = {
         Args: { p_detail?: string; p_reason: string; p_target_id: string; p_target_type: string };
         Returns: string;
       };
+      request_video_access: {
+        Args: { p_note?: string };
+        Returns: string;
+      };
+      review_video_access_request: {
+        Args: { p_approve: boolean; p_monthly_byte_budget?: number; p_note?: string; p_request_id: string };
+        Returns: Database['public']['Tables']['video_access_requests']['Row'];
+      };
+      revoke_video_access: {
+        Args: { p_reason?: string; p_user: string };
+        Returns: Database['public']['Tables']['video_creators']['Row'];
+      };
       search_titles: {
         Args: { p_limit?: number; p_offset?: number; p_query: string; p_world?: string };
         Returns: Database['public']['Tables']['titles']['Row'][];
@@ -2632,6 +2757,22 @@ export type Database = {
           p_total?: number;
         };
         Returns: Database['public']['Tables']['watchlist_items']['Row'];
+      };
+      video_access: {
+        Args: { p_user?: string };
+        Returns: boolean;
+      };
+      video_bytes_used_this_month: {
+        Args: { p_user?: string };
+        Returns: number;
+      };
+      video_creator_roster: {
+        Args: { p_limit?: number };
+        Returns: Json;
+      };
+      video_quota: {
+        Args: { p_user?: string };
+        Returns: Json;
       };
     };
     Enums: {

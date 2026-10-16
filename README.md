@@ -6,11 +6,11 @@ Full Expo + React Native + TypeScript rebuild of Hallyu, following the approved 
 
 The Hallyu backend is **defined in this repository** and is **not connected**:
 
-- `supabase/migrations/` — 39 ordered migrations that create the whole database: profiles, the social
+- `supabase/migrations/` — 40 ordered migrations that create the whole database: profiles, the social
   graph, posts, comments, reactions, saves, collections, watchlist, notifications, preferences, push
-  tokens, moderation reports, a partitioned analytics table, the entertainment catalog cache, 47
-  functions/RPCs, 26 triggers, row level security on every table, and the private `media` storage
-  bucket. No dashboard step is required for any of it.
+  tokens, moderation reports, a partitioned analytics table, the entertainment catalog cache, the
+  video publishing allowlist and its request queue, 47 functions/RPCs, 26 triggers, row level security
+  on every table, and the private `media` storage bucket. No dashboard step is required for any of it.
 - `supabase/functions/` — two Deno Edge Functions (account retention purge, moderation digest).
 - `supabase/types/database.ts` — the typed contract, kept honest by `npm run test:db-types`.
 - `supabase/seed.sql`, `supabase/config.toml` — reference data and the local project configuration.
