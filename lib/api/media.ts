@@ -18,6 +18,7 @@
  */
 import * as FileSystem from 'expo-file-system';
 import { FileSystemUploadType } from 'expo-file-system';
+import { Platform } from 'react-native';
 import { MEDIA_BUCKET, SUPABASE_ANON_KEY, SUPABASE_URL } from '../../constants/keys';
 import { getBackendAccessToken, supabase } from './client';
 import { isUuid } from './social';
@@ -33,6 +34,13 @@ export class MediaPipelineError extends Error {
 }
 
 export type MediaKind = 'image' | 'video';
+
+/** Bytes of a file that have left the device, reported while an upload is in flight. */
+export interface UploadProgress {
+  sent: number;
+  /** 0 until the transport reports a total, which is why the composer treats it as unknown until then. */
+  total: number;
+}
 
 /** One reserved-and-uploaded object, before it is attached to a post. */
 export interface UploadedAsset {
@@ -70,31 +78,107 @@ function requireUploadEnv(): { url: string; key: string; token: string } {
 }
 
 /**
- * Upload one local file to the private bucket.
+ * Upload one local file to the private bucket, reporting bytes as they leave the device.
  *
  * `FileSystem.uploadAsync` streams the file off disk rather than base64-ing it through JS memory,
  * which is what makes a 140MB clip survivable on a phone; supabase-js's `.upload()` would first
- * buffer the whole thing. The anon key is a publishable credential by design, and the member's own
- * access token is what authorises the write — the service-role key is never involved here and is
- * never present in a client bundle.
+ * buffer the whole thing. It reports nothing while it runs, though, so native goes through
+ * `createUploadTask` instead — the same transfer with a progress callback — and the web build, where
+ * no `expo-file-system` upload exists at all, sends the picked file's Blob through XHR, whose
+ * `upload.onprogress` reports the same numbers. The anon key is a publishable credential by design,
+ * and the member's own access token is what authorises the write — the service-role key is never
+ * involved here and is never present in a client bundle.
  */
-async function putObject(storagePath: string, fileUri: string, contentType: string): Promise<void> {
+async function putObject(
+  storagePath: string,
+  fileUri: string,
+  contentType: string,
+  onProgress?: (progress: UploadProgress) => void,
+  preloaded?: Blob | null,
+): Promise<void> {
   const { url, key, token } = requireUploadEnv();
   const encoded = storagePath.split('/').map(encodeURIComponent).join('/');
-  const result = await FileSystem.uploadAsync(`${url}/storage/v1/object/${MEDIA_BUCKET}/${encoded}`, fileUri, {
-    httpMethod: 'POST',
-    uploadType: FileSystemUploadType.BINARY_CONTENT,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      apikey: key,
-      'x-upsert': 'true',
-      'Content-Type': contentType,
-    },
-  });
+  const endpoint = `${url}/storage/v1/object/${MEDIA_BUCKET}/${encoded}`;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    apikey: key,
+    'x-upsert': 'true',
+    'Content-Type': contentType,
+  };
+
   // Supabase Storage answers 200 (upsert) or 201 (create). Anything else is a real failure.
-  if (result.status < 200 || result.status >= 300) {
-    const body = typeof result.body === 'string' ? result.body.slice(0, 200) : '';
-    throw new MediaPipelineError('upload', `The upload was refused by storage (HTTP ${result.status}). ${body}`);
+  if (Platform.OS === 'web') {
+    const { status, body } = await putObjectViaXhr(endpoint, headers, fileUri, onProgress, preloaded);
+    if (status < 200 || status >= 300) {
+      throw new MediaPipelineError('upload', `The upload was refused by storage (HTTP ${status}). ${body}`);
+    }
+    return;
+  }
+
+  const task = FileSystem.createUploadTask(
+    endpoint,
+    fileUri,
+    { httpMethod: 'POST', uploadType: FileSystemUploadType.BINARY_CONTENT, headers },
+    (p) => {
+      // `totalBytesExpectedToSend` is 0 until the transport knows the body length; reporting
+      // "0 of 0" would read as progress when it is the opposite.
+      if (p.totalBytesExpectedToSend > 0) onProgress?.({ sent: p.totalBytesSent, total: p.totalBytesExpectedToSend });
+    },
+  );
+  const result = await task.uploadAsync();
+  if (!result || result.status < 200 || result.status >= 300) {
+    const body = typeof result?.body === 'string' ? result.body.slice(0, 200) : '';
+    throw new MediaPipelineError('upload', `The upload was refused by storage (HTTP ${result?.status ?? 0}). ${body}`);
+  }
+}
+
+/** Web transport: XHR is the only browser API that reports how much of a body has been sent. */
+function putObjectViaXhr(
+  endpoint: string,
+  headers: Record<string, string>,
+  fileUri: string,
+  onProgress?: (progress: UploadProgress) => void,
+  preloaded?: Blob | null,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    void (async () => {
+      try {
+        const blob = preloaded ?? (await (await fetch(fileUri)).blob());
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', endpoint);
+        for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && e.total > 0) onProgress?.({ sent: e.loaded, total: e.total });
+        };
+        xhr.onload = () => resolve({ status: xhr.status, body: typeof xhr.responseText === 'string' ? xhr.responseText.slice(0, 200) : '' });
+        xhr.onerror = () => reject(new MediaPipelineError('upload', 'The upload connection failed.'));
+        xhr.onabort = () => reject(new MediaPipelineError('upload', 'The upload was cancelled.'));
+        xhr.send(blob);
+      } catch (e) {
+        reject(e instanceof MediaPipelineError ? e : new MediaPipelineError('upload', `The upload did not complete. ${(e as Error).message}`));
+      }
+    })();
+  });
+}
+
+/**
+ * How many bytes a local file holds, or `null` when the platform will not say.
+ *
+ * This is not cosmetic: `begin_media_upload` can only refuse an upload that would break the monthly
+ * video allowance if it is told the size, so the composer asks for it before reserving the path.
+ * The uploader reports the real size as it goes, and the server reconciles against the object's
+ * stored size when the file is attached — a declared size is a hint, never the last word.
+ */
+async function localBytes(uri: string): Promise<{ size: number | null; blob: Blob | null }> {
+  try {
+    if (Platform.OS === 'web') {
+      const blob = await (await fetch(uri)).blob();
+      return { size: blob.size > 0 ? blob.size : null, blob };
+    }
+    const info = await FileSystem.getInfoAsync(uri, { size: true });
+    return { size: info.exists && typeof info.size === 'number' ? info.size : null, blob: null };
+  } catch {
+    return { size: null, blob: null };
   }
 }
 
@@ -105,10 +189,12 @@ export async function uploadAsset(opts: {
   kind: MediaKind;
   byteSize?: number | null;
   unique: string;
+  onProgress?: (progress: UploadProgress) => void;
 }): Promise<UploadedAsset> {
-  const { userId, uri, kind, byteSize, unique } = opts;
+  const { userId, uri, kind, unique, onProgress } = opts;
   requireUploadEnv();
   const path = assetPath(userId, kind, uri, unique);
+  const local = opts.byteSize ? { size: opts.byteSize, blob: null } : await localBytes(uri);
 
   // These RPCs return a scalar uuid, so the value comes back directly rather than as a row —
   // asking for `.single()` here would be a shape mismatch, not a stricter check.
@@ -116,14 +202,14 @@ export async function uploadAsset(opts: {
     .rpc('begin_media_upload', {
       p_storage_path: path,
       p_kind: kind,
-      p_byte_size: byteSize ?? null,
+      p_byte_size: local.size ?? null,
       p_content_type: CONTENT_TYPE[kind],
     });
   const uploadId = data as string | null;
   if (error || !uploadId) throw new MediaPipelineError('begin', `The server would not reserve the upload path. ${error?.message ?? 'no id returned'}`);
 
   try {
-    await putObject(path, uri, CONTENT_TYPE[kind]);
+    await putObject(path, uri, CONTENT_TYPE[kind], onProgress, local.blob);
   } catch (e) {
     throw e instanceof MediaPipelineError ? e : new MediaPipelineError('upload', `The upload did not complete. ${(e as Error).message}`);
   }

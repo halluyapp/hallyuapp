@@ -19,16 +19,16 @@ import { Chip } from '../../components/ui/Chip';
 import { CoachMarks } from '../../components/ui/CoachMarks';
 import { IconButton } from '../../components/ui/IconButton';
 import { useRefresh } from '../../components/ui/Refresh';
-import { Screen, useListPadding } from '../../components/ui/Screen';
+import { Screen, useColumn, useListPadding } from '../../components/ui/Screen';
 import { SectionHeader } from '../../components/ui/Section';
 import { Segmented } from '../../components/ui/Segmented';
 import { PostSkeleton } from '../../components/ui/Skeleton';
 import { EmptyState } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TopBar, LiveIndicator, Wordmark } from '../../components/ui/TopBar';
-import { colors, radius, space } from '../../constants/theme';
+import { colors, radius, sizes, space } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
-import { haptic, useApp, useBackendHealth, useLoad, useReduceMotion } from '../../lib/hooks';
+import { haptic, useApp, useBackendHealth, useLayout, useLoad, useReduceMotion } from '../../lib/hooks';
 import { Episode, FandomId, Post } from '../../lib/model';
 import { activeWorlds, airingEpisodes, anchorDrama, crossWorldLocal, forYou, following, recommendedDramas, recommendedPeople, shorts, trendingDiscussions, upNext, worldCounts } from '../../lib/selectors';
 import { FANDOMS, formatFandomOf } from '../../lib/fandoms';
@@ -102,6 +102,14 @@ function Home() {
   const { control: refreshControl, onRefresh: pull } = useRefresh('home');
   const reduceMotion = useReduceMotion(state.prefs.reduceMotion);
   const padding = useListPadding();
+  // On a phone the feed is the screen. Past that it is a column: the tab layout already insets the
+  // navigation rail, and without a cap the posts would run the full width of a desktop window with
+  // 16px gutters and 1400px lines. `panel` is the width that column actually has, which is what the
+  // two-column discovery grid at the tail divides into cells.
+  const { wc, width: windowWidth } = useLayout();
+  const panel = Math.min(windowWidth - (wc === 'compact' ? 0 : sizes.rail), FEED_MAX);
+  const tailCell = Math.max(96, Math.floor((panel - space.margin * 2 - space.gutter) / 2));
+  const column = useColumn(FEED_MAX);
   const guest = auth.status !== 'signedIn';
   // Home must be usable the instant it appears: the live catalog work below waits for the first
   // touch (or an idle ceiling), and everything on screen is already complete without it.
@@ -485,7 +493,7 @@ function Home() {
         viewabilityConfig={viewport.viewabilityConfig}
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
-        contentContainerStyle={[padding, { paddingTop: space.x4 }]}
+        contentContainerStyle={[padding, { paddingTop: space.x4 }, column]}
         refreshControl={React.cloneElement(refreshControl, { onRefresh })}
         onEndReached={loadMore}
         onEndReachedThreshold={0.6}
@@ -516,7 +524,7 @@ function Home() {
                     numColumns={2}
                     scrollEnabled={false}
                     columnWrapperStyle={styles.tailCol}
-                    renderItem={({ item: d }) => <DramaCard drama={d} size="l" />}
+                    renderItem={({ item: d }) => <DramaCard drama={d} size="l" width={tailCell} />}
                   />
                 </View>
               ) : null}
@@ -548,6 +556,9 @@ function Home() {
     </Screen>
   );
 }
+
+/** Widest the feed column ever gets, rail excluded. */
+const FEED_MAX = sizes.readingColumn + space.x8;
 
 const styles = StyleSheet.create({
   guest: { margin: space.margin, marginTop: 0, padding: space.x4, backgroundColor: colors.surface1, borderRadius: radius.lg },

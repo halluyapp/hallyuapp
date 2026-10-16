@@ -3,12 +3,13 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { makePoster } from '../../lib/media';
 import { attachAsset, discardAssets, MediaPipelineError, uploadAsset, uploadPoster, verifyPostMedia } from '../../lib/api/media';
+import type { UploadProgress } from '../../lib/api/media';
 import { fetchPosts } from '../../lib/api/feed';
 import { insertPost } from '../../lib/api/social';
 import { adoptLocal, worldOf } from '../../lib/sync';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CREATE_TYPES } from '../../components/create/CreateSheet';
 import { ActorPickerSheet, DramaPickerSheet, EpisodePickerSheet, SpoilerSheet } from '../../components/create/pickers';
@@ -22,13 +23,14 @@ import { Chip, ChipRow } from '../../components/ui/Chip';
 import { Dialog } from '../../components/ui/Dialog';
 import { Poster } from '../../components/ui/Poster';
 import { Screen } from '../../components/ui/Screen';
+import { ProgressBar } from '../../components/ui/Section';
 import { InlineNotice } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, fonts, radius, space } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
-import { extractHashtags, extractMentions, uid } from '../../lib/format';
+import { extractHashtags, extractMentions, fileSize, uid } from '../../lib/format';
 import { haptic, useApp } from '../../lib/hooks';
 import { DiscussionKind, Draft, LIMITS, Post, PostType, REACTIONS, ReactionKind, SpoilerLevel } from '../../lib/model';
 import { allActors, newPost } from '../../lib/store';
@@ -37,6 +39,68 @@ import { SPOILER_LABEL, suggestSpoilerLevel } from '../../lib/spoiler';
 import { track } from '../../lib/analytics';
 
 const KINDS: DiscussionKind[] = ['general', 'theory', 'ending', 'character', 'scene', 'question'];
+
+type PublishStage = {
+  step: 'upload' | 'create' | 'attach' | 'verify';
+  detail: string;
+  /** Present only while the transport is reporting bytes; absent means the step has no byte report. */
+  sent?: number;
+  total?: number;
+};
+
+/**
+ * What the composer shows while a post is being published.
+ *
+ * A publish is not one wait: the bytes go up first, then the post row is created, then each file is
+ * attached and re-read to prove the server has it. Each of those is a line the member can see, and
+ * the bar under it is a real fraction of a real file — never a timer pretending to be progress. Once
+ * every file is uploaded the bar gives way to the count of finished files, because the attach and
+ * verify steps have no bytes to report and a bar that keeps filling through them would be a lie.
+ */
+function PublishProgress({ stage }: { stage: PublishStage }) {
+  const pct = stage.sent != null && stage.total ? Math.min(100, Math.round((stage.sent / stage.total) * 100)) : null;
+  const headline = stage.step === 'upload' ? 'Uploading' : stage.step === 'create' ? 'Publishing' : stage.step === 'attach' ? 'Attaching' : 'Confirming';
+  const line =
+    pct != null
+      ? `${fileSize(stage.sent!)} of ${fileSize(stage.total!)} · ${pct}%`
+      : stage.step === 'upload'
+        ? 'Sending to the server…'
+        : stage.step === 'create'
+          ? 'Saving your post…'
+          : stage.step === 'attach'
+            ? 'Linking the files to your post…'
+            : 'Making sure the server has everything…';
+  return (
+    <View
+      style={styles.publish}
+      accessibilityRole="progressbar"
+      accessibilityLabel={`${headline} ${stage.detail}, ${line}`}
+      accessibilityValue={pct != null ? { min: 0, max: 100, now: pct } : undefined}
+      accessibilityLiveRegion="polite"
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+        {pct != null ? (
+          <Ionicons name="cloud-upload-outline" size={16} color={colors.accentText} />
+        ) : (
+          <ActivityIndicator size="small" color={colors.accentText} />
+        )}
+        <Text variant="label" numberOfLines={1} style={{ flexShrink: 1 }}>
+          {headline} · {stage.detail}
+        </Text>
+        <View style={{ flex: 1 }} />
+        <Text variant="caption" tone="secondary">
+          {line}
+        </Text>
+      </View>
+      {/* Bytes we can count get a bar; steps that report nothing get the spinner above and no bar,
+          because a bar that moves without bytes behind it is a decoration pretending to be data. */}
+      {pct != null ? <ProgressBar value={pct} max={100} height={4} /> : null}
+      <Text variant="caption" tone="tertiary">
+        Keep this screen open. If it fails, your draft is kept and you can retry.
+      </Text>
+    </View>
+  );
+}
 
 /**
  * The adaptive composer. One screen, six shapes. Context (drama / episode / actor) arrives via params
@@ -86,6 +150,13 @@ export default function Composer() {
   const [leaveDialog, setLeaveDialog] = useState(false);
   const [guidelines, setGuidelines] = useState(!state.prefs.guidelinesAccepted);
   const [posting, setPosting] = useState(false);
+  /**
+   * What the publish is doing right now. A spinner on the Post button was the whole story before:
+   * a 45MB clip took minutes and the screen looked frozen. Every entry here is a step that really
+   * happens — bytes that really left the device, a post the server really created — and `sent` is
+   * only present when the transport reported it, so the bar never invents precision.
+   */
+  const [stage, setStage] = useState<{ step: 'upload' | 'create' | 'attach' | 'verify'; detail: string; sent?: number; total?: number } | null>(null);
   const bodyRef = useRef<TextInput>(null);
   const draftId = useRef(draft?.id ?? uid('d'));
 
@@ -163,6 +234,20 @@ export default function Composer() {
   }, [navigation, dirty, posting, editing]);
 
   const goBack = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)'));
+  /**
+   * Where a successful publish leaves the member.
+   *
+   * It used to be `goBack()`, which dropped them on Home — where a member's own post is ranked down
+   * by design (×0.6) and, being seconds old, has no engagement to lift it, so it lands near the
+   * bottom of the feed they are looking at. From the member's side the post they just wrote had
+   * vanished. The composer now opens the post itself, and `posting` stays set so the unsaved-changes
+   * guard on the way out stays disarmed, exactly as `leave()` does it.
+   */
+  const landOnPost = (postId: string, message: string) => {
+    toast.show({ message, icon: 'checkmark-circle', tone: 'success' });
+    setPosting(true);
+    setTimeout(() => router.replace(`/post/${postId}`), 30);
+  };
   const leave = (save: boolean) => {
     if (save) {
       saveDraft();
@@ -252,14 +337,7 @@ export default function Composer() {
     dispatch({ type: 'addPost', post });
     if (draft) dispatch({ type: 'deleteDraft', id: draft.id });
     haptic.success();
-    toast.show({
-      message: type === 'review' ? 'Review published' : 'Posted',
-      icon: 'checkmark-circle',
-      tone: 'success',
-      actionLabel: 'View',
-      onAction: () => router.push(`/post/${post.id}`),
-    });
-    goBack();
+    landOnPost(post.id, type === 'review' ? 'Review published' : 'Posted');
   };
 
   /**
@@ -278,17 +356,23 @@ export default function Composer() {
     try {
       const assets: { uploadId: string; posterPath?: string; width?: number | null; height?: number | null; durationMs?: number | null }[] = [];
 
+      const onProgress = (detail: string) => (p: UploadProgress) => setStage({ step: 'upload', detail, sent: p.sent, total: p.total });
+
       for (const [i, uri] of images.entries()) {
-        const asset = await uploadAsset({ userId: me.id, uri, kind: 'image', unique: `${post.id}-${i}` });
+        const detail = images.length > 1 ? `Image ${i + 1} of ${images.length}` : 'Your image';
+        setStage({ step: 'upload', detail });
+        const asset = await uploadAsset({ userId: me.id, uri, kind: 'image', unique: `${post.id}-${i}`, onProgress: onProgress(detail) });
         uploaded.push(asset.storagePath);
         assets.push({ uploadId: asset.uploadId });
       }
 
       if (video) {
         // The poster is its own object; `complete_media_upload` records its path on the video row.
+        setStage({ step: 'upload', detail: 'Your video’s cover frame' });
         const posterPath = video.poster ? await uploadPoster({ userId: me.id, posterUri: video.poster, unique: post.id }) : undefined;
         if (posterPath) uploaded.push(posterPath);
-        const asset = await uploadAsset({ userId: me.id, uri: video.uri, kind: 'video', unique: post.id });
+        setStage({ step: 'upload', detail: 'Your video' });
+        const asset = await uploadAsset({ userId: me.id, uri: video.uri, kind: 'video', unique: post.id, onProgress: onProgress('Your video') });
         asset.posterPath = posterPath;
         uploaded.push(asset.storagePath);
         assets.push({
@@ -303,8 +387,10 @@ export default function Composer() {
       // The post row must exist before media can be attached to it. The client id IS the server
       // id (social.insertPost inserts it explicitly), so the local post and the server post are
       // the same row — which is what lets the media be attached before anything is cached.
+      setStage({ step: 'create', detail: 'Creating your post' });
       await insertPost(post, me.id, worldOf(state, post.context.dramaId));
 
+      setStage({ step: 'attach', detail: assets.length > 1 ? `Attaching ${assets.length} files` : 'Attaching your file' });
       let position = 0;
       for (const asset of assets) {
         await attachAsset({
@@ -318,6 +404,7 @@ export default function Composer() {
         });
       }
 
+      setStage({ step: 'verify', detail: 'Confirming with the server' });
       await verifyPostMedia(post.id, uploaded);
 
       // Adopt what the server actually stored (including signed media URLs) rather than the local
@@ -329,14 +416,8 @@ export default function Composer() {
       track('post.publish.media', { images: images.length, video: !!video });
       if (draft) dispatch({ type: 'deleteDraft', id: draft.id });
       haptic.success();
-      toast.show({
-        message: video ? (type === 'short' ? 'Short posted' : 'Posted with your video') : 'Posted',
-        icon: 'checkmark-circle',
-        tone: 'success',
-        actionLabel: 'View',
-        onAction: () => router.push(`/post/${post.id}`),
-      });
-      goBack();
+      setStage(null);
+      landOnPost(post.id, video ? (type === 'short' ? 'Short posted' : 'Posted with your video') : 'Posted');
     } catch (e) {
       // The bytes are not referenced by a post the member can see; take them out of the bucket so
       // an abandoned upload does not sit there until retention collects it.
@@ -344,6 +425,7 @@ export default function Composer() {
       // Keep everything the member wrote, and let them try again from the same screen.
       saveDraft();
       setPosting(false);
+      setStage(null);
       const why = e instanceof MediaPipelineError ? e.message : (e as Error)?.message || 'unknown error';
       track('post.publish.failed', { step: e instanceof MediaPipelineError ? e.step : 'unknown' });
       toast.show({
@@ -541,6 +623,7 @@ export default function Composer() {
                 ))}
               </ChipRow>
               <TextInput
+                editable={!posting}
                 value={title}
                 onChangeText={(t) => setTitle(t.slice(0, LIMITS.discussionTitle))}
                 placeholder={kind === 'question' ? 'Ask the fandom…' : kind === 'theory' ? 'Your theory in one line' : 'Title'}
@@ -603,6 +686,7 @@ export default function Composer() {
               </View>
               <View>
                 <TextInput
+                  editable={!posting}
                   value={verdict}
                   onChangeText={(t) => setVerdict(t.slice(0, LIMITS.reviewVerdict))}
                   placeholder="One-line verdict (shows on the card)"
@@ -678,6 +762,7 @@ export default function Composer() {
 
           <View style={{ paddingHorizontal: space.margin }}>
             <TextInput
+              editable={!posting}
               ref={bodyRef}
               value={body}
               onChangeText={(t) => setBody(t)}
@@ -808,9 +893,15 @@ export default function Composer() {
           ) : null}
         </ScrollView>
 
+        {posting && stage ? <PublishProgress stage={stage} /> : null}
+
         <View style={[styles.toolbar, { paddingBottom: Math.max(insets.bottom, space.x2) }]}>
-          {attachRow}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x1 }}>
+          {/* Nothing in the toolbar can change the post while it is being published: the post row and
+              the file list are already fixed, so an edit here would be dropped without saying so. */}
+          <View pointerEvents={posting ? 'none' : 'auto'} style={posting ? styles.inert : undefined}>
+            {attachRow}
+          </View>
+          <View pointerEvents={posting ? 'none' : 'auto'} style={[posting ? styles.inert : undefined, { flexDirection: 'row', alignItems: 'center', gap: space.x1 }]}>
             {type !== 'short' && type !== 'reaction' ? (
               <Pressable
                 onPress={pickImages}
@@ -892,6 +983,18 @@ export default function Composer() {
 }
 
 const styles = StyleSheet.create({
+  inert: { opacity: 0.5 },
+  publish: {
+    gap: space.x2,
+    marginHorizontal: space.margin,
+    marginBottom: space.x2,
+    paddingHorizontal: space.x3,
+    paddingVertical: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
   guidelines: { margin: space.margin, marginBottom: 0, padding: space.x4, backgroundColor: colors.surface1, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.borderSubtle },
   hint: {
     flexDirection: 'row',

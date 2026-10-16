@@ -27,13 +27,19 @@ interface DramaCardProps {
   onPress?: () => void;
   selected?: boolean;
   badge?: string;
+  /**
+   * Exact card width, for grids whose columns are as wide as the screen allows. The `size` presets
+   * are fixed poster widths, so a two-column grid built from them leaves whatever is left of the
+   * row empty — the card is told the column width instead.
+   */
+  width?: number;
 }
 
 /** Poster card. Tap → Drama Hub. Long-press → quick actions sheet. */
-function DramaCardBase({ drama, size = 'm', reason, meta, showProgress = true, style, onPress, selected, badge }: DramaCardProps) {
+function DramaCardBase({ drama, size = 'm', reason, meta, showProgress = true, style, onPress, selected, badge, width: fixedWidth }: DramaCardProps) {
   const router = useRouter();
   const { watch } = useApp();
-  const width = sizes.poster[size];
+  const width = fixedWidth ?? sizes.poster[size];
   const [menu, setMenu] = useState(false);
   const item = watch(drama.id);
   const rawTotal = item ? drama.seasons.find((s) => s.number === item.season)?.episodeCount ?? drama.episodeCount : 0;

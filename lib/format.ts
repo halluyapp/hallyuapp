@@ -26,6 +26,14 @@ export function compact(n: number): string {
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
 }
 
+/** Byte count as a person reads it, for upload and quota copy: "45.2 MB", "1.1 GB". */
+export function fileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export function shortDate(iso?: string): string {
   if (!iso) return 'TBA';
   const d = new Date(iso);
