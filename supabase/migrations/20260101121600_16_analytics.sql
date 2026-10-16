@@ -29,6 +29,15 @@ comment on table public.analytics_events is 'Product events. Partitioned monthly
 create table if not exists public.analytics_events_default
   partition of public.analytics_events default;
 
+-- Row security has to be switched on per relation: enabling it on a partitioned parent governs the
+-- rows a query returns through the parent, but a partition read *by name* is checked against that
+-- partition's own RLS flag — and a partition with RLS disabled is readable by anyone holding a
+-- grant on it. Partitions inherit the parent's privileges only when accessed through the parent, so
+-- the protection below is what makes a future `grant select on all tables in schema public` (an easy
+-- mistake) a no-op here instead of a leak. Enabling RLS with no policy is deny-all, which is correct
+-- for events; the moderator policy on the parent still applies to parent queries.
+alter table public.analytics_events_default enable row level security;
+
 create index if not exists analytics_events_occurred_brin_idx on public.analytics_events using brin (occurred_at);
 create index if not exists analytics_events_user_recent_idx on public.analytics_events (user_id, occurred_at desc);
 create index if not exists analytics_events_name_time_idx on public.analytics_events (name, occurred_at desc);
@@ -56,6 +65,12 @@ begin
     'create table public.%I partition of public.analytics_events for values from (%L) to (%L)',
     partition_name, start_of_month, end_of_month
   );
+
+  -- A partition created without its own RLS flag would be readable by name for anyone holding a
+  -- grant on it (partitions do not inherit the parent's privileges when accessed directly). The
+  -- parent's moderator policy still governs queries through public.analytics_events.
+  execute format('alter table public.%I enable row level security', partition_name);
+
   return partition_name;
 end;
 $$;

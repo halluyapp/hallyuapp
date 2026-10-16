@@ -160,7 +160,12 @@ failure is recorded without stopping the others.
   `purge_deleted_accounts()` hard-deletes the tombstone after the retention window.
 - **Events are partitioned and validated.** `analytics_events` is RANGE-partitioned by month with a
   default partition and a BRIN index; `record_event()` validates the name, caps properties at 2 kB and
-  requires either a session or an install-scoped anonymous id.
+  requires either a session or an install-scoped anonymous id. Every partition — the default one and
+  each month created at run time by `ensure_event_partition()` — carries its own row level security
+  flag. A partition read by name is checked against that partition's flag, not the parent's, so
+  without it a single over-broad `grant select on all tables in schema public` would expose every
+  event; with it, a partition denies everything and the parent's moderator policy still governs
+  `select ... from analytics_events`.
 
 ## Verification
 

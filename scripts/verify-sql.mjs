@@ -8,7 +8,8 @@
 //   1. every migration parses as valid PostgreSQL
 //   2. migration filenames are ordered and uniquely prefixed
 //   3. every table has row level security enabled
-//   4. every RLS-enabled application table has at least one policy
+//   4. every RLS-enabled application table has at least one policy — partitions excepted, because a
+//      partition is meant to be deny-all; instead every partition must carry its own RLS flag
 //   5. every SECURITY DEFINER function pins its search_path
 //   6. no function accepts or executes free-form SQL
 //   7. no migration mentions a privileged credential
@@ -72,6 +73,7 @@ if (failures.length === 0) ok(`${files.length} migrations parse as valid Postgre
 const rlsTables = new Set();
 const policyTables = new Set();
 const functions = [];
+const partitions = new Map(); // partition name -> parent name
 let tablesCreated = 0;
 
 /**
@@ -118,6 +120,14 @@ for (const [file, tree] of asts) {
     if (node.CreateStmt) {
       const name = node.CreateStmt.relation?.relname;
       if (name) tablesCreated += 1;
+      // `partition of parent` — libpg_query records the bound in `partbound` and names the parent
+      // in `inhRelations`.
+      if (name && node.CreateStmt.partbound) {
+        const parent = (node.CreateStmt.inhRelations ?? [])
+          .map((r) => r?.RangeVar?.relname ?? r?.relname ?? null)
+          .find(Boolean);
+        if (parent) partitions.set(name, parent);
+      }
       continue;
     }
 
@@ -162,16 +172,54 @@ for (const [file, tree] of asts) {
 }
 
 // RLS coverage. auth.* and storage.* objects are owned by Supabase; this schema never creates them.
-const applicationTables = [...rlsTables].map((entry) => {
-  const [, table] = entry.split(':');
-  return table;
-});
+//
+// Partitions are excluded from the "must have a policy" rule on purpose: a partition is supposed to
+// be deny-all, and the policy that governs reads lives on the parent. They are not free of checks —
+// see the partition rule below, which is the stronger one.
+const applicationTables = [...rlsTables]
+  .map((entry) => entry.split(':')[1])
+  .filter((t) => !partitions.has(t));
 
 const tablesWithoutPolicies = applicationTables.filter((t) => !policyTables.has(t));
 if (tablesWithoutPolicies.length > 0) {
   fail('supabase/migrations', `RLS is enabled but no policy exists for: ${tablesWithoutPolicies.join(', ')}`);
 } else if (rlsTables.size > 0) {
   ok(`${rlsTables.size} tables have row level security enabled, each with at least one policy`);
+}
+
+// Partitions: a partition read by name is checked against its own RLS flag, never the parent's, and
+// it inherits the parent's privileges only when the query goes through the parent. So a partition
+// without RLS is readable by anyone who holds a grant on it — including a grant nobody meant to
+// give, which is exactly the kind of mistake this check exists to catch.
+const partitionsWithoutRls = [...partitions.keys()].filter(
+  (p) => ![...rlsTables].some((entry) => entry.endsWith(`:${p}`)),
+);
+if (partitionsWithoutRls.length > 0) {
+  fail(
+    'supabase/migrations',
+    `partition(s) created without row level security: ${partitionsWithoutRls.join(', ')}`,
+  );
+}
+
+// Partitions created at run time (by a function that runs DDL) cannot be seen in the parse tree, so
+// the rule is applied to the code that creates them: whoever runs `create table ... partition of`,
+// the same routine must switch RLS on for what it just created.
+const parents = new Set(partitions.values());
+for (const fn of functions) {
+  const createsPartition = /create\s+table\s+[^;]*partition\s+of\s+(?:public\.)?(\w+)/gi;
+  for (const match of fn.definition.matchAll(createsPartition)) {
+    parents.add(match[1]);
+    if (!/enable\s+row\s+level\s+security/i.test(fn.definition)) {
+      fail(
+        'supabase/migrations',
+        `${fn.name}() creates a partition of ${match[1]} but never enables row level security on it`,
+      );
+    }
+  }
+}
+
+if (partitions.size > 0 && partitionsWithoutRls.length === 0) {
+  ok(`${partitions.size} partition(s) carry their own row level security; ${parents.size} partitioned parent(s) checked`);
 }
 
 // SECURITY DEFINER functions must pin their search_path, and none may execute caller-supplied SQL.
