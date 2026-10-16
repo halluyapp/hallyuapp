@@ -4,6 +4,11 @@
 -- public.record_event(). No free-text payloads, no raw IP, no email: the caller may only send a
 -- short event name and a small JSONB property bag.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create table if not exists public.analytics_events (
   id           bigint      generated always as identity,
   occurred_at  timestamptz not null default now(),
@@ -86,3 +91,6 @@ create policy analytics_events_moderator_select on public.analytics_events
   using (public.is_moderator());
 
 grant select on public.analytics_events to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

@@ -28,6 +28,11 @@
 -- Who may publish video
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create table if not exists public.video_creators (
   user_id             uuid primary key references public.profiles (id) on delete cascade,
   monthly_byte_budget bigint      not null default 1073741824,
@@ -584,3 +589,7 @@ create policy post_media_insert_own on public.post_media
     exists (select 1 from public.posts p where p.id = post_id and p.author_id = auth.uid())
     and (kind <> 'video' or public.video_access(auth.uid()))
   );
+
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

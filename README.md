@@ -47,9 +47,10 @@ migrations on a real PostgreSQL (`npm run test:db-exec`, needs a local `psql`/se
 **Backend verification** workflow runs it against a `postgres:16` service container):
 
 ```
-node scripts/localdb/apply.mjs     # applies supabase/migrations verbatim, in filename order
+node scripts/localdb/apply.mjs     # applies supabase/migrations verbatim, in filename order,
+                                   #   then validates every function body against the finished schema
 node scripts/localdb/check.mjs     # replays the backend behaviour checks against that database
-node scripts/localdb/surface.mjs   # compiles and plans every function body
+node scripts/localdb/surface.mjs   # calls every public function once, so plpgsql bodies compile
 ```
 
 The local database stubs Supabase's own restrictions, so the behaviour checks fail here for the same

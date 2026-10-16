@@ -8,6 +8,11 @@
 -- get_home_discovery() is the one round trip the Home screen needs on a cold start. It is stable,
 -- bounded, and every part degrades to an empty array rather than failing.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.get_home_discovery(
   p_worlds text[] default null,
   p_limit integer default 10
@@ -349,3 +354,6 @@ $$;
 
 revoke all on function public.get_title_discovery(uuid) from public, anon, authenticated;
 grant execute on function public.get_title_discovery(uuid) to anon, authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

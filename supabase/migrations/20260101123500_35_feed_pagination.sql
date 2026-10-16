@@ -22,6 +22,12 @@
 -- A cursor is opaque text so the client cannot construct one and reason about the query. Decoding
 -- failures return NULL rather than raising, which turns a corrupt cursor into "start from the top"
 -- instead of an error the app has to special-case.
+
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.decode_feed_cursor(p_cursor text)
 returns table (rank_key double precision, created_at timestamptz, id uuid)
 language plpgsql
@@ -357,3 +363,6 @@ comment on function public.feed_page(text, text, uuid, integer, text, uuid) is
 
 comment on function public.decode_feed_cursor(text) is
   'Best-effort cursor decode: a malformed or foreign cursor returns no rows rather than raising, so a bad cursor restarts the feed instead of breaking the screen.';
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

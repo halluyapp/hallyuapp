@@ -2,6 +2,11 @@
 -- Mirrors `WatchlistItem` in lib/model.ts. Progress is monotonic per member: the database refuses to
 -- move an episode pointer backwards through public.upsert_watchlist_item.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.watch_status as enum ('want', 'watching', 'completed', 'dropped');
 
 create table if not exists public.watchlist_items (
@@ -37,3 +42,6 @@ create policy watchlist_items_owner_all on public.watchlist_items
   with check (user_id = auth.uid());
 
 grant select, insert, update, delete on public.watchlist_items to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

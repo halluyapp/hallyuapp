@@ -20,6 +20,12 @@
 -- ---------------------------------------------------------------------------------------------
 
 -- One place that decides eligibility, so "watchlist or alert or follow" cannot drift between jobs.
+
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.title_audience(p_title_id uuid)
 returns setof uuid
 language sql
@@ -392,3 +398,6 @@ grant execute on function public.run_scheduled_jobs(text[]) to service_role;
 
 comment on function public.job_queue_upcoming_episodes(date, date, integer) is
   'Idempotent reminder queue. Re-running the same window re-uses each (recipient, episode) dedupe key, so a member can never be reminded twice for the same episode.';
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

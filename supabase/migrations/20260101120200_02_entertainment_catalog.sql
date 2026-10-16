@@ -4,6 +4,11 @@
 -- that makes a hub renderable without a catalog round-trip. Every provider-specific field lives
 -- behind (provider_id, external_id), so a second catalog can be ingested the same way.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.media_type as enum ('tv', 'movie');
 create type public.title_status as enum ('upcoming', 'airing', 'completed', 'canceled');
 
@@ -170,3 +175,6 @@ create policy title_people_select_all on public.title_people for select to anon,
 create policy title_episodes_select_all on public.title_episodes for select to anon, authenticated using (true);
 
 grant select on public.people, public.titles, public.title_people, public.title_episodes to anon, authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

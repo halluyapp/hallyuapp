@@ -177,6 +177,25 @@ node scripts/verify-backend.mjs         # live integration test against a real p
 npm run check                           # typecheck, lint, fandom checks, and all offline backend checks
 ```
 
+With a database (local `psql`, or the CI service container):
+
+```sh
+node scripts/localdb/apply.mjs           # applies the migrations, then validates every function body
+node scripts/localdb/verify-function-bodies.mjs   # the body-validation step on its own
+node scripts/localdb/check.mjs           # replays the backend behaviour checks against that database
+node scripts/localdb/surface.mjs         # calls every public function once, so plpgsql bodies compile
+```
+
+Applying and validating are two different checks and both are needed. Each migration turns
+`check_function_bodies` off for its own duration, because a file may define a function whose
+dependencies arrive in a later file — so applying the schema proves nothing about the code inside it.
+`verify-function-bodies.mjs` re-creates all 174 definitions against the finished schema with
+validation **on**, each inside a transaction that is rolled back, so a body that names a table the
+schema never created, a column that does not exist, or an operator that lives outside the function's
+pinned `search_path` is reported instead of waiting for the member who calls it. It never runs a
+function, which is why it is safe to point at the live project — `surface.mjs` calls them, catches
+plpgsql compile errors too, and belongs on a disposable database only.
+
 `verify-backend-surface.mjs` is the completeness gate: a manifest of every capability Hallyu's backend
 must provide, each checked against the migration that implements it, plus a global scan that no
 function is a placeholder. `.github/workflows/backend-verification.yml` runs everything on demand, on a

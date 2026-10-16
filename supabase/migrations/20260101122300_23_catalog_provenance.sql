@@ -16,6 +16,11 @@
 -- Provenance columns on the cached catalog
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 alter table public.titles
   add column if not exists popularity         numeric(10, 3),
   add column if not exists vote_average       numeric(3, 1),
@@ -248,3 +253,6 @@ revoke all on function public.catalog_provider_health() from public, anon;
 grant execute on function public.catalog_provider_health() to service_role;
 
 comment on function public.catalog_provider_health() is 'Ingest pre-flight: returns per-provider health so a job can skip a provider that is failing instead of hammering it.';
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

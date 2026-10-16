@@ -2,6 +2,11 @@
 -- `profiles.id` IS the auth.users id: one identity, one row. Everything the client reads as `User`
 -- (lib/model.ts) lives here except the denormalised counts, which triggers keep honest.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.profile_role as enum ('member', 'moderator', 'admin');
 create type public.account_status as enum ('active', 'suspended', 'deleted');
 
@@ -215,3 +220,6 @@ create policy profiles_moderate on public.profiles
 
 grant select on public.profiles to anon, authenticated;
 grant insert, update, delete on public.profiles to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

@@ -2,6 +2,11 @@
 -- One level of threading, exactly like the client model (`parentId?` + `replyToUserId`). The rule
 -- "a reply must sit under a top-level comment of the same post" is enforced here, not in the app.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create table if not exists public.comments (
   id               uuid primary key default gen_random_uuid(),
   post_id          uuid        not null references public.posts (id) on delete cascade,
@@ -204,3 +209,6 @@ create policy comments_delete_own on public.comments
 
 grant select on public.comments to anon, authenticated;
 grant insert, update, delete on public.comments to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

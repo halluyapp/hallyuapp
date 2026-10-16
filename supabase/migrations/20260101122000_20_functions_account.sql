@@ -6,6 +6,11 @@
 -- Preferences: an allow-listed merge, never an arbitrary column write
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.merge_preferences(p_patch jsonb)
 returns public.user_preferences
 language plpgsql
@@ -330,3 +335,6 @@ grant execute on function public.upsert_watchlist_item(uuid, public.watch_status
 grant execute on function public.handle_is_available(text) to anon, authenticated;
 grant execute on function public.get_bootstrap() to authenticated;
 grant execute on function public.delete_account() to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

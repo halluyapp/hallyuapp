@@ -9,8 +9,13 @@
 // How it stays honest:
 //   * strict filename order, no deferrals, exactly as scripts/localdb/apply-mjs does for the
 //     disposable database — one schema definition, two places to run it;
-//   * `check_function_bodies = off` for the session (migration 00 defines is_moderator() before
-//     profiles exists — see docs/RORK-CLOUD-CONNECTION-REPORT.md §3);
+//   * nothing is set on the session: each migration turns function body validation off for itself and
+//     back on at the end (migration 00 defines is_moderator() before profiles exists — see
+//     docs/RORK-CLOUD-CONNECTION-REPORT.md §3), so the files behave the same here, in the local
+//     harness, in the SQL editor and under `supabase db push`;
+//   * once every file has run, scripts/localdb/verify-function-bodies.mjs re-creates all 174 function
+//     definitions against the finished schema with validation ON (each in a transaction that is rolled
+//     back), so a body that cannot resolve is caught here rather than by the first member who calls it;
 //   * VERBOSITY verbose, so every error carries its SQLSTATE. Only the "this object already exists"
 //     states are tolerated, and each one is printed with the statement that hit it. Every other
 //     error — a syntax error, a return-type change that needs a DROP, a permission failure — stops
@@ -28,6 +33,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyFunctionBodies } from '../localdb/verify-function-bodies.mjs';
 
 // ── Errors that mean "the object is already there", and nothing worse ────────────────────────
 // Every one of these is printed with its statement. Anything outside this list fails the run.
@@ -194,7 +200,6 @@ export function main(argv = process.argv) {
   // discarded, which reads as a clean apply over a database that never changed.
   const run = spawnSync('psql', ['-X', ...(conninfo ? ['--dbname', conninfo] : []), '--file', driverPath], {
     encoding: 'utf8',
-    env: { ...process.env, PGOPTIONS: '-c check_function_bodies=off' },
     cwd: workdir,
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 12 * 60 * 1000,
@@ -256,6 +261,16 @@ export function main(argv = process.argv) {
   console.log(
     `\nAPPLY OK — ${executed} statement(s) executed, ${tolerated.length} already present, across ${files.length} file(s).`,
   );
+
+  // Every migration turned body validation off for its own duration, so the schema is applied but no
+  // body has been resolved. This is where that happens: all 174 definitions are re-created against
+  // the schema that now exists, with validation on, each inside a transaction that is rolled back.
+  console.log('');
+  const bodies = verifyFunctionBodies({ repo: REPO, conninfo });
+  if (bodies !== 0) {
+    console.error('✗ the schema applied, but function bodies did not all validate — see above.');
+    return bodies;
+  }
   return 0;
 }
 

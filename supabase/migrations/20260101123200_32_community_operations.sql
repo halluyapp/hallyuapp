@@ -13,6 +13,11 @@
 -- Ownership and membership state
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 alter table public.communities
   add column if not exists owner_id   uuid references public.profiles (id) on delete set null,
   add column if not exists join_policy text not null default 'open',
@@ -658,3 +663,6 @@ $$;
 
 revoke all on function public.moderate_community_post(uuid, text, text) from public, anon, authenticated;
 grant execute on function public.moderate_community_post(uuid, text, text) to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

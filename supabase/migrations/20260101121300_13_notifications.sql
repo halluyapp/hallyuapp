@@ -2,6 +2,11 @@
 -- One table for every kind of social signal, matching the `Notification` shape the client renders.
 -- Only the recipient can ever read a row; writers go through the trigger functions in migration 18.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.notification_kind as enum (
   'reaction', 'comment', 'reply', 'follow', 'mention',
   'episode_aired', 'episode_live', 'drama_trending', 'collection_saved', 'system'
@@ -51,3 +56,6 @@ create policy notifications_recipient_delete on public.notifications
   using (recipient_id = auth.uid() or public.is_moderator());
 
 grant select, update, delete on public.notifications to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

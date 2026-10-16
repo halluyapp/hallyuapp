@@ -2,6 +2,11 @@
 -- A collection is a member's shelf of titles ("slow burns worth it"), optionally public. Items point
 -- at cached titles rather than duplicating catalog data.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create table if not exists public.collections (
   id             uuid primary key default gen_random_uuid(),
   owner_id       uuid        not null references public.profiles (id) on delete cascade,
@@ -120,3 +125,6 @@ grant select on public.collections to anon, authenticated;
 grant insert, update, delete on public.collections to authenticated;
 grant select on public.collection_items to anon, authenticated;
 grant insert, delete on public.collection_items to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

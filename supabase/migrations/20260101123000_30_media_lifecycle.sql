@@ -20,6 +20,11 @@
 -- Upload intents
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.media_state as enum ('pending', 'attached', 'failed', 'orphaned');
 
 create table if not exists public.media_uploads (
@@ -558,3 +563,6 @@ $$;
 
 revoke all on function public.run_scheduled_jobs(text[]) from public, anon, authenticated;
 grant execute on function public.run_scheduled_jobs(text[]) to service_role;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

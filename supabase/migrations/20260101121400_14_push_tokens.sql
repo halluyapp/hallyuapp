@@ -2,6 +2,11 @@
 -- Device registration for the episode reminder / social notification path. A push token is a
 -- credential: only its owner may read it, and no policy ever exposes another member's tokens.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.push_platform as enum ('ios', 'android', 'web');
 
 create table if not exists public.push_tokens (
@@ -54,3 +59,6 @@ create policy push_tokens_owner_delete on public.push_tokens
   using (user_id = auth.uid());
 
 grant select, insert, update, delete on public.push_tokens to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;
