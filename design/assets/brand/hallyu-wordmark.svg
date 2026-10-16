@@ -1,0 +1,17 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hallyu">
+  <defs>
+    <linearGradient id="irisW" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8B75FF"/>
+      <stop offset="1" stop-color="#5A3FD6"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#irisW)" stroke-width="15" stroke-linecap="round">
+    <path d="M150 108 A62 62 0 0 1 212 170"/>
+    <path d="M212 170 A62 62 0 0 1 150 232"/>
+    <path d="M150 232 A62 62 0 0 1 88 170"/>
+    <path d="M88 170 A62 62 0 0 1 150 108"/>
+  </g>
+  <circle cx="150" cy="170" r="26" fill="#8B75FF"/>
+  <circle cx="150" cy="170" r="10" fill="#F5F5FA"/>
+  <text x="290" y="212" font-family="Inter, 'Segoe UI', Roboto, sans-serif" font-size="150" font-weight="800" letter-spacing="-6" fill="#F5F5FA">Hallyu</text>
+</svg>

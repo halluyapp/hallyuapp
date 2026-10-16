@@ -1,0 +1,327 @@
+/* ============================================================================
+   HALLYU — DESIGN TOKENS
+   "Where Fandoms Meet."
+   Single source of truth for color, type, space, radius, elevation, motion.
+   Dark is the primary theme. Light is a fully supported first-class theme.
+   Naming: --<category>-<name>-<step>
+   ========================================================================== */
+
+:root {
+  /* ------------------------------------------------------------------ *
+   * PRIMITIVE — COLOR
+   * A cool, cinematic "midnight ink" ramp. Not pure black: the canvas
+   * carries a faint blue-violet tint so artwork reads warm against it.
+   * ------------------------------------------------------------------ */
+
+  /* Ink ramp (surfaces / text on dark) */
+  --ink-1000: #05050A;
+  --ink-950:  #0A0A12;
+  --ink-900:  #101019;
+  --ink-850:  #14141F;
+  --ink-800:  #1B1B28;
+  --ink-750:  #232333;
+  --ink-700:  #2A2A3D;
+  --ink-600:  #38384F;
+  --ink-500:  #4A4A5E;
+  --ink-450:  #5C5C74;
+  --ink-400:  #74748C;
+  --ink-300:  #A9A9BE;
+  --ink-200:  #C9C9D8;
+  --ink-100:  #E4E4EE;
+  --ink-50:   #F5F5FA;
+  --white:    #FFFFFF;
+
+  /* Brand — "Hallyu Iris": a confident blue-violet. Restrained, premium,
+     deliberately distinct from Netflix red, Spotify green, Twitch purple. */
+  --iris-50:  #F0EEFF;
+  --iris-100: #E0DBFF;
+  --iris-200: #C4BAFF;
+  --iris-300: #A594FF;
+  --iris-400: #8B75FF;
+  --iris-500: #7B61FF;   /* THE SIGNAL */
+  --iris-600: #6A4FF0;
+  --iris-700: #5A3FD6;
+  --iris-800: #472FB0;
+  --iris-900: #37238A;
+
+  /* Secondary — "Ember" warm amber: ratings, verdicts, warmth, awards */
+  --amber-300: #FFD08A;
+  --amber-400: #FFB74D;
+  --amber-500: #FFA726;
+  --amber-600: #F08C00;
+
+  /* Accent — "Pulse" coral: live, social energy, reactions, the "now" */
+  --coral-400: #FF8AA0;
+  --coral-500: #FF5C7A;
+  --coral-600: #EC3E60;
+
+  /* Semantic */
+  --green-400: #3DD68C;
+  --green-500: #22C077;
+  --yellow-400: #FFC24B;
+  --red-400: #FF6B6B;
+  --red-500: #F0453F;
+  --blue-400: #4DA3FF;
+  --blue-500: #2E86F0;
+
+  /* World accents — tiny metadata signals. The Hallyu brand stays Iris;
+     each fandom world gets one honest hue used only as a signal dot/tag. */
+  --world-kdrama:    #FF6B8A;  /* K-Drama  — coral rose */
+  --world-cdrama:    #3DD6C4;  /* C-Drama  — jade */
+  --world-anime:     #8B75FF;  /* Anime    — violet */
+  --world-hollywood: #FFB74D;  /* Hollywood— amber */
+  --world-kdrama-soft:    rgba(255,107,138,0.16);
+  --world-cdrama-soft:    rgba(61,214,196,0.16);
+  --world-anime-soft:     rgba(139,117,255,0.16);
+  --world-hollywood-soft: rgba(255,183,77,0.16);
+
+  /* ------------------------------------------------------------------ *
+   * SEMANTIC — COLOR (DARK THEME, default)
+   * ------------------------------------------------------------------ */
+  --bg-canvas:            var(--ink-950);
+  --bg-canvas-elevated:   var(--ink-900);
+  --bg-inset:             var(--ink-1000);
+
+  --surface-1:            var(--ink-850);   /* cards */
+  --surface-2:            var(--ink-800);   /* sheets, menus, chips */
+  --surface-3:            var(--ink-750);   /* overlay on surface-2, pressed */
+  --surface-glass:        rgba(20,20,31,0.72);
+
+  --border-subtle:        var(--ink-750);   /* hairlines, dividers */
+  --border-default:       var(--ink-700);   /* card outlines */
+  --border-strong:        var(--ink-600);   /* focused inputs, focus rings */
+
+  --text-primary:         var(--ink-50);
+  --text-secondary:       var(--ink-300);
+  --text-tertiary:        var(--ink-400);
+  --text-disabled:        var(--ink-500);
+  --text-on-accent:       var(--white);
+  --text-on-media:        var(--white);
+
+  --brand:                var(--iris-500);
+  --brand-text:           var(--iris-300);   /* brand text < 18px / links */
+  --brand-pressed:        var(--iris-700);
+  --brand-soft:           rgba(123,97,255,0.16);
+  --brand-soft-strong:    rgba(123,97,255,0.24);
+  --on-brand:             var(--white);
+
+  --warm:                 var(--amber-400);
+  --warm-soft:            rgba(255,183,77,0.16);
+
+  --live:                 var(--coral-500);
+  --live-soft:            rgba(255,92,122,0.16);
+
+  --success:              var(--green-400);
+  --success-soft:         rgba(61,214,140,0.16);
+  --warning:              var(--yellow-400);
+  --warning-soft:         rgba(255,194,75,0.16);
+  --danger:               var(--red-400);
+  --danger-soft:          rgba(255,107,107,0.16);
+  --danger-fill:          var(--red-500);
+  --info:                 var(--blue-400);
+  --info-soft:            rgba(77,163,255,0.16);
+
+  --overlay:              rgba(5,5,10,0.66);   /* behind sheets/dialogs */
+  --scrim-top:            rgba(5,5,10,0);
+  --scrim-bottom:         rgba(5,5,10,0.86);
+  --scrim-media:          rgba(5,5,10,0.34);
+
+  --skeleton-base:        var(--ink-800);
+  --skeleton-highlight:   var(--ink-750);
+
+  /* Reaction set (entertainment-native, not generic emoji-only) */
+  --react-love:    #FF5C7A;
+  --react-cry:     #4DA3FF;
+  --react-hype:    #FFB74D;
+  --react-shock:   #A594FF;
+  --react-laugh:   #3DD68C;
+  --react-rage:    #FF6B6B;
+
+  /* ------------------------------------------------------------------ *
+   * TYPOGRAPHY
+   * One highly-readable geometric-humanist sans across the whole product.
+   * Display sizes use tighter tracking; body stays neutral.
+   * ------------------------------------------------------------------ */
+  --font-sans: "Inter", "Pretendard Variable", "Noto Sans KR", "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --fw-extrabold: 800;
+
+  /* size / line-height / tracking */
+  --type-display-xl-size: 44px;  --type-display-xl-lh: 48px;  --type-display-xl-track: -0.02em;  --type-display-xl-fw: 800;
+  --type-display-l-size:  36px;  --type-display-l-lh:  42px;  --type-display-l-track:  -0.018em; --type-display-l-fw:  800;
+  --type-display-size:    30px;  --type-display-lh:    36px;  --type-display-track:    -0.015em; --type-display-fw:    800;
+  --type-h1-size:         26px;  --type-h1-lh:         32px;  --type-h1-track:         -0.012em; --type-h1-fw:         700;
+  --type-h2-size:         22px;  --type-h2-lh:         28px;  --type-h2-track:         -0.008em; --type-h2-fw:         700;
+  --type-h3-size:         19px;  --type-h3-lh:         25px;  --type-h3-track:         -0.004em; --type-h3-fw:         600;
+  --type-section-size:    17px;  --type-section-lh:    23px;  --type-section-track:    0em;      --type-section-fw:    700;
+  --type-card-title-size: 16px;  --type-card-title-lh: 21px;  --type-card-title-track: 0em;      --type-card-title-fw: 600;
+  --type-body-l-size:     17px;  --type-body-l-lh:     26px;  --type-body-l-track:     0em;      --type-body-l-fw:     400;
+  --type-body-size:       15px;  --type-body-lh:       22px;  --type-body-track:       0em;      --type-body-fw:       400;
+  --type-body-s-size:     13.5px;--type-body-s-lh:     20px;  --type-body-s-track:     0em;      --type-body-s-fw:     400;
+  --type-caption-size:    12px;  --type-caption-lh:    16px;  --type-caption-track:    0.002em;  --type-caption-fw:    500;
+  --type-label-size:      13px;  --type-label-lh:      18px;  --type-label-track:      0.002em;  --type-label-fw:      600;
+  --type-nav-size:        11px;  --type-nav-lh:        14px;  --type-nav-track:        0.01em;   --type-nav-fw:        500;
+  --type-button-size:     15px;  --type-button-lh:     20px;  --type-button-track:     0em;      --type-button-fw:     600;
+  --type-meta-size:       12px;  --type-meta-lh:       16px;  --type-meta-track:       0.01em;   --type-meta-fw:       500;
+  --type-stat-size:       20px;  --type-stat-lh:       24px;  --type-stat-track:       -0.01em;  --type-stat-fw:       700;
+  --type-overline-size:   11px;  --type-overline-lh:   14px;  --type-overline-track:   0.08em;   --type-overline-fw:   700;
+
+  /* ------------------------------------------------------------------ *
+   * SPACING — 4pt base
+   * ------------------------------------------------------------------ */
+  --space-0:  0px;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-7:  28px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  --screen-margin: 16px;     /* compact default */
+  --gutter: 12px;
+  --card-padding: 16px;
+  --section-gap: 28px;
+  --nav-gap: 8px;
+
+  /* ------------------------------------------------------------------ *
+   * RADIUS
+   * ------------------------------------------------------------------ */
+  --radius-xs:   6px;
+  --radius-sm:   10px;
+  --radius-md:   14px;
+  --radius-lg:   18px;
+  --radius-xl:   24px;
+  --radius-2xl:  30px;
+  --radius-full: 9999px;
+
+  /* ------------------------------------------------------------------ *
+   * ELEVATION — restrained. Depth via surface + border, not glow.
+   * ------------------------------------------------------------------ */
+  --elev-0: none;
+  --elev-1: 0 1px 2px rgba(0,0,0,0.35);
+  --elev-2: 0 4px 12px rgba(0,0,0,0.40);
+  --elev-3: 0 10px 28px rgba(0,0,0,0.50);
+  --elev-floating: 0 8px 24px rgba(0,0,0,0.45);
+  --elev-brand-glow: 0 8px 24px rgba(123,97,255,0.35);
+
+  /* ------------------------------------------------------------------ *
+   * MOTION
+   * ------------------------------------------------------------------ */
+  --dur-instant: 90ms;
+  --dur-fast:    150ms;
+  --dur-base:    220ms;
+  --dur-medium:  280ms;
+  --dur-slow:    360ms;
+  --dur-slower:  480ms;
+  --dur-skeleton: 1200ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decel:    cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-accel:    cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ease-spring:   cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ------------------------------------------------------------------ *
+   * Z-INDEX
+   * ------------------------------------------------------------------ */
+  --z-content: 0;
+  --z-sticky: 10;
+  --z-tabbar: 20;
+  --z-floating: 30;
+  --z-sheet: 40;
+  --z-dialog: 50;
+  --z-toast: 60;
+
+  /* ------------------------------------------------------------------ *
+   * SIZING
+   * ------------------------------------------------------------------ */
+  --size-touch: 48px;
+  --size-topbar: 56px;
+  --size-tabbar: 64px;
+  --size-input: 52px;
+  --size-btn-lg: 52px;
+  --size-btn-md: 44px;
+  --size-btn-sm: 36px;
+  --size-icon-sm: 18px;
+  --size-icon-md: 20px;
+  --size-icon-lg: 24px;
+  --size-avatar-xs: 24px;
+  --size-avatar-sm: 32px;
+  --size-avatar-md: 40px;
+  --size-avatar-lg: 56px;
+  --size-avatar-xl: 96px;
+}
+
+/* ============================================================================
+   LIGHT THEME
+   Sophisticated, editorial. Not a corporate dashboard: warm-neutral paper,
+   strong ink type, brand kept deep enough for AA contrast.
+   ========================================================================== */
+:root[data-theme="light"] {
+  --bg-canvas:            #F6F6FA;
+  --bg-canvas-elevated:   #FFFFFF;
+  --bg-inset:             #EDEDF4;
+
+  --surface-1:            #FFFFFF;
+  --surface-2:            #F2F2F8;
+  --surface-3:            #E8E8F1;
+  --surface-glass:        rgba(255,255,255,0.78);
+
+  --border-subtle:        #E7E7F0;
+  --border-default:       #DCDCE8;
+  --border-strong:        #B9B9CC;
+
+  --text-primary:         #14141F;
+  --text-secondary:       #55556B;
+  --text-tertiary:        #7C7C93;
+  --text-disabled:        #AFAFC0;
+  --text-on-accent:       #FFFFFF;
+  --text-on-media:        #FFFFFF;
+
+  --brand:                #6A4FF0;
+  --brand-text:           #5A3FD6;
+  --brand-pressed:        #472FB0;
+  --brand-soft:           rgba(106,79,240,0.12);
+  --brand-soft-strong:    rgba(106,79,240,0.18);
+  --on-brand:             #FFFFFF;
+
+  --warm:                 #E08A00;
+  --warm-soft:            rgba(224,138,0,0.12);
+
+  --live:                 #EC3E60;
+  --live-soft:            rgba(236,62,96,0.12);
+
+  --success:              #12A567;
+  --success-soft:         rgba(18,165,103,0.12);
+  --warning:              #D98A00;
+  --warning-soft:         rgba(217,138,0,0.14);
+  --danger:               #E23B3B;
+  --danger-soft:          rgba(226,59,59,0.12);
+  --danger-fill:          #D62F2F;
+  --info:                 #2E86F0;
+  --info-soft:            rgba(46,134,240,0.12);
+
+  --overlay:              rgba(20,20,31,0.44);
+  --scrim-top:            rgba(5,5,10,0);
+  --scrim-bottom:         rgba(5,5,10,0.78);
+  --scrim-media:          rgba(5,5,10,0.30);
+
+  --skeleton-base:        #E8E8F1;
+  --skeleton-highlight:   #F2F2F8;
+
+  --elev-1: 0 1px 2px rgba(20,20,31,0.06);
+  --elev-2: 0 4px 12px rgba(20,20,31,0.08);
+  --elev-3: 0 10px 28px rgba(20,20,31,0.12);
+  --elev-floating: 0 8px 24px rgba(20,20,31,0.12);
+  --elev-brand-glow: 0 8px 24px rgba(106,79,240,0.28);
+}

@@ -1,0 +1,134 @@
+"""Hallyu icon set — 24x24 stroke-based SVG, currentColor.
+Clean, geometric, modern. Consistent 1.8 stroke, round caps/joins.
+Filled variants exist for stateful icons (heart, bookmark, star, play).
+"""
+
+# Each entry: inner SVG markup for a 24x24 viewBox.
+S = 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"'
+F = 'fill="currentColor" stroke="none"'
+
+ICONS = {
+    # ---- navigation ----
+    "home": f'<path {S} d="M3 10.5 12 3l9 7.5"/><path {S} d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>',
+    "home-fill": f'<path {F} d="M11.3 2.6a1 1 0 0 1 1.4 0l8.3 7.4a1 1 0 0 1 .3.7V20a2 2 0 0 1-2 2h-4.6v-5.4a.6.6 0 0 0-.6-.6h-3.2a.6.6 0 0 0-.6.6V22H4.3a2 2 0 0 1-2-2v-9.3a1 1 0 0 1 .3-.7z"/>',
+    "compass": f'<circle {S} cx="12" cy="12" r="9"/><path {S} d="m15.5 8.5-2 5-5 2 2-5z"/>',
+    "compass-fill": f'<path {F} d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm4.2 5.4-2.3 5.6a1 1 0 0 1-.5.5l-5.6 2.3a.7.7 0 0 1-.9-.9l2.3-5.6a1 1 0 0 1 .5-.5l5.6-2.3a.7.7 0 0 1 .9.9z"/>',
+    "plus": f'<path {S} d="M12 5v14M5 12h14"/>',
+    "bell": f'<path {S} d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path {S} d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+    "bell-fill": f'<path {F} d="M12 2a6 6 0 0 0-6 6c0 3.5-.8 5.7-1.6 7A2 2 0 0 0 6 18h12a2 2 0 0 0 1.6-3c-.8-1.3-1.6-3.5-1.6-7a6 6 0 0 0-6-6zM9.5 19.5a2.5 2.5 0 0 0 5 0z"/>',
+    "user": f'<circle {S} cx="12" cy="8" r="4"/><path {S} d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/>',
+    "user-fill": f'<circle {F} cx="12" cy="8" r="4.5"/><path {F} d="M3.5 21a8.5 8.5 0 0 1 17 0 .5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5z"/>',
+    "users": f'<circle {S} cx="9" cy="8" r="3.5"/><path {S} d="M2.5 20c0-3.3 2.9-5 6.5-5s6.5 1.7 6.5 5"/><path {S} d="M16.5 5.2a3.5 3.5 0 0 1 0 6.6"/><path {S} d="M18 15.4c2.3.5 3.8 1.8 3.8 4.1"/>',
+
+    # ---- media / content ----
+    "play": f'<path {F} d="M7 4.6a1 1 0 0 1 1.5-.9l11 7.4a1 1 0 0 1 0 1.7l-11 7.4A1 1 0 0 1 7 19.4z"/>',
+    "play-o": f'<circle {S} cx="12" cy="12" r="9"/><path {F} d="M10 8.5 16 12l-6 3.5z"/>',
+    "pause": f'<path {F} d="M8 5h3v14H8zM13 5h3v14h-3z"/>',
+    "film": f'<rect {S} x="3" y="4" width="18" height="16" rx="2"/><path {S} d="M3 9h18M3 15h18M8 4v16M16 4v16"/>',
+    "tv": f'<rect {S} x="3" y="7" width="18" height="13" rx="2"/><path {S} d="m8 3 4 4 4-4"/>',
+    "clapper": f'<path {S} d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path {S} d="m3 8 2-4 4 2 2-4 4 2 2-4 3 2-2 4"/>',
+    "sparkles": f'<path {S} d="M12 3v4M12 17v4M3 12h4M17 12h4"/><path {F} d="M12 8.5 13.2 11l2.5 1.2-2.5 1.2L12 15.5 10.8 13.4 8.3 12.2 10.8 11z"/>',
+    "flame": f'<path {S} d="M12 3c1.5 3 4.5 4 4.5 8a4.5 4.5 0 0 1-9 0c0-1.3.5-2.2 1-3 .3 1 1 1.7 1.7 1.7C10.6 8 11 5.6 12 3z"/><path {S} d="M12 21a6 6 0 0 0 6-6c0-1.4-.4-2.6-1-3.6"/>',
+    "trending": f'<path {S} d="M3 17 9 11l4 4 8-8"/><path {S} d="M15 7h6v6"/>',
+    "clock": f'<circle {S} cx="12" cy="12" r="9"/><path {S} d="M12 7v5l3 2"/>',
+    "calendar": f'<rect {S} x="3" y="5" width="18" height="16" rx="2"/><path {S} d="M3 9h18M8 3v4M16 3v4"/>',
+    "star": f'<path {S} d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"/>',
+    "star-fill": f'<path {F} d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.1 6.6 19.9l1-6.1L3.2 9.5l6.1-.9z"/>',
+    "grid": f'<rect {S} x="3" y="3" width="7" height="7" rx="1.5"/><rect {S} x="14" y="3" width="7" height="7" rx="1.5"/><rect {S} x="3" y="14" width="7" height="7" rx="1.5"/><rect {S} x="14" y="14" width="7" height="7" rx="1.5"/>',
+    "list": f'<path {S} d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
+    "image": f'<rect {S} x="3" y="4" width="18" height="16" rx="2"/><circle {S} cx="8.5" cy="9" r="1.8"/><path {S} d="m4 17 4.5-4.5a1.5 1.5 0 0 1 2.1 0L15 17M14 15l1.5-1.5a1.5 1.5 0 0 1 2.1 0L20 16"/>',
+    "video": f'<rect {S} x="2.5" y="6" width="13" height="12" rx="2"/><path {S} d="m15.5 10 5-2.5v9l-5-2.5z"/>',
+    "poll": f'<path {S} d="M6 20V10M12 20V4M18 20v-7"/>',
+    "mic": f'<rect {S} x="9" y="3" width="6" height="11" rx="3"/><path {S} d="M6 11a6 6 0 0 0 12 0M12 17v4"/>',
+
+    # ---- social ----
+    "heart": f'<path {S} d="M12 20.5C6 16.5 3 13.3 3 9.6A4.6 4.6 0 0 1 12 7a4.6 4.6 0 0 1 9 2.6c0 3.7-3 6.9-9 10.9z"/>',
+    "heart-fill": f'<path {F} d="M12 21c-6.4-4.2-9.5-7.6-9.5-11.5A5 5 0 0 1 12 6.4a5 5 0 0 1 9.5 3.1C21.5 13.4 18.4 16.8 12 21z"/>',
+    "comment": f'<path {S} d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/>',
+    "comment-fill": f'<path {F} d="M12 3a9 9 0 0 0-7.7 13.6L3 21l4.6-1.3A9 9 0 1 0 12 3z"/>',
+    "share": f'<path {S} d="M12 15V4M8.5 7.5 12 4l3.5 3.5"/><path {S} d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
+    "bookmark": f'<path {S} d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1z"/>',
+    "bookmark-fill": f'<path {F} d="M6 3h12a2 2 0 0 1 2 2v15.3a.8.8 0 0 1-1.2.7L12 17l-6.8 4a.8.8 0 0 1-1.2-.7V5a2 2 0 0 1 2-2z"/>',
+    "send": f'<path {S} d="M21 3 3 10.5l7 2.5 2.5 7z"/><path {S} d="M21 3 10 14"/>',
+    "reply": f'<path {S} d="M9 7 4 12l5 5"/><path {S} d="M4 12h11a5 5 0 0 1 5 5v1"/>',
+    "mention": f'<circle {S} cx="12" cy="12" r="4"/><path {S} d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.5 7.1"/>',
+    "hash": f'<path {S} d="M5 9h14M5 15h14M9 4 7 20M17 4l-2 16"/>',
+    "verified": f'<path {F} d="M12 2.5 14 4.8l3-.3.9 2.9 2.7 1.4-1.1 2.8 1.1 2.8-2.7 1.4-.9 2.9-3-.3L12 21.5 10 19.2l-3 .3-.9-2.9-2.7-1.4 1.1-2.8-1.1-2.8 2.7-1.4.9-2.9 3 .3z"/><path d="m8.5 12 2.4 2.4L15.5 9.8" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "eye": f'<path {S} d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle {S} cx="12" cy="12" r="3"/>',
+    "eye-off": f'<path {S} d="M4 4l16 16"/><path {S} d="M9.5 9.6A3 3 0 0 0 12 15a3 3 0 0 0 2.4-1.2M6.6 6.8C4 8.3 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.7 0 3.2-.5 4.5-1.2M10 5.7A9 9 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a15 15 0 0 1-2.3 3.1"/>',
+
+    # ---- actions / system ----
+    "search": f'<circle {S} cx="11" cy="11" r="7"/><path {S} d="m20 20-3.5-3.5"/>',
+    "filter": f'<path {S} d="M3 5h18M6 12h12M10 19h4"/>',
+    "sort": f'<path {S} d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3"/>',
+    "settings": f'<circle {S} cx="12" cy="12" r="3"/><path {S} d="M12 2.5v3M12 18.5v3M4.2 7l2.6 1.5M17.2 15.5l2.6 1.5M4.2 17l2.6-1.5M17.2 8.5l2.6-1.5"/>',
+    "sliders": f'<path {S} d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle {S} cx="16" cy="6" r="2"/><circle {S} cx="10" cy="12" r="2"/><circle {S} cx="18" cy="18" r="2"/>',
+    "more": f'<circle {F} cx="5" cy="12" r="1.8"/><circle {F} cx="12" cy="12" r="1.8"/><circle {F} cx="19" cy="12" r="1.8"/>',
+    "more-v": f'<circle {F} cx="12" cy="5" r="1.8"/><circle {F} cx="12" cy="12" r="1.8"/><circle {F} cx="12" cy="19" r="1.8"/>',
+    "close": f'<path {S} d="M6 6l12 12M18 6 6 18"/>',
+    "check": f'<path {S} d="m5 12.5 4.5 4.5L19 7"/>',
+    "back": f'<path {S} d="M15 5l-7 7 7 7"/>',
+    "chevron-right": f'<path {S} d="m9 5 7 7-7 7"/>',
+    "chevron-left": f'<path {S} d="m15 5-7 7 7 7"/>',
+    "chevron-down": f'<path {S} d="m5 9 7 7 7-7"/>',
+    "chevron-up": f'<path {S} d="m5 15 7-7 7 7"/>',
+    "arrow-right": f'<path {S} d="M4 12h16M14 6l6 6-6 6"/>',
+    "arrow-up": f'<path {S} d="M12 20V4M6 10l6-6 6 6"/>',
+    "camera": f'<path {S} d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle {S} cx="12" cy="13" r="3.2"/>',
+    "edit": f'<path {S} d="M4 20h4L19 9a2 2 0 0 0-3-3L5 17z"/><path {S} d="M14.5 6.5 17.5 9.5"/>',
+    "trash": f'<path {S} d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/>',
+    "flag": f'<path {S} d="M5 21V4M5 5h11l-1.5 3.5L16 12H5"/>',
+    "lock": f'<rect {S} x="4.5" y="10" width="15" height="10" rx="2"/><path {S} d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+    "shield": f'<path {S} d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/>',
+    "globe": f'<circle {S} cx="12" cy="12" r="9"/><path {S} d="M3 12h18M12 3c2.5 2.6 2.5 15.4 0 18M12 3c-2.5 2.6-2.5 15.4 0 18"/>',
+    "download": f'<path {S} d="M12 4v11M8 11l4 4 4-4M5 19h14"/>',
+    "refresh": f'<path {S} d="M20 11a8 8 0 0 0-14-4.5L4 9M4 5v4h4"/><path {S} d="M4 13a8 8 0 0 0 14 4.5L20 15M20 19v-4h-4"/>',
+    "wifi-off": f'<path {S} d="M3 4l18 18"/><path {S} d="M8.5 15.5a5 5 0 0 1 7 0M5 12a10 10 0 0 1 3-2M16 10a10 10 0 0 1 3 2M2 8.5a15 15 0 0 1 5-3.3M17 5.2A15 15 0 0 1 22 8.5M12 19h.01"/>',
+    "alert": f'<path {S} d="M12 3 2.5 20h19z"/><path {S} d="M12 10v4M12 17h.01"/>',
+    "info": f'<circle {S} cx="12" cy="12" r="9"/><path {S} d="M12 11v5M12 8h.01"/>',
+    "volume": f'<path {S} d="M4 9v6h3l5 4V5L7 9z"/><path {S} d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>',
+    "moon": f'<path {S} d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+    "sun": f'<circle {S} cx="12" cy="12" r="4"/><path {S} d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5 3.5 3.5M20.5 20.5 19 19M5 19l-1.5 1.5M20.5 3.5 19 5"/>',
+    "logout": f'<path {S} d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path {S} d="M10 12H3M6 8l-4 4 4 4"/>',
+    "external": f'<path {S} d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+    "copy": f'<rect {S} x="8" y="8" width="12" height="12" rx="2"/><path {S} d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    "link": f'<path {S} d="M9 15l6-6"/><path {S} d="M10.5 6.5 12 5a4 4 0 0 1 6 6l-1.5 1.5M13.5 17.5 12 19a4 4 0 0 1-6-6l1.5-1.5"/>',
+    "at": f'<circle {S} cx="12" cy="12" r="4"/><path {S} d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.5 7.1"/>',
+    "tag": f'<path {S} d="M3 12V5a2 2 0 0 1 2-2h7l9 9-9 9z"/><circle {F} cx="8" cy="8" r="1.5"/>',
+    "pin": f'<path {S} d="M12 21s7-6 7-11a7 7 0 1 0-14 0c0 5 7 11 7 11z"/><circle {S} cx="12" cy="10" r="2.5"/>',
+    "message": f'<path {S} d="M4 5h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-4 3v-3H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>',
+    "message-fill": f'<path {F} d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10l-4.6 3.4A.8.8 0 0 1 4 20.7V18a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/>',
+    "gift": f'<rect {S} x="3" y="8" width="18" height="4" rx="1"/><path {S} d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8M12 8v13"/><path {S} d="M12 8S10.5 3 8 3a2.5 2.5 0 0 0 0 5M12 8s1.5-5 4-5a2.5 2.5 0 0 1 0 5"/>',
+    "crown": f'<path {S} d="M3 8l4 3 5-6 5 6 4-3-2 11H5z"/>',
+    "fire": f'<path {S} d="M12 3c1.5 3 4.5 4 4.5 8a4.5 4.5 0 0 1-9 0c0-1.3.5-2.2 1-3 .3 1 1 1.7 1.7 1.7C10.6 8 11 5.6 12 3z"/>',
+    "sparkle": f'<path {F} d="M12 3l1.6 4.9L18.5 9.5l-4.9 1.6L12 16l-1.6-4.9L5.5 9.5l4.9-1.6z"/>',
+    "list-plus": f'<path {S} d="M8 6h13M8 12h13M8 18h7M3.5 6h.01M3.5 12h.01M3.5 18h.01M18 15v6M15 18h6"/>',
+    "qr": f'<rect {S} x="3" y="3" width="7" height="7" rx="1"/><rect {S} x="14" y="3" width="7" height="7" rx="1"/><rect {S} x="3" y="14" width="7" height="7" rx="1"/><path {S} d="M14 14h3v3M20 14v.01M14 20h.01M20 20v-3"/>',
+    "cast": f'<path {S} d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-6"/><path {S} d="M3 19a3 3 0 0 1 3 3M3 15a7 7 0 0 1 7 7M3 11a11 11 0 0 1 11 11"/>',
+    "emoji": f'<circle {S} cx="12" cy="12" r="9"/><path {S} d="M8.5 14a4 4 0 0 0 7 0M9 9.5h.01M15 9.5h.01"/>',
+    "gif": f'<rect {S} x="3" y="5" width="18" height="14" rx="2"/><path {S} d="M8 10H6.5a1.5 1.5 0 0 0-1.5 1.5v1A1.5 1.5 0 0 0 6.5 14H8v-1.5M11 10v4M14 14v-4h2.5M14 12h2"/>',
+    "translate": f'<path {S} d="M4 5h9M8.5 5c0 5-2 8-4.5 10M6 9c1.5 3 4 5 7 6"/><path {S} d="m13 20 4-9 4 9M14.5 17h5"/>',
+    "history": f'<path {S} d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path {S} d="M3 4v4h4M12 8v4l3 2"/>',
+    "cross": f'<path {S} d="M6 6l12 12M18 6 6 18"/>',
+    "sparkles-2": f'<path {S} d="M12 4v3M12 17v3M4 12h3M17 12h3M6.5 6.5 8 8M16 16l1.5 1.5M17.5 6.5 16 8M8 16l-1.5 1.5"/>',
+    "building": f'<rect {S} x="4" y="3" width="16" height="18" rx="1.5"/><path {S} d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M9 15h.01M15 15h.01M10 21v-3h4v3"/>',
+    "ticket": f'<path {S} d="M4 8a2 2 0 0 0 2-2h12a2 2 0 0 0 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 0-2 2H6a2 2 0 0 0-2-2v-2a2 2 0 0 0 0-4z"/><path {S} d="M13 6v12" stroke-dasharray="2 2"/>',
+    "medal": f'<circle {S} cx="12" cy="14" r="5"/><path {S} d="M8.5 9 6 3h4l2 3.5L14 3h4l-2.5 6"/>',
+    "world": f'<circle {S} cx="12" cy="12" r="9"/><path {S} d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+    "drama": f'<rect {S} x="3" y="6" width="18" height="13" rx="2"/><path {S} d="M8 6V4M16 6V4M3 10h18"/>',
+    "anime": f'<path {S} d="M12 3c5 0 9 3 9 7s-4 7-9 7-9-3-9-7 4-7 9-7z"/><circle {S} cx="9" cy="10" r="1.4"/><circle {S} cx="15" cy="10" r="1.4"/><path {S} d="M9.5 13.5a3.5 3.5 0 0 0 5 0"/>',
+    "popcorn": f'<path {S} d="M5 8h14l-1 12H6z"/><path {S} d="M5 8c-1.5 0-2-2-1-3s2.5-.5 2.5 1c0-2 2.5-2.5 3.5-.5.5-2 3.5-2 4 .5 1-1.5 3.5-1 3 1"/>',
+    "headphones": f'<path {S} d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect {S} x="3" y="14" width="4" height="6" rx="1.5"/><rect {S} x="17" y="14" width="4" height="6" rx="1.5"/>',
+    "wand": f'<path {S} d="m4 20 11-11M14 4l1 1M19 6l1 1M17 3l1 1M20 11l1 1"/><path {S} d="m15 9-1.5-1.5"/>',
+    "keyboard": f'<rect {S} x="3" y="7" width="18" height="11" rx="2"/><path {S} d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10"/>',
+}
+
+
+def icon(name: str, size: int = 24, cls: str = "ico", extra: str = "") -> str:
+    inner = ICONS.get(name, ICONS["sparkle"])
+    return (f'<svg class="{cls}" width="{size}" height="{size}" viewBox="0 0 24 24" '
+            f'aria-hidden="true" {extra}>{inner}</svg>')
+
+
+def icon_names():
+    return sorted(ICONS.keys())

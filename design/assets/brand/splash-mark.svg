@@ -1,0 +1,10 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hallyu splash">
+  <g fill="none" stroke="#8B75FF" stroke-width="30" stroke-linecap="round">
+    <path d="M512 372 A140 140 0 0 1 652 512"/>
+    <path d="M652 512 A140 140 0 0 1 512 652"/>
+    <path d="M512 652 A140 140 0 0 1 372 512"/>
+    <path d="M372 512 A140 140 0 0 1 512 372"/>
+  </g>
+  <circle cx="512" cy="512" r="60" fill="#8B75FF"/>
+  <circle cx="512" cy="512" r="22" fill="#F5F5FA"/>
+</svg>
