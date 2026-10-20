@@ -493,9 +493,9 @@ begin
   -- Deliver a real in-app & OS push notification for the recipient
   insert into public.notifications (
     recipient_id,
-    actor_id,
+    actor_ids,
     kind,
-    group_name,
+    "group",
     title,
     body,
     post_id,
@@ -503,7 +503,7 @@ begin
   )
   values (
     v_peer.id,
-    v_uid,
+    array[v_uid],
     'mention',
     'social',
     coalesce(v_sender.display_name, '@' || v_sender.handle) || ' sent you a message',
@@ -742,15 +742,17 @@ grant execute on function public.discover_catalog(text, text, text, text, numeri
 
 do $$
 begin
-  begin
-    alter publication supabase_realtime add table public.direct_messages;
-  exception when duplicate_object then
-    null;
-  end;
-  begin
-    alter publication supabase_realtime add table public.post_poll_votes;
-  exception when duplicate_object then
-    null;
-  end;
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    begin
+      alter publication supabase_realtime add table public.direct_messages;
+    exception when duplicate_object then
+      null;
+    end;
+    begin
+      alter publication supabase_realtime add table public.post_poll_votes;
+    exception when duplicate_object then
+      null;
+    end;
+  end if;
 end;
 $$;
