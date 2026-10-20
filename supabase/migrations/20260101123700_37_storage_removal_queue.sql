@@ -558,7 +558,6 @@ begin
         perform public.job_complete(claim_row.id, outcome, handled, job_error);
 
         return query select entry, outcome, claim_row.id, handled, job_error;
-        return;
       end if;
     end loop;
   end loop;

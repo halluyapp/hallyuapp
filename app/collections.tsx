@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { FlatList } from 'react-native';
 import { CollectionCard } from '../components/collections/CollectionCard';
 import { Button } from '../components/ui/Button';
@@ -11,6 +11,8 @@ import { space } from '../constants/theme';
 import { useAuth } from '../lib/auth';
 import { useApp, useLayout } from '../lib/hooks';
 import { myCollections, publicCollections } from '../lib/selectors';
+import { getState } from '../lib/store';
+import { adoptLocal, adoptPublicCollections } from '../lib/sync';
 
 /** Collections index — Community shelves, yours, and the ones you follow. */
 export default function Collections() {
@@ -20,6 +22,14 @@ export default function Collections() {
   const { wc } = useLayout();
   const padding = useListPadding(false);
   const [tab, setTab] = useState<'community' | 'mine' | 'following'>('community');
+
+  useEffect(() => {
+    void adoptPublicCollections({
+      getState,
+      apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+    });
+  }, []);
+
   const data = useMemo(() => (tab === 'community' ? publicCollections(state) : tab === 'mine' ? myCollections(state) : state.collections.filter((c) => state.follows.collections.includes(c.id))), [state, tab]);
   const cols = wc === 'compact' ? 2 : 3;
   return (

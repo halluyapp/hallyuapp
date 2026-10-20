@@ -14,6 +14,8 @@ import { TextField } from '../components/ui/TextField';
 import { useToast } from '../components/ui/Toast';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, radius, sizes, space } from '../constants/theme';
+import { supabase } from '../lib/api/client';
+import { hasSession } from '../lib/api/social';
 import { FANDOMS } from '../lib/fandoms';
 import { haptic, useApp } from '../lib/hooks';
 import { FandomId } from '../lib/model';
@@ -33,11 +35,12 @@ export default function EditProfile() {
   const [favorites, setFavorites] = useState<string[]>(me.favoriteDramaIds.slice(0, 4));
   const [isPrivate, setPrivate] = useState(!!me.isPrivate);
   const [picker, setPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const handleClean = handle.trim().toLowerCase().replace(/^@/, '');
   const handleError = handleClean.length < 3 ? 'At least 3 characters.' : handleClean.length > 20 ? 'Keep it under 20 characters.' : !/^[a-z0-9_]+$/.test(handleClean) ? 'Lowercase letters, numbers and underscores only.' : null;
   const nameError = displayName.trim().length < 2 ? 'Add a display name.' : null;
-  const valid = !handleError && !nameError;
+  const valid = !handleError && !nameError && !saving;
 
   const pickAvatar = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -46,13 +49,26 @@ export default function EditProfile() {
     if (!res.canceled) setAvatarUrl(res.assets[0]!.uri);
   };
 
-  const save = () => {
+  const save = async () => {
     if (!valid) return;
-    dispatch({ type: 'profile', patch: { displayName: displayName.trim(), handle: handleClean, bio: bio.trim() || undefined, avatarUrl, fandoms, favoriteGenres: genres, favoriteDramaIds: favorites, isPrivate } });
-    dispatch({ type: 'onboarding', patch: { fandoms } });
-    haptic.success();
-    toast.show({ message: 'Profile updated', icon: 'checkmark-circle', tone: 'success' });
-    router.back();
+    setSaving(true);
+    try {
+      if (handleClean !== me.handle.toLowerCase() && supabase && hasSession()) {
+        const { data: available, error } = await supabase.rpc('handle_is_available', { p_handle: handleClean });
+        if (!error && available === false) {
+          toast.show({ message: `@${handleClean} is already taken.`, tone: 'danger' });
+          setSaving(false);
+          return;
+        }
+      }
+      dispatch({ type: 'profile', patch: { displayName: displayName.trim(), handle: handleClean, bio: bio.trim() || undefined, avatarUrl, fandoms, favoriteGenres: genres, favoriteDramaIds: favorites, isPrivate } });
+      dispatch({ type: 'onboarding', patch: { fandoms } });
+      haptic.success();
+      toast.show({ message: 'Profile updated', icon: 'checkmark-circle', tone: 'success' });
+      router.back();
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (

@@ -61,7 +61,12 @@ const Ctx = createContext<AuthValue | null>(null);
 const GUEST_KEY = 'hallyu.auth.guest';
 const ACCOUNT_KEY = 'hallyu.auth.account.v1';
 /** Deep link the backend emails return to (declared in supabase/config.toml + app.json scheme). */
-const AUTH_REDIRECT = 'hallyu://auth/callback';
+function authRedirectUrl(): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}/auth/callback`;
+  }
+  return 'hallyu://auth/callback';
+}
 
 const MIN_PASSWORD = 6;
 
@@ -255,7 +260,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data, error } = await supabase.auth.signUp({
         email: address,
         password,
-        options: { data: { display_name: name, full_name: name, handle }, emailRedirectTo: AUTH_REDIRECT },
+        options: { data: { display_name: name, full_name: name, handle }, emailRedirectTo: authRedirectUrl() },
       });
       if (error) throw error;
       await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
@@ -281,7 +286,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!supabase) throw new AuthError('unknown', NO_MAIL);
 
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(address, { redirectTo: AUTH_REDIRECT });
+      const { error } = await supabase.auth.resetPasswordForEmail(address, { redirectTo: authRedirectUrl() });
       if (error) throw error;
       setRecoveryPending(true);
     } catch (e) {
@@ -310,7 +315,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!supabase) throw new AuthError('unknown', NO_MAIL);
 
     try {
-      const { error } = await supabase.auth.resend({ type: 'signup', email: address, options: { emailRedirectTo: AUTH_REDIRECT } });
+      const { error } = await supabase.auth.resend({ type: 'signup', email: address, options: { emailRedirectTo: authRedirectUrl() } });
       if (error) throw error;
     } catch (e) {
       throw mapAuthError(e);

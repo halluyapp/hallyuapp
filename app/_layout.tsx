@@ -26,7 +26,15 @@ import { markBoot } from '../lib/boot';
 import { installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders } from '../lib/reminders';
 import { setDownloadScope } from '../lib/media';
 import { freshMemberState, getState, GUEST_ID, guestState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
-import { adoptBackendState, getSyncFailures, subscribeSyncFailures, type SyncFailure } from '../lib/sync';
+import {
+  adoptBackendState,
+  adoptLocal,
+  adoptPublicState,
+  getSyncFailures,
+  subscribeBackendRealtime,
+  subscribeSyncFailures,
+  type SyncFailure,
+} from '../lib/sync';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -216,6 +224,15 @@ function AccountSync() {
         reset(guestState());
         dispatch({ type: 'prefs', patch: device });
       }
+      if (auth.status === 'guest' || auth.status === 'signedOut') {
+        void adoptPublicState({
+          getState,
+          apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+          addPosts: (posts) => {
+            for (const post of posts) adoptLocal({ type: 'addPost', post });
+          },
+        });
+      }
       return;
     }
 
@@ -281,11 +298,11 @@ function AccountSync() {
         void adoptBackendState({
           getState,
           apply: (patch) => {
-            if (!stale()) dispatch({ type: 'hydrate', state: patch });
+            if (!stale()) adoptLocal({ type: 'hydrate', state: patch });
           },
           addPosts: (posts) => {
             if (stale()) return;
-            for (const post of posts) dispatch({ type: 'addPost', post });
+            for (const post of posts) adoptLocal({ type: 'addPost', post });
           },
           isStale: stale,
         });
@@ -297,6 +314,20 @@ function AccountSync() {
       }
     })();
   }, [auth.status, auth.user, state.hydrated, state.profile.id, reset, state.prefs.reduceMotion, state.prefs.trueBlack, dispatch]);
+
+  useEffect(() => {
+    if (!state.hydrated) return;
+    return subscribeBackendRealtime(
+      {
+        getState,
+        apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+        addPosts: (posts) => {
+          for (const post of posts) adoptLocal({ type: 'addPost', post });
+        },
+      },
+      auth.status === 'signedIn' ? auth.user?.id : null,
+    );
+  }, [state.hydrated, auth.status, auth.user?.id]);
 
   return null;
 }

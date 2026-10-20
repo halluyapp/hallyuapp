@@ -27,6 +27,8 @@ import { adoptActors, adoptDramas } from '../../lib/catalogSync';
 import { Loadable, useApp, useCatalogHealth, useLayout, useLoad, useNetwork } from '../../lib/hooks';
 import { Actor, Drama, GENRES } from '../../lib/model';
 import { publicCollections, shorts, trendingDiscussions, trendingHashtags, worldCounts } from '../../lib/selectors';
+import { getState } from '../../lib/store';
+import { adoptLocal, adoptPublicState } from '../../lib/sync';
 
 const NETFLIX = 8; // TMDB watch-provider id
 
@@ -95,6 +97,13 @@ export default function Explore() {
     netflix.reload();
     faces.reload();
     forYou.reload();
+    void adoptPublicState({
+      getState,
+      apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+      addPosts: (posts) => {
+        for (const post of posts) adoptLocal({ type: 'addPost', post });
+      },
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh.refreshing]);
 

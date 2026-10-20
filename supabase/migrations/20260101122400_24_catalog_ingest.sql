@@ -257,9 +257,10 @@ begin
   payload_hash := md5(
     coalesce(p_payload ->> 'original_title', '') || '|' ||
     coalesce(p_payload ->> 'status', '') || '|' ||
-    coalesce(p_payload ->> 'overview', '') || '|' ||
+    coalesce(p_payload ->> 'synopsis', p_payload ->> 'overview', '') || '|' ||
     coalesce(p_payload ->> 'poster_url', '') || '|' ||
     coalesce(p_payload ->> 'backdrop_url', '') || '|' ||
+    coalesce(p_payload ->> 'trailer_url', '') || '|' ||
     coalesce(p_payload ->> 'runtime_minutes', '') || '|' ||
     coalesce(p_payload ->> 'network', '') || '|' ||
     coalesce(p_payload ->> 'first_air_date', '') || '|' ||
@@ -268,6 +269,7 @@ begin
     coalesce(p_payload ->> 'season_count', '') || '|' ||
     coalesce(p_payload ->> 'popularity', '') || '|' ||
     coalesce(p_payload ->> 'vote_average', '') || '|' ||
+    coalesce((p_payload -> 'streaming_on')::text, '[]') || '|' ||
     coalesce((p_payload -> 'genres')::text, '[]') || '|' ||
     coalesce((p_payload -> 'tags')::text, '[]') || '|' ||
     coalesce((p_payload -> 'origin_country')::text, '[]')
@@ -292,7 +294,7 @@ begin
 
   insert into public.titles as t (
     provider_id, external_id, media_type, world, title, original_title, year, end_year, status,
-    runtime_minutes, original_language, synopsis, poster_url, backdrop_url, tone, genres, tags,
+    runtime_minutes, original_language, synopsis, poster_url, backdrop_url, trailer_url, tone, genres, tags,
     network, streaming_on, airs_on, episode_count, season_count, popularity, vote_average,
     vote_count, origin_country, first_air_date, last_air_date, provider_data, content_hash,
     catalog_synced_at, catalog_missing_count, catalog_unavailable_at
@@ -305,9 +307,10 @@ begin
     status_value,
     nullif(left(p_payload ->> 'runtime_minutes', 4), '')::smallint,
     nullif(left(p_payload ->> 'original_language', 12), ''),
-    left(p_payload ->> 'overview', 2000),
+    nullif(left(coalesce(p_payload ->> 'synopsis', p_payload ->> 'overview'), 2000), ''),
     nullif(left(p_payload ->> 'poster_url', 500), ''),
     nullif(left(p_payload ->> 'backdrop_url', 500), ''),
+    nullif(left(p_payload ->> 'trailer_url', 500), ''),
     nullif(left(p_payload ->> 'tone', 60), ''),
     coalesce((select array_agg(value #>> '{}') from jsonb_array_elements(coalesce(p_payload -> 'genres', '[]'::jsonb)) value), '{}'),
     coalesce((select array_agg(value #>> '{}') from jsonb_array_elements(coalesce(p_payload -> 'tags', '[]'::jsonb)) value), '{}'),
@@ -331,29 +334,30 @@ begin
   on conflict (provider_id, external_id, media_type) do update
     set world = excluded.world,
         title = excluded.title,
-        original_title = excluded.original_title,
+        original_title = coalesce(excluded.original_title, t.original_title),
         year = excluded.year,
         end_year = excluded.end_year,
         status = excluded.status,
-        runtime_minutes = excluded.runtime_minutes,
-        original_language = excluded.original_language,
-        synopsis = excluded.synopsis,
-        poster_url = excluded.poster_url,
-        backdrop_url = excluded.backdrop_url,
-        tone = excluded.tone,
-        genres = excluded.genres,
-        tags = excluded.tags,
-        network = excluded.network,
-        streaming_on = excluded.streaming_on,
-        airs_on = excluded.airs_on,
-        episode_count = excluded.episode_count,
-        season_count = excluded.season_count,
-        popularity = excluded.popularity,
-        vote_average = excluded.vote_average,
-        vote_count = excluded.vote_count,
-        origin_country = excluded.origin_country,
-        first_air_date = excluded.first_air_date,
-        last_air_date = excluded.last_air_date,
+        runtime_minutes = coalesce(excluded.runtime_minutes, t.runtime_minutes),
+        original_language = coalesce(excluded.original_language, t.original_language),
+        synopsis = coalesce(excluded.synopsis, t.synopsis),
+        poster_url = coalesce(excluded.poster_url, t.poster_url),
+        backdrop_url = coalesce(excluded.backdrop_url, t.backdrop_url),
+        trailer_url = coalesce(excluded.trailer_url, t.trailer_url),
+        tone = coalesce(excluded.tone, t.tone),
+        genres = case when cardinality(excluded.genres) > 0 then excluded.genres else t.genres end,
+        tags = case when cardinality(excluded.tags) > 0 then excluded.tags else t.tags end,
+        network = coalesce(excluded.network, t.network),
+        streaming_on = case when cardinality(excluded.streaming_on) > 0 then excluded.streaming_on else t.streaming_on end,
+        airs_on = coalesce(excluded.airs_on, t.airs_on),
+        episode_count = greatest(excluded.episode_count, t.episode_count),
+        season_count = greatest(excluded.season_count, t.season_count),
+        popularity = coalesce(excluded.popularity, t.popularity),
+        vote_average = coalesce(excluded.vote_average, t.vote_average),
+        vote_count = greatest(excluded.vote_count, t.vote_count),
+        origin_country = case when cardinality(excluded.origin_country) > 0 then excluded.origin_country else t.origin_country end,
+        first_air_date = coalesce(excluded.first_air_date, t.first_air_date),
+        last_air_date = coalesce(excluded.last_air_date, t.last_air_date),
         provider_data = excluded.provider_data,
         content_hash = excluded.content_hash,
         catalog_synced_at = now(),
@@ -521,7 +525,7 @@ begin
         nullif(item ->> 'air_date', '')::date,
         nullif(left(item ->> 'air_time', 8), '')::time,
         nullif(left(item ->> 'runtime_minutes', 4), '')::smallint,
-        left(item ->> 'overview', 2000),
+        left(coalesce(item ->> 'synopsis', item ->> 'overview'), 2000),
         nullif(left(item ->> 'still_url', 500), ''),
         coalesce(nullif(item ->> 'episode_type', '')::smallint, 1),
         now()
@@ -674,6 +678,7 @@ begin
       jsonb_build_object(
         'external_id', item ->> 'external_id',
         'name', item ->> 'name',
+        'korean_name', item ->> 'korean_name',
         'photo_url', item ->> 'photo_url'
       )
     );

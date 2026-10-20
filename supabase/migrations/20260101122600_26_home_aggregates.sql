@@ -29,22 +29,26 @@ declare
   wanted_worlds text[];
   out_payload jsonb;
 begin
-  if actor is null then
-    raise exception 'authentication required' using errcode = 'insufficient_privilege';
+  -- The worlds this member actually cares about: their selection, or every world when unset.
+  if actor is not null then
+    select coalesce(
+      (select array_agg(w) from unnest(
+         case
+           when p_worlds is not null and cardinality(p_worlds) > 0 then p_worlds
+           else coalesce(p.worlds, '{}')
+         end
+       ) w where exists (select 1 from public.worlds k where k.id = w)),
+      '{}'
+    )
+    into wanted_worlds
+    from public.profiles p where p.id = actor;
   end if;
 
-  -- The worlds this member actually cares about: their selection, or every world when unset.
-  select coalesce(
-    (select array_agg(w) from unnest(
-       case
-         when p_worlds is not null and cardinality(p_worlds) > 0 then p_worlds
-         else coalesce(p.worlds, '{}')
-       end
-     ) w where exists (select 1 from public.worlds k where k.id = w)),
+  wanted_worlds := coalesce(
+    wanted_worlds,
+    (select array_agg(w) from unnest(coalesce(p_worlds, '{}')) w where exists (select 1 from public.worlds k where k.id = w)),
     '{}'
-  )
-  into wanted_worlds
-  from public.profiles p where p.id = actor;
+  );
 
   out_payload := jsonb_build_object(
     'worlds', to_jsonb(wanted_worlds),
@@ -215,7 +219,7 @@ end;
 $$;
 
 revoke all on function public.get_home_discovery(text[], integer) from public, anon, authenticated;
-grant execute on function public.get_home_discovery(text[], integer) to authenticated;
+grant execute on function public.get_home_discovery(text[], integer) to anon, authenticated;
 
 -- Per-world rails in one call: the world selector on Home renders these as tabs.
 create or replace function public.get_world_discoveries(p_limit integer default 12)
@@ -310,7 +314,7 @@ begin
     'cast', coalesce((
       select jsonb_agg(to_jsonb(c) order by c.order_index)
       from (
-        select pe.id, pe.name, pe.korean_name, pe.photo_url, tp.character, tp.job, tp.order_index
+        select pe.id, pe.external_id, pe.name, pe.korean_name, pe.photo_url, tp.character, tp.job, tp.order_index
         from public.title_people tp
         join public.people pe on pe.id = tp.person_id
         where tp.title_id = p_title_id

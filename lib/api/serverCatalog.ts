@@ -113,7 +113,15 @@ interface DiscoveryEpisode {
 interface DiscoveryPayload {
   title?: Partial<TitleRow> & { id: string };
   episodes?: DiscoveryEpisode[];
-  cast?: { external_id: string; name: string; character?: string | null; order_index?: number | null; photo_url?: string | null }[];
+  cast?: {
+    id?: string;
+    external_id?: string | null;
+    name: string;
+    korean_name?: string | null;
+    character?: string | null;
+    order_index?: number | null;
+    photo_url?: string | null;
+  }[];
   similar?: SlimTitleRow[];
 }
 
@@ -254,13 +262,24 @@ function memo<T>(key: string, run: () => Promise<T>): Promise<T> {
 /** TMDB watch-provider id → the streaming label the backend stores on titles.streaming_on. */
 const PROVIDER_NAMES: Record<number, string> = {
   8: 'Netflix',
+  1796: 'Netflix',
   9: 'Prime Video',
+  119: 'Prime Video',
   15: 'Hulu',
   337: 'Disney+',
   350: 'Apple TV+',
-  1899: 'HBO Max',
+  1899: 'Max',
+  384: 'Max',
   283: 'Crunchyroll',
   1968: 'Crunchyroll',
+  344: 'Viki',
+  444: 'Viki',
+  581: 'iQIYI',
+  623: 'WeTV',
+  158: 'Viu',
+  97: 'Watcha',
+  356: 'Wavve',
+  1715: 'TVING',
 };
 
 /** Find the title UUID behind a TMDB provider id (the direct table read the hub screens use). */
@@ -364,18 +383,22 @@ export const serverProvider: CatalogProvider = {
         .map(([number, count]) => ({ number, episodeCount: count, year: drama.year }));
 
       const castActors: Actor[] = [];
-      drama.cast = (payload.cast ?? []).map((c, index) => {
-        const actorId = `tmdb-${c.external_id}`;
-        castActors.push({
-          id: actorId,
-          name: c.name,
-          photoUrl: c.photo_url ?? undefined,
-          knownFor: [],
-          followerCount: 0,
-          provider: { name: 'tmdb', id: Number(c.external_id) },
+      drama.cast = (payload.cast ?? [])
+        .filter((c) => Boolean(c.external_id))
+        .map((c, index) => {
+          const extId = String(c.external_id);
+          const actorId = `tmdb-${extId}`;
+          castActors.push({
+            id: actorId,
+            name: c.name,
+            koreanName: c.korean_name ?? undefined,
+            photoUrl: c.photo_url ?? undefined,
+            knownFor: [],
+            followerCount: 0,
+            provider: { name: 'tmdb', id: Number(extId) },
+          });
+          return { actorId, role: c.character || 'Cast', order: c.order_index ?? index };
         });
-        return { actorId, role: c.character || 'Cast', order: c.order_index ?? index };
-      });
       if (castActors.length) drama.castActors = castActors;
       return drama;
     }, signal);
@@ -411,7 +434,7 @@ export const serverProvider: CatalogProvider = {
       const { data, error } = await supabase!
         .from('title_people')
         .select('character, order_index, titles(*)')
-        .eq('external_id', person.external_id)
+        .eq('person_id', person.id)
         .order('order_index', { ascending: true })
         .limit(40)
         .abortSignal(signal!);
@@ -638,8 +661,10 @@ export const serverProvider: CatalogProvider = {
         const { data, error } = await supabase!
           .from('people')
           .select('*')
+          .not('photo_url', 'is', null)
           .order('follower_count', { ascending: false, nullsFirst: false })
-          .limit(16)
+          .order('known_for_count', { ascending: false, nullsFirst: false })
+          .limit(20)
           .abortSignal(signal!);
         if (error) throw new CatalogError(`people failed: ${error.message}`, 500);
         return ((data ?? []) as (PersonRow & { external_id: string })[]).map((r) => toActor(r, r.external_id));

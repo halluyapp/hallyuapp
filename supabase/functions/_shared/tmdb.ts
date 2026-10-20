@@ -1,314 +1,416 @@
-// Shared TMDB client for the Hallyu Edge Functions.
+// TMDB client and payload normaliser for the catalog ingest Edge Function.
 //
-// TMDB stays behind the backend. Nothing in the app talks to it directly, and no credential from
-// this file is ever returned to a caller: the access token is read from the function environment
-// (set with `supabase secrets set`) and only ever used as an outbound Authorization header.
-//
-// The token is a *read-only* credential, which is why it is safe to fetch from here rather than
-// hiding it in the database: it grants no write access to anything, and keeping it out of the app
-// bundle means rotating it does not require shipping a new APK.
+// Everything TMDB-specific lives here so the function itself deals only in Hallyu's own payload
+// shapes (the ones `catalog_upsert_*` in migration 24 accept). A second provider later means a
+// second file next to this one, not a rewrite of the sync job.
 
-export const TMDB_BASE = Deno.env.get('TMDB_API_BASE') ?? 'https://api.themoviedb.org/3';
-// Credentials come from the function environment. The fallbacks are the SAME public, read-only,
-// write-less TMDB catalog credential the client app ships in constants/keys.ts (allow-listed by
-// value in scripts/lib/secret-scan.mjs). Set TMDB_ACCESS_TOKEN / TMDB_API_KEY function secrets to
-// override; never put a privileged credential here.
-export const TMDB_TOKEN = Deno.env.get('TMDB_ACCESS_TOKEN') ?? 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJmZjAxZjI4ZmM1YzQ3NzkxZTI4MDM4MzQ5NDQ1YmY1OCIsIm5iZiI6MTc4OTAyMDA1Ny43NzksInN1YiI6IjZhYTI0Nzk5OGQ1YWFjZTczMzY2ODJkMyIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.ETon7kqWQjj7jtJJOXyRgAWme9Sh9B7OUrdAI61uuH8';
-export const TMDB_API_KEY = Deno.env.get('TMDB_API_KEY') ?? 'ff01f28fc5c47791e28038349445bf58';
+const TMDB_BASE = 'https://api.themoviedb.org/3';
+const IMAGE_BASE = 'https://image.tmdb.org/t/p';
 
-/** TMDB image CDN. Posters and backdrops are referenced by absolute URL from the ingest payload. */
-export const TMDB_IMAGE_BASE = Deno.env.get('TMDB_IMAGE_BASE') ?? 'https://image.tmdb.org/t/p';
+const DEFAULT_PUBLIC_READ_TOKEN =
+  'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJmZjAxZjI4ZmM1YzQ3NzkxZTI4MDM4MzQ5NDQ1YmY1OCIsIm5iZiI6MTc4OTAyMDA1Ny43NzksInN1YiI6IjZhYTI0Nzk5OGQ1YWFjZTczMzY2ODJkMyIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.ETon7kqWQjj7jtJJOXyRgAWme9Sh9B7OUrdAI61uuH8';
+
+const ACCESS_TOKEN = (Deno.env.get('TMDB_ACCESS_TOKEN') ?? '').trim() || DEFAULT_PUBLIC_READ_TOKEN;
+const API_KEY = (Deno.env.get('TMDB_API_KEY') ?? '').trim();
 
 export class TmdbError extends Error {
-  readonly status: number;
-  readonly retryAfterSeconds: number | null;
-
-  constructor(message: string, status: number, retryAfterSeconds: number | null = null) {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly retryAfterSeconds: number | null = null,
+  ) {
     super(message);
-    this.name = 'TmdbError';
-    this.status = status;
-    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
 export function tmdbConfigured(): boolean {
-  return Boolean(TMDB_TOKEN || TMDB_API_KEY);
+  return Boolean(ACCESS_TOKEN || API_KEY);
 }
 
-interface TmdbRequest {
+export interface RequestOptions {
   path: string;
-  query?: Record<string, string | number | boolean | undefined>;
-  signal?: AbortSignal;
+  query?: Record<string, string | number | undefined>;
 }
 
-/**
- * One TMDB request.
- *
- * v4 bearer token when one is configured, v3 api_key otherwise. Rate limiting (429) surfaces as a
- * `retryAfterSeconds` so the caller can record a backoff instead of hammering the API, and a 404 is
- * a normal "this record is gone" answer rather than an error to retry.
- */
-export async function tmdb<T>({ path, query, signal }: TmdbRequest): Promise<T> {
+/** One GET against TMDB, with a timeout and structured error reporting. */
+export async function tmdb<T>({ path, query = {} }: RequestOptions): Promise<T> {
   if (!tmdbConfigured()) {
-    throw new TmdbError('no TMDB credential is configured for this function', 0);
+    throw new TmdbError('TMDB credentials are not configured', 503);
   }
 
   const url = new URL(`${TMDB_BASE}/${path.replace(/^\//, '')}`);
-  for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined) url.searchParams.set(key, String(value));
+  url.searchParams.set('language', 'en-US');
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') url.searchParams.set(key, String(value));
   }
-  // The v3 key is only appended when there is no v4 token, so a bearer-only deployment never leaks
-  // the key into a URL that ends up in a log line.
-  if (!TMDB_TOKEN && TMDB_API_KEY) url.searchParams.set('api_key', TMDB_API_KEY);
+  if (!ACCESS_TOKEN && API_KEY) url.searchParams.set('api_key', API_KEY);
 
-  const response = await fetch(url.toString(), {
-    signal,
-    headers: {
-      accept: 'application/json',
-      ...(TMDB_TOKEN ? { Authorization: `Bearer ${TMDB_TOKEN}` } : {}),
-    },
-  });
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (ACCESS_TOKEN) headers.Authorization = `Bearer ${ACCESS_TOKEN}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+
+  let response: Response;
+  try {
+    response = await fetch(url, { headers, signal: controller.signal });
+  } catch (error) {
+    throw new TmdbError(`network error talking to TMDB: ${(error as Error).message}`, 502);
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (response.status === 429) {
-    const retryAfter = Number(response.headers.get('retry-after') ?? '60');
-    throw new TmdbError('rate limited by TMDB', 429, Number.isFinite(retryAfter) ? retryAfter : 60);
-  }
-
-  if (response.status === 404) {
-    throw new TmdbError(`not found: ${path}`, 404);
+    const retry = Number(response.headers.get('retry-after'));
+    throw new TmdbError('TMDB rate limit reached', 429, Number.isFinite(retry) ? retry : 60);
   }
 
   if (!response.ok) {
-    throw new TmdbError(`TMDB responded ${response.status}`, response.status);
+    const snippet = (await response.text().catch(() => '')).slice(0, 200);
+    throw new TmdbError(`TMDB ${response.status} on ${path}: ${snippet}`, response.status);
   }
 
   return (await response.json()) as T;
 }
 
-/** Poster/backdrop URL for a TMDB image path, at a chosen size. */
-export function imageUrl(path: string | null | undefined, size: 'w185' | 'w342' | 'w500' | 'original' = 'w500'): string | null {
-  if (!path) return null;
-  return `${TMDB_IMAGE_BASE}/${size}${path}`;
+// ---------------------------------------------------------------------------------------------
+// Genre, streaming provider and world mapping
+// ---------------------------------------------------------------------------------------------
+
+const TMDB_GENRE_NAMES: Record<number, string[]> = {
+  12: ['Adventure'],
+  14: ['Fantasy'],
+  16: ['Animation'],
+  18: ['Drama'],
+  27: ['Horror'],
+  28: ['Action'],
+  35: ['Comedy'],
+  36: ['Historical'],
+  37: ['Western'],
+  53: ['Thriller'],
+  80: ['Crime'],
+  99: ['Documentary'],
+  878: ['Sci-Fi'],
+  9648: ['Mystery'],
+  10402: ['Music'],
+  10749: ['Romance'],
+  10751: ['Family'],
+  10752: ['War'],
+  10759: ['Action', 'Adventure'],
+  10762: ['Kids'],
+  10764: ['Reality'],
+  10765: ['Sci-Fi', 'Fantasy'],
+  10766: ['Melodrama'],
+  10768: ['Historical', 'Politics'],
+};
+
+function expandGenreName(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  if (trimmed === 'Sci-Fi & Fantasy' || trimmed === 'Science Fiction') return trimmed === 'Science Fiction' ? ['Sci-Fi'] : ['Sci-Fi', 'Fantasy'];
+  if (trimmed === 'Action & Adventure') return ['Action', 'Adventure'];
+  if (trimmed === 'War & Politics') return ['Historical', 'Politics'];
+  if (trimmed === 'History') return ['Historical'];
+  if (trimmed === 'Soap') return ['Melodrama'];
+  return [trimmed];
 }
 
-// -----------------------------------------------------------------------------------------------
-// Normalisation
-// -----------------------------------------------------------------------------------------------
-//
-// TMDB is the only place these shapes exist. The payload objects below are exactly what
-// `catalog_upsert_title`, `catalog_upsert_episodes` and `catalog_upsert_title_people` expect, so
-// adding a field to the catalog means changing the normaliser and the SQL, never the client.
+function normalizeGenres(
+  genres?: { id: number; name: string }[],
+  genreIds?: number[],
+): string[] {
+  const seen = new Set<string>();
+  const add = (label: string) => {
+    for (const part of expandGenreName(label)) {
+      if (part && seen.size < 8) seen.add(part);
+    }
+  };
+  for (const g of genres ?? []) add(g.name);
+  for (const id of genreIds ?? []) {
+    for (const label of TMDB_GENRE_NAMES[id] ?? []) add(label);
+  }
+  return [...seen];
+}
+
+const CANONICAL_PROVIDERS: [RegExp, string][] = [
+  [/netflix/i, 'Netflix'],
+  [/rakuten viki|^viki$/i, 'Viki'],
+  [/disney/i, 'Disney+'],
+  [/amazon prime|prime video/i, 'Prime Video'],
+  [/crunchyroll/i, 'Crunchyroll'],
+  [/apple tv/i, 'Apple TV+'],
+  [/\bmax\b|hbo max/i, 'Max'],
+  [/\bhulu\b/i, 'Hulu'],
+  [/iqiyi/i, 'iQIYI'],
+  [/wetv|tencent/i, 'WeTV'],
+  [/youku/i, 'Youku'],
+  [/kocowa/i, 'KOCOWA+'],
+  [/paramount/i, 'Paramount+'],
+  [/peacock/i, 'Peacock'],
+  [/tvn|tving/i, 'TVING'],
+  [/wavve/i, 'Wavve'],
+  [/coupang/i, 'Coupang Play'],
+  [/bilibili/i, 'Bilibili'],
+  [/tubi/i, 'Tubi'],
+];
+
+function canonicalProviderName(raw: string): string | null {
+  const clean = raw.trim();
+  if (!clean) return null;
+  for (const [pattern, target] of CANONICAL_PROVIDERS) {
+    if (pattern.test(clean)) return target;
+  }
+  return clean.length <= 28 ? clean : null;
+}
+
+export interface WatchProviderRegion {
+  flatrate?: { provider_name: string }[];
+  ads?: { provider_name: string }[];
+  free?: { provider_name: string }[];
+}
+
+const PRIORITY_REGIONS = ['US', 'KR', 'GB', 'NG', 'JP', 'SG', 'CA', 'AU', 'TW'];
+
+function extractStreamingProviders(
+  watchProviders?: { results?: Record<string, WatchProviderRegion> },
+  networks?: { name: string }[],
+): string[] {
+  const found = new Set<string>();
+  const results = watchProviders?.results ?? {};
+
+  for (const region of PRIORITY_REGIONS) {
+    const entry = results[region];
+    if (!entry) continue;
+    for (const p of [...(entry.flatrate ?? []), ...(entry.free ?? []), ...(entry.ads ?? [])]) {
+      const canonical = canonicalProviderName(p.provider_name);
+      if (canonical && found.size < 6) found.add(canonical);
+    }
+  }
+
+  for (const net of networks ?? []) {
+    const canonical = canonicalProviderName(net.name);
+    if (canonical && found.size < 6 && /^(Netflix|Disney\+|Prime Video|Apple TV\+|Max|Hulu|Crunchyroll|iQIYI|WeTV|TVING|Wavve)$/i.test(canonical)) {
+      found.add(canonical);
+    }
+  }
+
+  return [...found];
+}
+
+function extractTrailerUrl(videos?: { results?: { site?: string; type?: string; official?: boolean; key?: string }[] }): string | null {
+  const list = videos?.results ?? [];
+  const best =
+    list.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official && v.key) ??
+    list.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.key) ??
+    list.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.key);
+  return best?.key ? `https://www.youtube.com/watch?v=${best.key}` : null;
+}
+
+export function worldFor(language: string | null | undefined, countries: string[] | undefined): string {
+  const lang = (language ?? '').toLowerCase();
+  const origin = new Set((countries ?? []).map((c) => c.toUpperCase()));
+
+  if (lang === 'ko' || origin.has('KR')) return 'kdrama';
+  if (lang === 'zh' || lang === 'cn' || origin.has('CN') || origin.has('TW') || origin.has('HK')) {
+    return 'cdrama';
+  }
+  if (lang === 'ja' || origin.has('JP')) return 'anime';
+  return 'hollywood';
+}
+
+function statusFor(raw: string | undefined, releaseDate: string | null): string {
+  const s = (raw ?? '').toLowerCase();
+  if (s === 'canceled' || s === 'cancelled') return 'canceled';
+  if (s === 'ended') return 'completed';
+  if (s === 'returning series') return 'airing';
+  if (s.includes('production') || s === 'planned' || s === 'rumored' || s === 'pilot') {
+    return 'upcoming';
+  }
+  if (s === 'released') {
+    if (releaseDate && releaseDate > new Date().toISOString().slice(0, 10)) return 'upcoming';
+    return 'completed';
+  }
+  if (releaseDate && releaseDate > new Date().toISOString().slice(0, 10)) return 'upcoming';
+  return 'airing';
+}
+
+function image(path: string | null | undefined, size: string): string | null {
+  return path ? `${IMAGE_BASE}/${size}${path}` : null;
+}
 
 export interface TmdbTitle {
   id: number;
   media_type?: 'tv' | 'movie';
   name?: string;
+  title?: string;
   original_name?: string;
   original_title?: string;
-  title?: string;
+  original_language?: string;
+  origin_country?: string[];
+  production_countries?: { iso_3166_1: string }[];
   overview?: string;
+  poster_path?: string | null;
+  backdrop_path?: string | null;
   first_air_date?: string;
   last_air_date?: string;
   release_date?: string;
   status?: string;
-  poster_path?: string | null;
-  backdrop_path?: string | null;
+  number_of_episodes?: number;
+  number_of_seasons?: number;
+  episode_run_time?: number[];
+  runtime?: number;
+  genres?: { id: number; name: string }[];
+  genre_ids?: number[];
+  networks?: { name: string }[];
   vote_average?: number;
   vote_count?: number;
   popularity?: number;
-  episode_run_time?: number[];
-  runtime?: number | null;
-  origin_country?: string[];
-  genres?: Array<{ id: number; name: string }>;
-  networks?: Array<{ id: number; name: string }>;
-  episode_run_times?: number[];
-  original_language?: string;
-  number_of_seasons?: number;
-  number_of_episodes?: number;
-  credits?: TmdbCredits;
-  external_ids?: Record<string, string | number>;
-}
-
-export interface TmdbCredits {
-  cast?: Array<{
-    id: number;
-    name: string;
-    character?: string;
-    order?: number;
-    profile_path?: string | null;
-  }>;
-  crew?: Array<{ id: number; name: string; job?: string; profile_path?: string | null }>;
+  next_episode_to_air?: { air_date?: string } | null;
+  credits?: { cast?: TmdbCastMember[]; crew?: TmdbCrewMember[] };
+  videos?: { results?: { site?: string; type?: string; official?: boolean; key?: string }[] };
+  'watch/providers'?: { results?: Record<string, WatchProviderRegion> };
+  [key: `season/${number}`]: TmdbSeason | undefined;
 }
 
 export interface TmdbSeason {
+  season_number: number;
+  episodes?: {
+    episode_number: number;
+    name?: string;
+    overview?: string;
+    air_date?: string | null;
+    runtime?: number | null;
+    still_path?: string | null;
+    episode_type?: string;
+  }[];
+}
+
+export interface TmdbCastMember {
   id: number;
-  season_number: number;
-  name?: string;
-  air_date?: string;
-  episodes?: TmdbEpisode[];
+  name: string;
+  original_name?: string;
+  character?: string;
+  order?: number;
+  profile_path?: string | null;
+  popularity?: number;
 }
 
-export interface TmdbEpisode {
-  season_number: number;
-  episode_number: number;
-  name?: string;
-  overview?: string;
-  air_date?: string;
-  runtime?: number | null;
-  still_path?: string | null;
-  episode_type?: number;
+export interface TmdbCrewMember {
+  id: number;
+  name: string;
+  original_name?: string;
+  job?: string;
+  profile_path?: string | null;
+  popularity?: number;
 }
 
-/** TMDB's status vocabulary → the four states Hallyu stores. */
-export function mapStatus(raw: string | undefined): 'upcoming' | 'airing' | 'completed' | 'canceled' {
-  switch ((raw ?? '').toLowerCase()) {
-    case 'returning series':
-      return 'airing';
-    case 'ended':
-      return 'completed';
-    case 'in production':
-    case 'planned':
-    case 'post production':
-      return 'upcoming';
-    case 'canceled':
-    case 'cancelled':
-      return 'canceled';
-    default:
-      // "Unknown", or a value TMDB adds later. Airing is the least surprising fallback; the
-      // database derives the real state from the air dates immediately afterwards.
-      return 'airing';
-  }
-}
-
-/**
- * Chooses Hallyu's world from TMDB's own signals: origin country first, then original language.
- * This is the only place the mapping lives, so "trending K-dramas" means one definition.
- */
-export function worldFor(raw: {
-  originCountry?: string[];
-  originalLanguage?: string;
-  genres?: string[];
-}): string {
-  const countries = (raw.originCountry ?? []).map((c) => c.toUpperCase());
-
-  if (countries.includes('KR')) return 'kdrama';
-  if (countries.includes('CN') || countries.includes('TW') || countries.includes('HK')) return 'cdrama';
-  if (countries.includes('JP')) return 'anime';
-
-  const language = (raw.originalLanguage ?? '').toLowerCase();
-  if (language === 'ko') return 'kdrama';
-  if (language === 'zh' || language === 'cn' || language === 'ja-tw') return 'cdrama';
-  if (language === 'ja') return 'anime';
-
-  const genres = (raw.genres ?? []).map((g) => g.toLowerCase());
-  if (genres.includes('animation')) return 'anime';
-  if (genres.includes('romance') && language.startsWith('ko')) return 'kdrama';
-
-  return 'hollywood';
-}
-
-/** `2011-04-17` → 2011; a movie with no date falls back to the current year so ingest can proceed. */
-export function yearFor(raw: TmdbTitle): number {
-  const date = raw.first_air_date ?? raw.release_date;
-  const parsed = date ? Number(date.slice(0, 4)) : NaN;
-  return Number.isFinite(parsed) && parsed >= 1888 && parsed <= 2200 ? parsed : new Date().getUTCFullYear();
-}
-
-/** Normalises a TMDB detail payload into the `catalog_upsert_title` argument. */
+/** Shape `catalog_upsert_title` expects (migration 24). */
 export function normalizeTitle(raw: TmdbTitle, mediaType: 'tv' | 'movie'): Record<string, unknown> {
-  const name = (mediaType === 'tv' ? raw.name : raw.title) ?? '';
-  const original = (mediaType === 'tv' ? raw.original_name : raw.original_title) ?? null;
+  const countries =
+    raw.origin_country ?? raw.production_countries?.map((c) => c.iso_3166_1) ?? [];
+  const firstAir = (mediaType === 'tv' ? raw.first_air_date : raw.release_date) || null;
+  const lastAir = (mediaType === 'tv' ? raw.last_air_date : raw.release_date) || null;
+  const year = firstAir ? Number(firstAir.slice(0, 4)) : new Date().getUTCFullYear();
+  const runtime =
+    mediaType === 'tv'
+      ? raw.episode_run_time?.[0] ?? null
+      : raw.runtime ?? null;
+
+  const streamingOn = extractStreamingProviders(raw['watch/providers'], raw.networks);
+  const trailerUrl = extractTrailerUrl(raw.videos);
 
   return {
     external_id: String(raw.id),
     media_type: mediaType,
-    world: worldFor({
-      originCountry: raw.origin_country,
-      originalLanguage: raw.original_language,
-      genres: raw.genres?.map((g) => g.name),
-    }),
-    title: name,
-    original_title: original,
-    year: yearFor(raw),
-    status: mapStatus(raw.status),
-    popularity: raw.popularity ?? null,
-    vote_average: raw.vote_average ?? null,
-    vote_count: raw.vote_count ?? 0,
-    overview: raw.overview ?? null,
-    poster_url: imageUrl(raw.poster_path, 'w500'),
-    backdrop_url: imageUrl(raw.backdrop_path, 'original'),
-    runtime_minutes:
-      mediaType === 'tv'
-        ? (raw.episode_run_time?.[0] ?? raw.runtime ?? null)
-        : (raw.runtime ?? null),
+    world: worldFor(raw.original_language, countries),
+    title: (raw.name ?? raw.title ?? 'Untitled').trim(),
+    original_title: (raw.original_name ?? raw.original_title ?? '').trim() || null,
     original_language: raw.original_language ?? null,
-    genres: raw.genres?.map((g) => g.name) ?? [],
+    origin_country: countries,
+    year: Number.isFinite(year) && year > 1880 ? year : new Date().getUTCFullYear(),
+    end_year: lastAir ? Number(lastAir.slice(0, 4)) || null : null,
+    first_air_date: firstAir,
+    last_air_date: lastAir,
+    next_episode_at: raw.next_episode_to_air?.air_date
+      ? `${raw.next_episode_to_air.air_date}T21:00:00Z`
+      : null,
+    status: statusFor(raw.status, firstAir),
+    episode_count: mediaType === 'tv' ? raw.number_of_episodes ?? 0 : 1,
+    season_count: mediaType === 'tv' ? Math.max(1, raw.number_of_seasons ?? 1) : 1,
+    runtime_minutes: runtime && runtime > 0 ? runtime : null,
+    synopsis: (raw.overview ?? '').trim() || null,
+    poster_url: image(raw.poster_path, 'w500'),
+    backdrop_url: image(raw.backdrop_path, 'w1280'),
+    trailer_url: trailerUrl,
+    genres: normalizeGenres(raw.genres, raw.genre_ids),
+    streaming_on: streamingOn,
     network: raw.networks?.[0]?.name ?? null,
-    origin_country: raw.origin_country ?? [],
-    first_air_date: raw.first_air_date ?? null,
-    last_air_date: raw.last_air_date ?? null,
-    episode_count: raw.number_of_episodes ?? 0,
-    season_count: raw.number_of_seasons ?? 0,
-    provider_data: {
-      // Provider extras Hallyu does not model. Deliberately not a credential and not a trailer URL:
-      // trailers are out of scope for this backend.
-      tmdb_votes_average: raw.vote_average ?? null,
-      tmdb_votes_count: raw.vote_count ?? null,
-    },
+    vote_average: typeof raw.vote_average === 'number' ? Math.round(raw.vote_average * 100) / 100 : null,
+    vote_count: raw.vote_count ?? 0,
+    popularity: raw.popularity ?? null,
+    provider_data: { status: raw.status ?? null },
   };
 }
 
-/** Normalises a season into the `catalog_upsert_episodes` argument. */
-export function normalizeSeason(season: TmdbSeason): Array<Record<string, unknown>> {
-  return (season.episodes ?? []).map((e) => ({
-    season: season.season_number,
-    number: e.episode_number,
-    title: e.name ?? null,
-    air_date: e.air_date ?? null,
-    runtime_minutes: e.runtime ?? null,
-    overview: e.overview ?? null,
-    still_url: imageUrl(e.still_path, 'w300'),
-    episode_type: e.episode_type ?? 1,
-  }));
-}
-
-/** Normalises credits into the `catalog_upsert_title_people` argument. */
-export function normalizeCredits(credits: TmdbCredits | undefined): Array<Record<string, unknown>> {
-  if (!credits) return [];
-
-  const crewJobs: Record<string, string> = {
-    Director: 'director',
-    Writer: 'writer',
-    Producer: 'producer',
-    Creator: 'creator',
-  };
-
-  const cast = (credits.cast ?? []).slice(0, 30).map((c) => ({
-    external_id: String(c.id),
-    name: c.name,
-    photo_url: imageUrl(c.profile_path, 'w185'),
-    job: 'actor',
-    character: c.character ?? null,
-    order_index: c.order ?? 0,
-  }));
-
-  const crew = (credits.crew ?? [])
-    .filter((c) => crewJobs[c.job ?? ''] !== undefined)
-    .slice(0, 20)
-    .map((c, index) => ({
-      external_id: String(c.id),
-      name: c.name,
-      photo_url: imageUrl(c.profile_path, 'w185'),
-      job: crewJobs[c.job as string],
-      order_index: 1000 + index,
+/** Shape `catalog_upsert_episodes` expects. */
+export function normalizeSeason(season: TmdbSeason): Record<string, unknown>[] {
+  return (season.episodes ?? [])
+    .filter((ep) => ep.episode_number >= 1)
+    .map((ep) => ({
+      number: ep.episode_number,
+      title: ep.name?.trim() || null,
+      synopsis: ep.overview?.trim() || null,
+      air_date: ep.air_date || null,
+      runtime_minutes: ep.runtime && ep.runtime > 0 ? ep.runtime : null,
+      still_url: image(ep.still_path, 'w500'),
+      episode_type: ep.episode_type === 'finale' ? 2 : 0,
     }));
+}
 
-  // A person can be both cast and crew on one title; the cast entry wins because it is first.
-  const seen = new Set<string>();
-  return [...cast, ...crew].filter((entry) => {
-    const key = String(entry.external_id);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+const CREW_JOBS: Record<string, string> = {
+  Director: 'director',
+  'Series Director': 'director',
+  Writer: 'writer',
+  Screenplay: 'writer',
+  'Series Composition': 'writer',
+  'Original Story': 'creator',
+  Producer: 'producer',
+  'Executive Producer': 'producer',
+  Creator: 'creator',
+};
+
+/** Shape `catalog_upsert_title_people` expects. */
+export function normalizeCredits(credits: TmdbTitle['credits']): Record<string, unknown>[] {
+  if (!credits) return [];
+  const out: Record<string, unknown>[] = [];
+
+  for (const member of (credits.cast ?? []).slice(0, 18)) {
+    out.push({
+      external_id: String(member.id),
+      name: member.name,
+      korean_name: member.original_name && member.original_name !== member.name ? member.original_name : null,
+      photo_url: image(member.profile_path, 'w300'),
+      popularity: member.popularity ?? null,
+      job: 'actor',
+      character: member.character?.trim() || null,
+      order_index: member.order ?? 0,
+    });
+  }
+
+  for (const member of credits.crew ?? []) {
+    const job = CREW_JOBS[member.job ?? ''];
+    if (!job) continue;
+    out.push({
+      external_id: String(member.id),
+      name: member.name,
+      korean_name: member.original_name && member.original_name !== member.name ? member.original_name : null,
+      photo_url: image(member.profile_path, 'w300'),
+      popularity: member.popularity ?? null,
+      job,
+      character: null,
+      order_index: 0,
+    });
+  }
+
+  return out;
 }

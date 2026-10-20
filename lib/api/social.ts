@@ -17,6 +17,7 @@
 import type { Collection, Comment, NotificationGroup, Post, ReactionKind, User } from '../model';
 import type { Prefs } from '../store';
 import { getBackendAccessToken, supabase } from './client';
+import { uploadAvatar } from './media';
 
 /** True when a real backend session exists (Supabase client + a member access token). */
 export function hasSession(): boolean {
@@ -56,9 +57,10 @@ export function resolveTitleUuid(clientId?: string | null): Promise<string | nul
   const cached = titleIdBySlug.get(clientId);
   if (cached) return cached;
   const run = (async (): Promise<string | null> => {
+    if (!supabase) return null;
     const parsed = parseProviderSlug(clientId);
     if (!parsed) return null;
-    const exact = await db()
+    const exact = await supabase
       .from('titles')
       .select('id')
       .eq('external_id', parsed.external)
@@ -66,7 +68,7 @@ export function resolveTitleUuid(clientId?: string | null): Promise<string | nul
       .limit(1);
     if (exact.error) return null;
     if (exact.data?.length) return exact.data[0].id as string;
-    const loose = await db().from('titles').select('id').eq('external_id', parsed.external).limit(1);
+    const loose = await supabase.from('titles').select('id').eq('external_id', parsed.external).limit(1);
     return loose.error ? null : ((loose.data?.[0]?.id as string | undefined) ?? null);
   })().catch(() => null);
   titleIdBySlug.set(clientId, run);
@@ -80,9 +82,10 @@ export function resolvePersonUuid(clientId?: string | null): Promise<string | nu
   const cached = personIdBySlug.get(clientId);
   if (cached) return cached;
   const run = (async (): Promise<string | null> => {
+    if (!supabase) return null;
     const parsed = parseProviderSlug(clientId);
     if (!parsed) return null;
-    const { data, error } = await db().from('people').select('id').eq('external_id', parsed.external).limit(1);
+    const { data, error } = await supabase.from('people').select('id').eq('external_id', parsed.external).limit(1);
     return error ? null : ((data?.[0]?.id as string | undefined) ?? null);
   })().catch(() => null);
   personIdBySlug.set(clientId, run);
@@ -279,13 +282,36 @@ export async function updateProfile(userId: string, patch: Partial<User>): Promi
   if (!isUuid(userId)) return;
   const row: Record<string, unknown> = {};
   if (patch.displayName !== undefined) row.display_name = patch.displayName;
-  if (patch.bio !== undefined) row.bio = patch.bio;
+  if (patch.handle !== undefined) row.handle = patch.handle.trim().toLowerCase().replace(/^@/, '');
+  if (patch.bio !== undefined) row.bio = patch.bio ?? null;
   if (patch.favoriteGenres !== undefined) row.favorite_genres = patch.favoriteGenres;
   if (patch.isPrivate !== undefined) row.is_private = patch.isPrivate;
   if (patch.fandoms !== undefined) row.worlds = patch.fandoms;
+  if (patch.favoriteDramaIds !== undefined) {
+    const resolved = await Promise.all(patch.favoriteDramaIds.slice(0, 4).map((id) => resolveTitleUuid(id)));
+    row.favorite_title_ids = resolved.filter((id): id is string => Boolean(id));
+  }
+  if (patch.avatarUrl !== undefined) {
+    if (!patch.avatarUrl) {
+      row.avatar_path = null;
+    } else if (/^u\//.test(patch.avatarUrl)) {
+      row.avatar_path = patch.avatarUrl;
+    } else if (/^(blob:|file:|content:|ph:|data:|assets-library:)/i.test(patch.avatarUrl)) {
+      const uploaded = await uploadAvatar(userId, patch.avatarUrl);
+      row.avatar_path = uploaded.storagePath;
+    }
+  }
   if (!Object.keys(row).length) return;
   const { error } = await db().from('profiles').update(row).eq('id', userId);
   if (error) fail('profile update', error.message);
+}
+
+/** Enable or disable per-drama airing alerts (`set_title_alert` RPC). */
+export async function setTitleAlert(dramaId: string, on: boolean): Promise<void> {
+  const titleId = await resolveTitleUuid(dramaId);
+  if (!titleId) return;
+  const { error } = await db().rpc('set_title_alert', { p_title_id: titleId, p_on: on });
+  if (error) fail('title alert', error.message);
 }
 
 // ── Notification read state ───────────────────────────────────────────────────────────────────

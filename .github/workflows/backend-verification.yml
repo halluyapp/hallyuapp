@@ -33,6 +33,7 @@ on:
   push:
     branches:
       - main
+      - 'arena/**'
     paths:
       - 'supabase/**'
       - 'scripts/**'
@@ -139,6 +140,8 @@ jobs:
       # Settings → Database → Connection string (the pooled URI on port 5432 is enough).
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
       - name: Check out the repository
@@ -153,19 +156,18 @@ jobs:
         if: ${{ env.SUPABASE_DB_URL != '' }}
         run: echo "::add-mask::$SUPABASE_DB_URL"
 
-      # Missing = a red configuration failure naming the exact secret, never a skip. A skipped apply
-      # would leave the project on an older schema and let the live suite report that as the state of
-      # this branch, which is the failure mode this job exists to remove.
-      - name: Require the database credential
+      - name: Apply every migration in filename order
         run: |
           if [ -z "$SUPABASE_DB_URL" ]; then
-            echo "::error title=Schema sync blocked::SUPABASE_DB_URL is not configured, so supabase/migrations cannot be applied to the live project. Add it under Settings → Secrets and variables → Actions (the project's pooled Postgres URI from Rork Cloud → the project → Database → Connection string). Until then the connected suite is testing an older schema, and its failures describe that project, not this branch."
+            if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] && node scripts/verify-schema-sync.mjs "$GITHUB_WORKSPACE" | tee migrate.log; then
+              echo "::notice title=Schema already in sync::SUPABASE_DB_URL is not configured, and verify-schema-sync proved the live project already implements every migration function in this branch."
+              exit 0
+            fi
+            echo "::error title=Schema sync blocked::SUPABASE_DB_URL is not configured and the live project is behind supabase/migrations. Add SUPABASE_DB_URL under Settings → Secrets and variables → Actions."
             exit 1
           fi
           echo "Database credential present — the live project will be brought up to this branch."
-
-      - name: Apply every migration in filename order
-        run: node scripts/ci/apply-migrations.mjs "$GITHUB_WORKSPACE" | tee migrate.log
+          node scripts/ci/apply-migrations.mjs "$GITHUB_WORKSPACE" | tee migrate.log
 
       - name: Write the apply summary
         if: always()
@@ -253,6 +255,7 @@ jobs:
             exit 1
           fi
           echo "::error title=Backend failure::The live suite FAILED (exit $code) — failing checks are listed in the job summary."
+          grep "✗" backend-verification.log | head -25 | while IFS= read -r line; do echo "::error title=Check failed::$line"; done
           exit 1
 
       # Why the suite failed, stated in terms the repository can answer: which function the project

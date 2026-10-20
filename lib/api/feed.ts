@@ -1,12 +1,13 @@
 /**
- * Feed, comment, profile and notification reads — the backend side of the read cache.
+ * Feed, comment, profile, collection, community and notification reads — the backend side of the
+ * read cache.
  *
  * The store (lib/store.tsx) stays the cache every screen renders from; lib/sync.ts adopts these
- * server results into it on sign-in and when screens pull to refresh. All reads are session-scoped
- * (RLS answers for the member) except `feed_page`/`comment_page`, which the database also exposes
- * anonymously for public content.
+ * server results into it on sign-in, on public cold start, and when screens pull to refresh.
  */
-import type { Comment, Notification, Post, PostType, SpoilerLevel, User } from '../model';
+import { fandomById } from '../fandoms';
+import type { Collection, Comment, Community, Drama, FandomId, MediaType, Notification, Post, PostType, SpoilerLevel, User } from '../model';
+import type { ServerCollectionBundle } from './bootstrap';
 import { getBackendAccessToken, supabase } from './client';
 import { fetchPostMedia, signedUrls, type PostMedia } from './media';
 
@@ -22,7 +23,7 @@ function sessionDb() {
 
 // ── Server rows → client shapes ───────────────────────────────────────────────────────────────
 
-interface ServerPost {
+export interface ServerPost {
   id: string;
   author_id: string;
   type: PostType;
@@ -54,7 +55,7 @@ interface ServerPost {
   edited_at: string | null;
 }
 
-interface ServerComment {
+export interface ServerComment {
   id: string;
   post_id: string;
   author_id: string;
@@ -71,6 +72,93 @@ interface ServerComment {
   created_at: string;
 }
 
+interface ServerTitleRow {
+  id: string;
+  external_id: string;
+  media_type: MediaType;
+  world: string;
+  title: string;
+  original_title?: string | null;
+  year: number;
+  end_year?: number | null;
+  status?: string | null;
+  network?: string | null;
+  streaming_on?: string[] | null;
+  genres?: string[] | null;
+  tags?: string[] | null;
+  synopsis?: string | null;
+  poster_url?: string | null;
+  backdrop_url?: string | null;
+  trailer_url?: string | null;
+  tone?: string | null;
+  runtime_minutes?: number | null;
+  original_language?: string | null;
+  vote_average?: number | null;
+  community_rating?: number | null;
+  follower_count?: number | null;
+  episode_count?: number | null;
+  airs_on?: string | null;
+  next_episode_at?: string | null;
+}
+
+interface ServerProfileRow {
+  id: string;
+  handle: string;
+  display_name: string;
+  avatar_path?: string | null;
+  bio: string | null;
+  worlds: string[] | null;
+  favorite_genres: string[] | null;
+  favorite_title_ids?: string[] | null;
+  follower_count: number;
+  following_count: number;
+  verified: boolean;
+  is_private?: boolean;
+  created_at?: string;
+}
+
+function serverTitleToDrama(row: ServerTitleRow): Drama {
+  const mediaType = row.media_type ?? 'tv';
+  const format: Drama['format'] =
+    row.world === 'kdrama' || row.world === 'cdrama' || row.world === 'anime'
+      ? row.world
+      : mediaType === 'movie'
+        ? 'hollywood-movie'
+        : 'hollywood-series';
+  const rawStatus = row.status ?? 'completed';
+  const status: Drama['status'] = rawStatus === 'airing' || rawStatus === 'upcoming' ? rawStatus : 'completed';
+  return {
+    id: mediaType === 'movie' ? `tmdb-movie-${row.external_id}` : `tmdb-${row.external_id}`,
+    title: row.title,
+    originalTitle: row.original_title ?? undefined,
+    mediaType,
+    format,
+    originalLanguage: row.original_language ?? undefined,
+    runtime: row.runtime_minutes ?? undefined,
+    year: row.year,
+    endYear: row.end_year ?? undefined,
+    status,
+    network: row.network ?? undefined,
+    streamingOn: row.streaming_on ?? undefined,
+    genres: row.genres ?? [],
+    tags: row.tags ?? undefined,
+    synopsis: row.synopsis ?? '',
+    posterUrl: row.poster_url ?? undefined,
+    backdropUrl: row.backdrop_url ?? undefined,
+    trailerUrl: row.trailer_url ?? undefined,
+    tone: row.tone || fandomById(row.world as FandomId)?.tint || '#1F2430',
+    rating: row.community_rating ?? row.vote_average ?? undefined,
+    episodeCount: row.episode_count ?? 0,
+    seasons: [],
+    episodes: [],
+    cast: [],
+    airsOn: row.airs_on ?? undefined,
+    nextEpisodeAt: row.next_episode_at ?? undefined,
+    followerCount: Math.round(row.follower_count ?? 0),
+    provider: { name: 'tmdb', id: Number(row.external_id), mediaType },
+  };
+}
+
 /** `titles.id` uuid → the client catalog id the app navigates with. */
 export async function resolveDramaClientIds(ids: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -84,6 +172,22 @@ export async function resolveDramaClientIds(ids: string[]): Promise<Map<string, 
   return out;
 }
 
+/** Fetch full client Drama models for a set of backend `titles.id` UUIDs so shelves/favorites render posters immediately. */
+export async function fetchDramasByUuids(ids: string[]): Promise<{ dramas: Drama[]; idMap: Map<string, string> }> {
+  const uuids = [...new Set(ids.filter(Boolean))];
+  const idMap = new Map<string, string>();
+  if (!uuids.length || !supabase) return { dramas: [], idMap };
+  const { data, error } = await supabase.from('titles').select('*').in('id', uuids);
+  if (error || !data) return { dramas: [], idMap };
+  const dramas: Drama[] = [];
+  for (const row of data as ServerTitleRow[]) {
+    const drama = serverTitleToDrama(row);
+    idMap.set(row.id, drama.id);
+    dramas.push(drama);
+  }
+  return { dramas, idMap };
+}
+
 /** `people.id` uuid → the client actor id (`tmdb-<external>`). */
 export async function resolveActorClientIds(ids: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -95,7 +199,7 @@ export async function resolveActorClientIds(ids: string[]): Promise<Map<string, 
   return out;
 }
 
-function toPost(row: ServerPost, dramaIds: Map<string, string>): Post {
+export function toPost(row: ServerPost, dramaIds: Map<string, string>): Post {
   return {
     id: row.id,
     type: row.type,
@@ -134,11 +238,6 @@ function toPost(row: ServerPost, dramaIds: Map<string, string>): Post {
 
 /**
  * Fold `post_media` into the client Post shape.
- *
- * A post read from the backend carries only storage paths, and the media bucket is private, so
- * without this every adopted post renders with no images at all — indistinguishable, to the member,
- * from an upload that never happened. Images become signed URLs; the single video keeps its poster
- * and duration so the card can play it.
  */
 async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promise<Post[]> {
   const wanted = new Set<string>();
@@ -153,8 +252,6 @@ async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promis
   try {
     urls = await signedUrls([...wanted]);
   } catch {
-    // A signing failure must not lose the text of the post: show it without media rather than not
-    // at all. The next read will retry.
     return posts;
   }
   return posts.map((post) => {
@@ -181,7 +278,7 @@ async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promis
   });
 }
 
-/** Fetch the media for a page of posts and fold it in. Never throws — see the note above. */
+/** Fetch the media for a page of posts and fold it in. Never throws. */
 async function attachMedia(posts: Post[]): Promise<Post[]> {
   if (!posts.length) return posts;
   try {
@@ -191,7 +288,7 @@ async function attachMedia(posts: Post[]): Promise<Post[]> {
   }
 }
 
-function toComment(row: ServerComment): Comment {
+export function toComment(row: ServerComment): Comment {
   return {
     id: row.id,
     postId: row.post_id,
@@ -210,6 +307,83 @@ function toComment(row: ServerComment): Comment {
     },
     state: row.state === 'active' ? undefined : (row.state as Comment['state']),
   };
+}
+
+/** Sign avatar paths in batch and convert server profile rows + favorite titles to client Users. */
+export async function hydrateServerProfiles(rows: ServerProfileRow[]): Promise<{ users: User[]; dramas: Drama[] }> {
+  if (!rows.length) return { users: [], dramas: [] };
+  const avatarPaths = rows.map((r) => r.avatar_path).filter((p): p is string => Boolean(p));
+  const favTitleUuids = rows.flatMap((r) => r.favorite_title_ids ?? []).filter(Boolean);
+
+  let avatars = new Map<string, string>();
+  if (avatarPaths.length) {
+    try {
+      avatars = await signedUrls(avatarPaths);
+    } catch {
+      avatars = new Map();
+    }
+  }
+  const { dramas, idMap } = await fetchDramasByUuids(favTitleUuids);
+
+  const users: User[] = rows.map((r) => ({
+    id: r.id,
+    handle: r.handle,
+    displayName: r.display_name,
+    avatarUrl: r.avatar_path ? avatars.get(r.avatar_path) : undefined,
+    bio: r.bio ?? undefined,
+    fandoms: (r.worlds ?? []) as User['fandoms'],
+    favoriteGenres: r.favorite_genres ?? [],
+    favoriteDramaIds: (r.favorite_title_ids ?? []).map((id) => idMap.get(id)).filter((id): id is string => Boolean(id)),
+    followers: r.follower_count ?? 0,
+    following: r.following_count ?? 0,
+    joinedAt: r.created_at ?? new Date().toISOString(),
+    verified: r.verified,
+    isPrivate: Boolean(r.is_private),
+  }));
+  return { users, dramas };
+}
+
+/** Convert server collection bundles into client Collection + owner User + referenced Dramas. */
+export async function hydrateCollectionBundles(
+  bundles: ServerCollectionBundle[],
+): Promise<{ collections: Collection[]; owners: User[]; dramas: Drama[] }> {
+  if (!bundles.length) return { collections: [], owners: [], dramas: [] };
+  const titleUuids = bundles.flatMap((b) => b.items.map((i) => i.title_id));
+  const { dramas, idMap } = await fetchDramasByUuids(titleUuids);
+  const ownerRows: ServerProfileRow[] = bundles
+    .map((b) => b.owner)
+    .filter((o): o is NonNullable<ServerCollectionBundle['owner']> => Boolean(o))
+    .map((o) => ({
+      id: o.id,
+      handle: o.handle,
+      display_name: o.display_name,
+      avatar_path: o.avatar_path,
+      bio: null,
+      worlds: o.worlds,
+      favorite_genres: [],
+      favorite_title_ids: [],
+      follower_count: 0,
+      following_count: 0,
+      verified: o.verified,
+    }));
+  const { users: owners } = await hydrateServerProfiles(ownerRows);
+
+  const collections: Collection[] = bundles.map((b) => ({
+    id: b.collection.id,
+    ownerId: b.collection.owner_id,
+    title: b.collection.title,
+    description: b.collection.description ?? undefined,
+    visibility: b.collection.visibility,
+    followerCount: b.collection.follower_count ?? 0,
+    updatedAt: b.collection.updated_at ?? b.collection.created_at,
+    items: b.items
+      .map((item): Collection['items'][number] | null => {
+        const dramaId = idMap.get(item.title_id);
+        return dramaId ? { dramaId, note: item.note ?? undefined, addedAt: item.added_at } : null;
+      })
+      .filter((x): x is Collection['items'][number] => x !== null),
+  }));
+  return { collections, owners, dramas };
 }
 
 // ── Feed ──────────────────────────────────────────────────────────────────────────────────────
@@ -238,7 +412,9 @@ export async function fetchFeed(
   if (error) throw new Error(`feed_page failed: ${error.message}`);
   const payload = (data ?? {}) as { scope?: FeedScope; items?: ServerPost[]; has_more?: boolean; next_cursor?: string | null };
   const items = payload.items ?? [];
-  const dramaIds = await resolveDramaClientIds(items.map((p) => p.title_id).filter((x): x is string => Boolean(x)));
+  const dramaIds = await resolveDramaClientIds(
+    items.flatMap((p) => [p.title_id, p.secondary_title_id]).filter((x): x is string => Boolean(x)),
+  );
   return {
     scope: payload.scope ?? scope,
     items: await attachMedia(items.map((p) => toPost(p, dramaIds))),
@@ -247,11 +423,49 @@ export async function fetchFeed(
   };
 }
 
-export async function fetchComments(postId: string, limit = 50, cursor?: string | null): Promise<{ items: Comment[]; hasMore: boolean; nextCursor: string | null }> {
-  const { data, error } = await sessionDb().rpc('comment_page', { p_post_id: postId, p_limit: limit, p_cursor: cursor ?? null });
+export async function fetchComments(
+  postId: string,
+  limit = 50,
+  cursor?: string | null,
+): Promise<{ items: Comment[]; hasMore: boolean; nextCursor: string | null }> {
+  const { data, error } = await db().rpc('comment_page', { p_post_id: postId, p_limit: limit, p_cursor: cursor ?? null });
   if (error) throw new Error(`comment_page failed: ${error.message}`);
   const payload = (data ?? {}) as { items?: ServerComment[]; has_more?: boolean; next_cursor?: string | null };
   return { items: (payload.items ?? []).map(toComment), hasMore: Boolean(payload.has_more), nextCursor: payload.next_cursor ?? null };
+}
+
+/** Fetch a post, its comments, media, and all referenced authors in one round trip (`get_post_thread`). */
+export async function fetchPostThread(postId: string): Promise<{ post: Post | null; comments: Comment[]; users: User[]; dramas: Drama[] }> {
+  const { data, error } = await db().rpc('get_post_thread', { p_post_id: postId });
+  if (error || !data) {
+    const [posts, commentPage] = await Promise.all([fetchPosts([postId]), fetchComments(postId)]);
+    const authorIds = [...posts.map((p) => p.authorId), ...commentPage.items.map((c) => c.authorId)];
+    const users = await fetchProfiles(authorIds);
+    return { post: posts[0] ?? null, comments: commentPage.items, users, dramas: [] };
+  }
+  const raw = data as {
+    post: ServerPost | null;
+    comments: ServerComment[];
+    authors: ServerProfileRow[];
+    titles: ServerTitleRow[];
+  };
+  const dramas = (raw.titles ?? []).map(serverTitleToDrama);
+  const dramaIds = new Map<string, string>();
+  for (const row of raw.titles ?? []) {
+    dramaIds.set(row.id, row.media_type === 'movie' ? `tmdb-movie-${row.external_id}` : `tmdb-${row.external_id}`);
+  }
+  if (raw.post?.title_id && !dramaIds.has(raw.post.title_id)) {
+    const extra = await resolveDramaClientIds([raw.post.title_id, raw.post.secondary_title_id].filter((x): x is string => Boolean(x)));
+    for (const [k, v] of extra) dramaIds.set(k, v);
+  }
+  const posts = raw.post ? await attachMedia([toPost(raw.post, dramaIds)]) : [];
+  const { users, dramas: favDramas } = await hydrateServerProfiles(raw.authors ?? []);
+  return {
+    post: posts[0] ?? null,
+    comments: (raw.comments ?? []).map(toComment),
+    users,
+    dramas: [...dramas, ...favDramas],
+  };
 }
 
 /** Hydrate specific posts by id (e.g. the saved list bootstrap returns). */
@@ -265,11 +479,13 @@ export async function fetchPosts(ids: string[]): Promise<Post[]> {
     .eq('state', 'active');
   if (error) throw new Error(`post lookup failed: ${error.message}`);
   const rows = (data ?? []) as ServerPost[];
-  const dramaIds = await resolveDramaClientIds(rows.map((p) => p.title_id).filter((x): x is string => Boolean(x)));
+  const dramaIds = await resolveDramaClientIds(
+    rows.flatMap((p) => [p.title_id, p.secondary_title_id]).filter((x): x is string => Boolean(x)),
+  );
   return attachMedia(rows.map((p) => toPost(p, dramaIds)));
 }
 
-// ── Profiles ──────────────────────────────────────────────────────────────────────────────────
+// ── Profiles, Collections, Community Pulse ───────────────────────────────────────────────────
 
 /** Public profile rows for the users a page references (RLS: visible profiles only). */
 export async function fetchProfiles(ids: string[]): Promise<User[]> {
@@ -277,38 +493,110 @@ export async function fetchProfiles(ids: string[]): Promise<User[]> {
   if (!uuids.length) return [];
   const { data, error } = await db()
     .from('profiles')
-    .select('id, handle, display_name, bio, worlds, favorite_genres, follower_count, following_count, verified, is_private, created_at')
+    .select('id, handle, display_name, avatar_path, bio, worlds, favorite_genres, favorite_title_ids, follower_count, following_count, verified, is_private, created_at')
     .in('id', uuids);
   if (error) throw new Error(`profile lookup failed: ${error.message}`);
-  return (data ?? []).map((row) => {
-    const r = row as {
-      id: string;
-      handle: string;
-      display_name: string;
-      bio: string | null;
-      worlds: string[] | null;
-      favorite_genres: string[] | null;
-      follower_count: number;
-      following_count: number;
-      verified: boolean;
-      is_private: boolean;
-      created_at: string;
-    };
-    return {
-      id: r.id,
-      handle: r.handle,
-      displayName: r.display_name,
-      bio: r.bio ?? undefined,
-      fandoms: (r.worlds ?? []) as User['fandoms'],
-      favoriteGenres: r.favorite_genres ?? [],
-      favoriteDramaIds: [],
-      followers: r.follower_count ?? 0,
-      following: r.following_count ?? 0,
-      joinedAt: r.created_at,
-      verified: r.verified,
-      isPrivate: r.is_private,
-    };
-  });
+  const { users } = await hydrateServerProfiles((data ?? []) as ServerProfileRow[]);
+  return users;
+}
+
+/** Full profile page bundle by handle (`get_profile_by_handle`). */
+export async function fetchProfileByHandle(
+  handle: string,
+): Promise<{ user: User; posts: Post[]; collections: Collection[]; dramas: Drama[] } | null> {
+  const clean = handle.trim().replace(/^@/, '');
+  if (!clean) return null;
+  const { data, error } = await db().rpc('get_profile_by_handle', { p_handle: clean });
+  if (error || !data) return null;
+  const raw = data as {
+    profile: ServerProfileRow | null;
+    posts?: ServerPost[];
+    collections?: ServerCollectionBundle[];
+  };
+  if (!raw.profile) return null;
+  const { users, dramas: favDramas } = await hydrateServerProfiles([raw.profile]);
+  const user = users[0];
+  if (!user) return null;
+
+  const serverPosts = raw.posts ?? [];
+  const postTitleIds = serverPosts.flatMap((p) => [p.title_id, p.secondary_title_id]).filter((x): x is string => Boolean(x));
+  const { dramas: postDramas, idMap } = await fetchDramasByUuids(postTitleIds);
+  const posts = await attachMedia(serverPosts.map((p) => toPost(p, idMap)));
+  const colHydrated = await hydrateCollectionBundles(raw.collections ?? []);
+
+  return {
+    user,
+    posts,
+    collections: colHydrated.collections,
+    dramas: [...favDramas, ...postDramas, ...colHydrated.dramas],
+  };
+}
+
+/** Public community shelves (`get_public_collections`). */
+export async function fetchPublicCollections(limit = 40): Promise<{ collections: Collection[]; owners: User[]; dramas: Drama[] }> {
+  const { data, error } = await db().rpc('get_public_collections', { p_limit: limit });
+  if (error || !data) return { collections: [], owners: [], dramas: [] };
+  const raw = data as { collections?: ServerCollectionBundle[] };
+  return hydrateCollectionBundles(raw.collections ?? []);
+}
+
+/** Community pulse across worlds (`get_community_pulse`). */
+export async function fetchCommunityPulse(
+  world?: string | null,
+  limit = 12,
+): Promise<{
+  communities: Community[];
+  joinedCommunityIds: string[];
+  topVoices: User[];
+  dramas: Drama[];
+}> {
+  const { data, error } = await db().rpc('get_community_pulse', { p_world: world ?? null, p_limit: limit });
+  if (error || !data) return { communities: [], joinedCommunityIds: [], topVoices: [], dramas: [] };
+  const raw = data as {
+    communities?: {
+      community: {
+        id: string;
+        name: string;
+        fandom: FandomId;
+        description: string | null;
+        cover_tone: string | null;
+        cover_url: string | null;
+        drama_id: string | null;
+        member_count: number;
+        post_count: number;
+        created_at: string;
+      };
+      is_member: boolean;
+    }[];
+    most_discussed?: { title: ServerTitleRow; post_count: number; watchlist_count: number }[];
+    top_voices?: ServerProfileRow[];
+  };
+
+  const communityRows = raw.communities ?? [];
+  const dramaMap = await resolveDramaClientIds(
+    communityRows.map((c) => c.community.drama_id).filter((x): x is string => Boolean(x)),
+  );
+  const communities: Community[] = communityRows.map(({ community: c }) => ({
+    id: c.id,
+    name: c.name,
+    fandom: c.fandom,
+    description: c.description ?? '',
+    coverTone: c.cover_tone ?? fandomById(c.fandom)?.tint ?? '#1F2430',
+    coverUrl: c.cover_url ?? undefined,
+    dramaId: c.drama_id ? dramaMap.get(c.drama_id) : undefined,
+    memberCount: c.member_count ?? 0,
+    postCount: c.post_count ?? 0,
+    createdAt: c.created_at,
+  }));
+  const joinedCommunityIds = communityRows.filter((c) => c.is_member).map((c) => c.community.id);
+  const { users: topVoices, dramas: favDramas } = await hydrateServerProfiles(raw.top_voices ?? []);
+  const discussedDramas = (raw.most_discussed ?? []).map((d) => serverTitleToDrama(d.title));
+  return {
+    communities,
+    joinedCommunityIds,
+    topVoices,
+    dramas: [...discussedDramas, ...favDramas],
+  };
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────────────────────

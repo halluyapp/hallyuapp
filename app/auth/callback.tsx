@@ -16,7 +16,7 @@ type Phase = 'working' | 'failed';
  * password before anything else, everything else means a normal sign-in that continues into
  * onboarding (or straight home for an existing member).
  */
-const RECOVERY_PATH = '/settings/password';
+const RECOVERY_PATH = '/(auth)/reset-password';
 
 /**
  * The landing route for `hallyu://auth/callback` — the link Supabase emails after sign-up and for
@@ -43,8 +43,15 @@ export default function AuthCallback() {
   useEffect(() => {
     // The fragment survives in the initial URL even though the params do not carry it.
     void linkingInitialUrl().then((initial) => {
+      const webHref = typeof window !== 'undefined' && window.location?.href ? window.location.href : null;
       const fromParams = buildFromParams(params);
-      setUrl(initial && initial.includes('hallyu://') ? initial : fromParams);
+      const candidate =
+        webHref && /[?#](code|access_token|error)=/i.test(webHref)
+          ? webHref
+          : initial && /^(hallyu|exp|https?):\/\//i.test(initial) && /[?#](code|access_token|error)=/i.test(initial)
+            ? initial
+            : fromParams;
+      setUrl(candidate);
     });
   }, [params]);
 

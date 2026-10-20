@@ -379,3 +379,23 @@ export async function signedUrls(paths: string[]): Promise<Map<string, string>> 
   }
   return out;
 }
+
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  heic: 'image/heic',
+};
+
+/** Upload a member's profile avatar into their own private `u/<uid>/…` folder and sign it. */
+export async function uploadAvatar(userId: string, fileUri: string): Promise<{ storagePath: string; signedUrl: string }> {
+  requireUploadEnv();
+  const ext = extensionFor(fileUri, 'image');
+  const storagePath = `u/${userId}/avatar-${Date.now()}.${ext}`;
+  const contentType = MIME_BY_EXT[ext] ?? 'image/jpeg';
+  await putObject(storagePath, fileUri, contentType);
+  signedCache.delete(storagePath);
+  const signed = await signedUrls([storagePath]);
+  return { storagePath, signedUrl: signed.get(storagePath) ?? fileUri };
+}

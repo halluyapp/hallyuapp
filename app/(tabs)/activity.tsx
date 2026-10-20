@@ -18,6 +18,8 @@ import { useAuth } from '../../lib/auth';
 import { dayLabel, timeAgo } from '../../lib/format';
 import { useApp } from '../../lib/hooks';
 import { Notification, NotificationGroup } from '../../lib/model';
+import { getState } from '../../lib/store';
+import { adoptLocal, adoptNotifications } from '../../lib/sync';
 
 type Tab = 'all' | NotificationGroup;
 
@@ -37,8 +39,20 @@ export default function Activity() {
   useFocusEffect(
     useCallback(() => {
       dispatch({ type: 'seenActivity' });
+      void adoptNotifications({
+        getState,
+        apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+      });
     }, [dispatch]),
   );
+
+  React.useEffect(() => {
+    if (!refresh.refreshing) return;
+    void adoptNotifications({
+      getState,
+      apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+    });
+  }, [refresh.refreshing]);
 
   const items = useMemo(() => state.notifications.filter((n) => tab === 'all' || n.group === tab).sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [state.notifications, tab]);
   const sections = useMemo(() => {

@@ -370,7 +370,7 @@ jobs:
       # GITHUB RELEASE
       # ============================================================
       - name: Publish GitHub Release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/arena/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

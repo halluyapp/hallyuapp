@@ -51,14 +51,15 @@ export interface ParsedCallback {
 
 /** Parse a callback URL without touching the network — used to classify before acting. */
 export function parseAuthCallback(url: string): ParsedCallback | null {
-  if (!url || !/^hallyu:\/\//i.test(url.trim())) return null;
+  if (!url || !/^(hallyu|exp|https?):\/\//i.test(url.trim())) return null;
 
   const raw = url.trim();
   // The implicit flow puts the tokens in the fragment; the PKCE flow uses the query. Parsed by
   // hand rather than with URLSearchParams: Hermes ships an incomplete one, and this runs on the
   // cold-start path where a surprise exception means the member is stranded on a blank screen.
   const [beforeHash, fragment] = raw.split('#', 2);
-  const query = beforeHash.slice(beforeHash.indexOf('?') + 1);
+  const qIndex = beforeHash.indexOf('?');
+  const query = qIndex === -1 ? '' : beforeHash.slice(qIndex + 1);
   const params = parseQueryString(query);
   parseQueryString(fragment ?? '', params);
 

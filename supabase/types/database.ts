@@ -1327,6 +1327,7 @@ export type Database = {
           deleted_at: string | null;
           display_name: string;
           favorite_genres: string[];
+          favorite_title_ids: string[];
           follower_count: number;
           following_count: number;
           handle: string;
@@ -1351,6 +1352,7 @@ export type Database = {
           deleted_at?: string | null;
           display_name: string;
           favorite_genres?: string[];
+          favorite_title_ids?: string[];
           follower_count?: number;
           following_count?: number;
           handle: string;
@@ -1375,6 +1377,7 @@ export type Database = {
           deleted_at?: string | null;
           display_name?: string;
           favorite_genres?: string[];
+          favorite_title_ids?: string[];
           follower_count?: number;
           following_count?: number;
           handle?: string;
@@ -2658,6 +2661,37 @@ export type Database = {
         Args: Record<never, never>;
         Returns: Json;
       };
+      get_community_pulse: {
+        Args: { p_limit?: number; p_world?: string };
+        Returns: Json;
+      };
+      get_feed_bundle: {
+        Args: {
+          p_community_id?: string;
+          p_cursor?: string;
+          p_limit?: number;
+          p_scope?: string;
+          p_title_id?: string;
+          p_world?: string;
+        };
+        Returns: Json;
+      };
+      get_person_detail: {
+        Args: { p_person_id: string };
+        Returns: Json;
+      };
+      get_post_thread: {
+        Args: { p_comment_limit?: number; p_post_id: string };
+        Returns: Json;
+      };
+      get_profile_by_handle: {
+        Args: { p_handle: string };
+        Returns: Json;
+      };
+      get_public_collections: {
+        Args: { p_limit?: number };
+        Returns: Json;
+      };
       grant_video_access: {
         Args: { p_monthly_byte_budget?: number; p_note?: string; p_user: string };
         Returns: Database['public']['Tables']['video_creators']['Row'];
@@ -2735,9 +2769,17 @@ export type Database = {
         Args: { p_kind: string; p_on: boolean; p_target_id: string };
         Returns: boolean;
       };
+      set_title_alert: {
+        Args: { p_on?: boolean; p_title_id: string };
+        Returns: boolean;
+      };
       storage_owner: {
         Args: { name: string };
         Returns: string | null;
+      };
+      toggle_favorite_title: {
+        Args: { p_on?: boolean; p_title_id: string };
+        Returns: Json;
       };
       toggle_reaction: {
         Args: { p_kind: Database['public']['Enums']['reaction_kind']; p_target_id: string; p_target_type: string };
