@@ -8,6 +8,7 @@ import { Text } from '../../components/ui/Text';
 import { colors, radius, space } from '../../constants/theme';
 import { useStore } from '../../lib/store';
 import { track } from '../../lib/analytics';
+import { registerDevicePushToken } from '../../lib/api/pushToken';
 import { ensureNotificationPermission } from '../../lib/reminders';
 
 /** Step 5 — notifications, asked with a reason. Then Enter Hallyu. */
@@ -16,7 +17,10 @@ export default function NotificationsStep() {
   const { state, dispatch } = useStore();
   const finish = async (enable: boolean) => {
     dispatch({ type: 'prefs', patch: { notifications: { ...state.prefs.notifications, episodes: enable, social: enable, highlights: enable } } });
-    if (enable) await ensureNotificationPermission(); // the system prompt, asked with the reason on screen
+    if (enable) {
+      const status = await ensureNotificationPermission();
+      if (status === 'granted') void registerDevicePushToken();
+    }
     dispatch({ type: 'onboarding', patch: { done: true, step: 5 } });
     track('onboarding.done');
     router.replace('/(tabs)');

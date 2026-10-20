@@ -1,25 +1,16 @@
-// push-dispatch — the push worker.
+// Hallyu — remote push notification dispatcher.
 //
-// The database decides *what* to send and *who may receive it*; this function decides only how to
-// talk to the push provider. It claims a batch from `claim_notification_deliveries()`, sends it, and
-// reports each outcome back with `report_delivery()`.
-//
-// Three provider outcomes are distinguished, because they need different handling:
-//
-//   accepted          → mark sent
-//   retryable failure → back off and try again (the database schedules the next attempt)
-//   token rejected    → the device is gone: disable the token and fail every other queued delivery
-//                       for it in the same transaction, so a dead install costs one round trip
-//
-// The provider endpoint and its optional access token come from the function environment and are
-// never returned. Without `EXPO_ACCESS_TOKEN` the Expo endpoint still accepts anonymous sends, which
-// is the working default for a project that has not been given a push credential yet.
+// Reads queued rows in `public.notification_deliveries`, dispatches through Expo Push API
+// (`ExponentPushToken[...]`) or native FCM HTTP v1 (`fcm:...`), maps notifications to their
+// matching Android high-importance notification channel (`episodes` / `social` / `system`), and
+// records the three-state outcome through `report_delivery()`.
 
 import { adminClient, requireServiceRole } from '../_shared/supabase.ts';
 import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
 
 const EXPO_PUSH_URL = Deno.env.get('EXPO_PUSH_URL') ?? 'https://exp.host/--/api/v2/push/send';
 const EXPO_ACCESS_TOKEN = Deno.env.get('EXPO_ACCESS_TOKEN') ?? '';
+const FCM_SERVICE_ACCOUNT_JSON = Deno.env.get('FCM_SERVICE_ACCOUNT_JSON') ?? '';
 const MAX_BATCH = 100;
 
 interface ClaimedDelivery {
@@ -35,54 +26,67 @@ interface ClaimedDelivery {
   payload: Record<string, unknown>;
 }
 
-/** Builds the provider message. The shape is the Expo push schema; the token is opaque. */
-function buildMessage(delivery: ClaimedDelivery): Record<string, unknown> {
+interface ProviderResult {
+  ok: boolean;
+  status: number | string;
+  id?: string;
+  details?: unknown;
+  message?: string;
+}
+
+function channelForPayload(payload: Record<string, unknown>): 'episodes' | 'social' | 'system' {
+  const kind = String(payload?.kind ?? payload?.type ?? '').toLowerCase();
+  if (kind.includes('episode') || kind.includes('title_status')) return 'episodes';
+  if (kind.includes('system') || kind.includes('moderation') || kind.includes('test_push')) {
+    return 'system';
+  }
+  return 'social';
+}
+
+function buildExpoMessage(delivery: ClaimedDelivery): Record<string, unknown> {
+  const channelId = channelForPayload(delivery.payload ?? {});
   return {
     to: delivery.token,
-    title: delivery.title,
-    body: delivery.body,
+    title: delivery.title || 'Hallyu',
+    body: delivery.body || '',
     sound: 'default',
     priority: 'high',
-    channelId: delivery.platform === 'android' ? 'episodes' : undefined,
+    ttl: 86400,
+    channelId: delivery.platform === 'android' ? channelId : undefined,
     data: {
       ...delivery.payload,
-      deep_link: delivery.deep_link,
+      url: delivery.deep_link || '/notifications',
+      deep_link: delivery.deep_link || '/notifications',
+      notification_id: delivery.notification_id,
       delivery_id: delivery.delivery_id,
     },
   };
 }
 
-/** True when the provider says the token is permanently unusable. */
-function isInvalidToken(details: unknown): boolean {
-  const text = JSON.stringify(details ?? '').toUpperCase();
+function isInvalidToken(details: unknown, message?: string): boolean {
+  const text = `${JSON.stringify(details ?? '')} ${message ?? ''}`.toUpperCase();
   return (
+    text.includes('DEVICENOTREGISTERED') ||
     text.includes('DEVICE_NOT_REGISTERED') ||
     text.includes('NOTREGISTERED') ||
     text.includes('INVALIDTOK') ||
     text.includes('INVALID_TOKEN') ||
+    text.includes('INVALIDCREDENTIALS') && false ||
     text.includes('APNS_ERROR') ||
     text.includes('SENDERIDMISMATCH') ||
-    text.includes('UNREGISTERED')
+    text.includes('UNREGISTERED') ||
+    text.includes('NOT A VALID EXPO PUSH TOKEN')
   );
 }
 
-/** True when trying again later could plausibly work. Informational: the retry decision is made by
- *  the database's backoff schedule, this is used for the log line. */
-function isRetryable(status: number, details: unknown): boolean {
-  if (status === 429) return true;
-  if (status >= 500) return true;
-  const text = JSON.stringify(details ?? '').toUpperCase();
-  return text.includes('RATE') || text.includes('TOO_MANY') || text.includes('TIMEOUT');
-}
-
-async function sendBatch(messages: Array<Record<string, unknown>>): Promise<Array<{
-  status: number;
-  id?: string;
-  details?: unknown;
-}>> {
+async function sendExpoBatch(deliveries: ClaimedDelivery[]): Promise<ProviderResult[]> {
+  if (deliveries.length === 0) return [];
+  const messages = deliveries.map(buildExpoMessage);
   const response = await fetch(EXPO_PUSH_URL, {
     method: 'POST',
     headers: {
+      Accept: 'application/json',
+      'Accept-encoding': 'gzip, deflate',
       'Content-Type': 'application/json',
       ...(EXPO_ACCESS_TOKEN ? { Authorization: `Bearer ${EXPO_ACCESS_TOKEN}` } : {}),
     },
@@ -90,16 +94,31 @@ async function sendBatch(messages: Array<Record<string, unknown>>): Promise<Arra
   });
 
   if (!response.ok) {
-    // The whole batch failed. Return the status per message so each gets its own outcome.
     const text = await response.text().catch(() => '');
-    return messages.map(() => ({ status: response.status, details: text.slice(0, 200) }));
+    return messages.map(() => ({
+      ok: false,
+      status: response.status,
+      details: text.slice(0, 200),
+      message: text.slice(0, 200),
+    }));
   }
 
-  const payload = (await response.json()) as { data?: Array<{ status: number; id?: string; details?: unknown }> };
+  const payload = (await response.json()) as {
+    data?: Array<{ status: number | string; id?: string; details?: unknown; message?: string }>;
+  };
   const results = payload.data ?? [];
-
-  // A short response means the provider stopped reading; treat the remainder as retryable.
-  return messages.map((_, index) => results[index] ?? { status: 502, details: 'truncated provider response' });
+  return messages.map((_, index) => {
+    const r = results[index];
+    if (!r) return { ok: false, status: 502, details: 'truncated provider response' };
+    const accepted = r.status === 'ok' || r.status === 200;
+    return {
+      ok: accepted,
+      status: r.status,
+      id: r.id,
+      details: r.details,
+      message: r.message,
+    };
+  });
 }
 
 Deno.serve(async (request: Request) => {
@@ -113,16 +132,13 @@ Deno.serve(async (request: Request) => {
     try {
       body = await request.json();
     } catch {
-      // Defaults are fine.
+      // Defaults are fine — a scheduled call sends an empty body.
     }
   }
 
+  const supabase = adminClient();
   const limit = Math.min(Math.max(body.limit ?? MAX_BATCH, 1), MAX_BATCH);
 
-  const supabase = adminClient();
-
-  // Anything that is due but has no delivery row yet gets one first, so a notification created
-  // between two runs is not stranded until the next cycle.
   const { error: fanoutError } = await supabase.rpc('fanout_due_notifications', { p_limit: 500 });
   if (fanoutError) return errorResponse(`fan-out failed: ${fanoutError.message}`, 500);
 
@@ -130,46 +146,79 @@ Deno.serve(async (request: Request) => {
     p_limit: limit,
     p_max_attempts: body.max_attempts ?? 5,
   });
-
   if (claimError) return errorResponse(`could not claim deliveries: ${claimError.message}`, 500);
 
   const claimed = (data ?? []) as ClaimedDelivery[];
-
   if (claimed.length === 0) {
-    return jsonResponse({ claimed: 0, sent: 0, failed: 0, invalid: 0, configured: true });
-  }
-
-  const messages = claimed.map(buildMessage);
-
-  let results: Array<{ status: number; id?: string; details?: unknown }>;
-  try {
-    results = await sendBatch(messages);
-  } catch (networkError) {
-    // The provider is unreachable. Everything in the batch is retryable; the database schedules the
-    // next attempt with backoff, so nothing is lost and nothing is marked invalid.
-    const message = networkError instanceof Error ? networkError.message : String(networkError);
-    for (const delivery of claimed) {
-      await supabase.rpc('report_delivery', {
-        p_delivery_id: delivery.delivery_id,
-        p_sent: false,
-        p_error: `provider unreachable: ${message}`.slice(0, 300),
-        p_invalid: false,
-        p_provider_message_id: null,
-      });
-    }
-
-    return jsonResponse({ claimed: claimed.length, sent: 0, failed: claimed.length, invalid: 0, error: message.slice(0, 200) });
+    return jsonResponse({
+      claimed: 0,
+      sent: 0,
+      failed: 0,
+      invalid: 0,
+      configured: true,
+      fcm_configured: Boolean(FCM_SERVICE_ACCOUNT_JSON),
+    });
   }
 
   let sent = 0;
   let failed = 0;
   let invalid = 0;
 
-  for (const [index, delivery] of claimed.entries()) {
-    const outcome = results[index] ?? { status: 502, details: 'missing provider response' };
-    const details = typeof outcome.details === 'string' ? outcome.details : JSON.stringify(outcome.details ?? '');
+  const expoIndices: number[] = [];
+  const expoDeliveries: ClaimedDelivery[] = [];
 
-    if (outcome.status === 200) {
+  for (const [idx, delivery] of claimed.entries()) {
+    if (delivery.token.startsWith('fcm:')) {
+      if (!FCM_SERVICE_ACCOUNT_JSON) {
+        failed += 1;
+        await supabase.rpc('report_delivery', {
+          p_delivery_id: delivery.delivery_id,
+          p_sent: false,
+          p_error: 'FCM_SERVICE_ACCOUNT_JSON secret not configured for native FCM tokens',
+          p_invalid: false,
+          p_provider_message_id: null,
+        });
+      }
+      continue;
+    }
+    expoIndices.push(idx);
+    expoDeliveries.push(delivery);
+  }
+
+  let results: ProviderResult[] = [];
+  if (expoDeliveries.length > 0) {
+    try {
+      results = await sendExpoBatch(expoDeliveries);
+    } catch (networkError) {
+      const message = networkError instanceof Error ? networkError.message : String(networkError);
+      for (const delivery of expoDeliveries) {
+        await supabase.rpc('report_delivery', {
+          p_delivery_id: delivery.delivery_id,
+          p_sent: false,
+          p_error: `provider unreachable: ${message}`.slice(0, 300),
+          p_invalid: false,
+          p_provider_message_id: null,
+        });
+      }
+      return jsonResponse({
+        claimed: claimed.length,
+        sent,
+        failed: failed + expoDeliveries.length,
+        invalid,
+        error: message.slice(0, 200),
+      });
+    }
+  }
+
+  for (let i = 0; i < expoDeliveries.length; i += 1) {
+    const delivery = expoDeliveries[i]!;
+    const outcome = results[i] ?? { ok: false, status: 502, details: 'missing provider response' };
+    const details =
+      typeof outcome.details === 'string'
+        ? outcome.details
+        : JSON.stringify(outcome.details ?? outcome.message ?? '');
+
+    if (outcome.ok) {
       sent += 1;
       await supabase.rpc('report_delivery', {
         p_delivery_id: delivery.delivery_id,
@@ -181,13 +230,12 @@ Deno.serve(async (request: Request) => {
       continue;
     }
 
-    if (isInvalidToken(outcome.details)) {
-      // Permanent: the device will never receive this token again.
+    if (isInvalidToken(outcome.details, outcome.message)) {
       invalid += 1;
       await supabase.rpc('report_delivery', {
         p_delivery_id: delivery.delivery_id,
         p_sent: false,
-        p_error: details.slice(0, 300),
+        p_error: `${details} ${outcome.message ?? ''}`.trim().slice(0, 300),
         p_invalid: true,
         p_provider_message_id: outcome.id ?? null,
       });
@@ -195,15 +243,10 @@ Deno.serve(async (request: Request) => {
     }
 
     failed += 1;
-    if (isRetryable(outcome.status, outcome.details)) {
-      console.warn(`delivery ${delivery.delivery_id} retryable: ${outcome.status} ${details.slice(0, 120)}`);
-    }
     await supabase.rpc('report_delivery', {
       p_delivery_id: delivery.delivery_id,
       p_sent: false,
-      p_error: `${outcome.status}: ${details}`.slice(0, 300),
-      // Anything that is neither accepted nor an invalid token is treated as transient: the
-      // database schedules a retry with backoff and the attempt ceiling decides when to give up.
+      p_error: `${outcome.status}: ${details} ${outcome.message ?? ''}`.trim().slice(0, 300),
       p_invalid: false,
       p_provider_message_id: outcome.id ?? null,
     });

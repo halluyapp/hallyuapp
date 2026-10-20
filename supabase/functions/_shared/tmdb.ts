@@ -1,16 +1,14 @@
-// TMDB client and payload normaliser for the catalog ingest Edge Function.
+// The Movie Database (TMDB) — the catalog data source.
 //
-// Everything TMDB-specific lives here so the function itself deals only in Hallyu's own payload
-// shapes (the ones `catalog_upsert_*` in migration 24 accept). A second provider later means a
-// second file next to this one, not a rewrite of the sync job.
+// Everything provider-specific lives here so the rest of Hallyu never mentions TMDB by shape: the
+// sync function feeds normalized objects into `public.catalog_upsert_title` and
+// `public.catalog_upsert_people`, which know nothing about where the data came from. Adding a
+// second provider means adding a sibling module that emits the same normalized shapes.
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p';
 
-const DEFAULT_PUBLIC_READ_TOKEN =
-  'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJmZjAxZjI4ZmM1YzQ3NzkxZTI4MDM4MzQ5NDQ1YmY1OCIsIm5iZiI6MTc4OTAyMDA1Ny43NzksInN1YiI6IjZhYTI0Nzk5OGQ1YWFjZTczMzY2ODJkMyIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.ETon7kqWQjj7jtJJOXyRgAWme9Sh9B7OUrdAI61uuH8';
-
-const ACCESS_TOKEN = (Deno.env.get('TMDB_ACCESS_TOKEN') ?? '').trim() || DEFAULT_PUBLIC_READ_TOKEN;
+const ACCESS_TOKEN = (Deno.env.get('TMDB_ACCESS_TOKEN') ?? '').trim();
 const API_KEY = (Deno.env.get('TMDB_API_KEY') ?? '').trim();
 
 export class TmdbError extends Error {
@@ -27,12 +25,15 @@ export function tmdbConfigured(): boolean {
   return Boolean(ACCESS_TOKEN || API_KEY);
 }
 
-export interface RequestOptions {
+interface RequestOptions {
   path: string;
   query?: Record<string, string | number | undefined>;
 }
 
-/** One GET against TMDB, with a timeout and structured error reporting. */
+/**
+ * One request against TMDB, with a timeout and structured error reporting. Never retries on its
+ * own — the caller owns backoff so it can write a run row and stop cleanly on a 429.
+ */
 export async function tmdb<T>({ path, query = {} }: RequestOptions): Promise<T> {
   if (!tmdbConfigured()) {
     throw new TmdbError('TMDB credentials are not configured', 503);
@@ -74,7 +75,7 @@ export async function tmdb<T>({ path, query = {} }: RequestOptions): Promise<T> 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Genre, streaming provider and world mapping
+// Genre, streaming provider & trailer mapping
 // ---------------------------------------------------------------------------------------------
 
 const TMDB_GENRE_NAMES: Record<number, string[]> = {
@@ -107,7 +108,9 @@ const TMDB_GENRE_NAMES: Record<number, string[]> = {
 function expandGenreName(raw: string): string[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
-  if (trimmed === 'Sci-Fi & Fantasy' || trimmed === 'Science Fiction') return trimmed === 'Science Fiction' ? ['Sci-Fi'] : ['Sci-Fi', 'Fantasy'];
+  if (trimmed === 'Sci-Fi & Fantasy' || trimmed === 'Science Fiction') {
+    return trimmed === 'Science Fiction' ? ['Sci-Fi'] : ['Sci-Fi', 'Fantasy'];
+  }
   if (trimmed === 'Action & Adventure') return ['Action', 'Adventure'];
   if (trimmed === 'War & Politics') return ['Historical', 'Politics'];
   if (trimmed === 'History') return ['Historical'];
@@ -115,7 +118,7 @@ function expandGenreName(raw: string): string[] {
   return [trimmed];
 }
 
-function normalizeGenres(
+export function normalizeGenres(
   genres?: { id: number; name: string }[],
   genreIds?: number[],
 ): string[] {
@@ -163,7 +166,7 @@ function canonicalProviderName(raw: string): string | null {
   return clean.length <= 28 ? clean : null;
 }
 
-export interface WatchProviderRegion {
+interface WatchProviderRegion {
   flatrate?: { provider_name: string }[];
   ads?: { provider_name: string }[];
   free?: { provider_name: string }[];
@@ -171,7 +174,7 @@ export interface WatchProviderRegion {
 
 const PRIORITY_REGIONS = ['US', 'KR', 'GB', 'NG', 'JP', 'SG', 'CA', 'AU', 'TW'];
 
-function extractStreamingProviders(
+export function extractStreamingProviders(
   watchProviders?: { results?: Record<string, WatchProviderRegion> },
   networks?: { name: string }[],
 ): string[] {
@@ -189,7 +192,11 @@ function extractStreamingProviders(
 
   for (const net of networks ?? []) {
     const canonical = canonicalProviderName(net.name);
-    if (canonical && found.size < 6 && /^(Netflix|Disney\+|Prime Video|Apple TV\+|Max|Hulu|Crunchyroll|iQIYI|WeTV|TVING|Wavve)$/i.test(canonical)) {
+    if (
+      canonical &&
+      found.size < 6 &&
+      /^(Netflix|Disney\+|Prime Video|Apple TV\+|Max|Hulu|Crunchyroll|iQIYI|WeTV|TVING|Wavve)$/i.test(canonical)
+    ) {
       found.add(canonical);
     }
   }
@@ -197,50 +204,159 @@ function extractStreamingProviders(
   return [...found];
 }
 
-function extractTrailerUrl(videos?: { results?: { site?: string; type?: string; official?: boolean; key?: string }[] }): string | null {
-  const list = videos?.results ?? [];
-  const best =
-    list.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.official && v.key) ??
-    list.find((v) => v.site === 'YouTube' && v.type === 'Trailer' && v.key) ??
-    list.find((v) => v.site === 'YouTube' && v.type === 'Teaser' && v.key);
-  return best?.key ? `https://www.youtube.com/watch?v=${best.key}` : null;
+export function extractTrailerUrl(videos?: {
+  results?: { site?: string; type?: string; official?: boolean; key?: string }[];
+}): string | null {
+  const yt = (videos?.results ?? []).filter(
+    (v) => v.site === 'YouTube' && Boolean(v.key) && /^(Trailer|Teaser)$/i.test(v.type ?? ''),
+  );
+  if (yt.length === 0) return null;
+  const pick =
+    yt.find((v) => v.official && /^Trailer$/i.test(v.type ?? '')) ??
+    yt.find((v) => /^Trailer$/i.test(v.type ?? '')) ??
+    yt[0];
+  return pick?.key ? `https://www.youtube.com/watch?v=${pick.key}` : null;
 }
 
-export function worldFor(language: string | null | undefined, countries: string[] | undefined): string {
-  const lang = (language ?? '').toLowerCase();
-  const origin = new Set((countries ?? []).map((c) => c.toUpperCase()));
+// ---------------------------------------------------------------------------------------------
+// Classification
+// ---------------------------------------------------------------------------------------------
 
+export const WORLD_IDS = ['kdrama', 'cdrama', 'anime', 'hollywood'] as const;
+export type CatalogWorld = (typeof WORLD_IDS)[number];
+
+const WESTERN_ORIGINS = ['US', 'GB', 'CA', 'AU', 'NZ', 'IE'];
+
+/**
+ * Authoritative world classification for Hallyu's four worlds:
+ *  - kdrama: Korean language or South Korean production (non-Japanese-animation)
+ *  - cdrama: Chinese-language / Greater China production
+ *  - anime: Japanese animation strictly (genre 16 / Animation required so live-action Japanese
+ *           dramas & films are never misclassified as Anime)
+ *  - hollywood: English-language or Western studio production (US/GB/CA/AU/NZ/IE), excluding
+ *               non-English international titles so unrelated foreign films never land in Hollywood
+ *  - null: outside Hallyu's four canonical worlds (skipped cleanly during ingestion)
+ */
+export function worldFor(raw: TmdbListItem, _mediaType: 'tv' | 'movie'): CatalogWorld | null {
+  const origin = new Set(
+    (raw.origin_country ?? raw.production_countries?.map((c) => c.iso_3166_1) ?? []).map((c) =>
+      c.toUpperCase(),
+    ),
+  );
+  const lang = (raw.original_language ?? '').toLowerCase();
+  const isAnimated =
+    Boolean(raw.genres?.some((g) => g.id === 16 || /animation/i.test(g.name))) ||
+    Boolean(raw.genre_ids?.includes(16));
+
+  if ((lang === 'ja' || origin.has('JP')) && isAnimated) return 'anime';
   if (lang === 'ko' || origin.has('KR')) return 'kdrama';
-  if (lang === 'zh' || lang === 'cn' || origin.has('CN') || origin.has('TW') || origin.has('HK')) {
+  if (
+    lang === 'zh' ||
+    lang === 'cn' ||
+    lang === 'yue' ||
+    lang === 'nan' ||
+    lang === 'bo' ||
+    lang === 'wuu' ||
+    origin.has('CN') ||
+    origin.has('TW') ||
+    origin.has('HK')
+  ) {
     return 'cdrama';
   }
-  if (lang === 'ja' || origin.has('JP')) return 'anime';
-  return 'hollywood';
+  if (lang === 'ja' || (origin.has('JP') && !WESTERN_ORIGINS.some((c) => origin.has(c)))) {
+    return null;
+  }
+  if (lang === 'en' || WESTERN_ORIGINS.some((c) => origin.has(c))) {
+    return 'hollywood';
+  }
+  return null;
 }
 
-function statusFor(raw: string | undefined, releaseDate: string | null): string {
-  const s = (raw ?? '').toLowerCase();
+function addDaysIso(isoDate: string, days: number): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export function statusFor(
+  raw: TmdbDetail,
+  mediaType: 'tv' | 'movie',
+): 'airing' | 'completed' | 'upcoming' | 'canceled' {
+  const s = (raw.status ?? '').trim().toLowerCase();
+  const today = new Date().toISOString().slice(0, 10);
+
   if (s === 'canceled' || s === 'cancelled') return 'canceled';
-  if (s === 'ended') return 'completed';
-  if (s === 'returning series') return 'airing';
-  if (s.includes('production') || s === 'planned' || s === 'rumored' || s === 'pilot') {
-    return 'upcoming';
-  }
-  if (s === 'released') {
-    if (releaseDate && releaseDate > new Date().toISOString().slice(0, 10)) return 'upcoming';
+
+  const premiere = (mediaType === 'movie' ? raw.release_date : raw.first_air_date) || null;
+  const lastAir = raw.last_air_date || raw.last_episode_to_air?.air_date || null;
+  const nextAir = raw.next_episode_to_air?.air_date || null;
+
+  if (mediaType === 'movie') {
+    if (
+      (premiere && premiere > today) ||
+      s === 'rumored' ||
+      s === 'planned' ||
+      s === 'in production' ||
+      s === 'post production'
+    ) {
+      return 'upcoming';
+    }
     return 'completed';
   }
-  if (releaseDate && releaseDate > new Date().toISOString().slice(0, 10)) return 'upcoming';
-  return 'airing';
+
+  // TV series
+  if (
+    (premiere && premiere > today) ||
+    (!premiere &&
+      (s === 'rumored' ||
+        s === 'planned' ||
+        s === 'pilot' ||
+        s === 'in production' ||
+        s === 'post production'))
+  ) {
+    return 'upcoming';
+  }
+
+  if (s === 'ended') return 'completed';
+
+  const recentFloor = addDaysIso(today, -45);
+  const activeCeiling = addDaysIso(today, 60);
+
+  if (
+    (nextAir && nextAir >= addDaysIso(today, -7) && nextAir <= activeCeiling) ||
+    (s === 'returning series' &&
+      ((lastAir && lastAir >= recentFloor) || (!lastAir && premiere && premiere >= addDaysIso(today, -60))))
+  ) {
+    return 'airing';
+  }
+
+  if (nextAir && nextAir > activeCeiling) {
+    return 'upcoming';
+  }
+
+  if (!s && premiere && premiere >= addDaysIso(today, -45)) {
+    return 'airing';
+  }
+
+  return 'completed';
 }
 
-function image(path: string | null | undefined, size: string): string | null {
-  return path ? `${IMAGE_BASE}/${size}${path}` : null;
+export function activeSeasonNumber(detail: TmdbDetail): number {
+  const next = detail.next_episode_to_air?.season_number;
+  if (next && next >= 1) return next;
+  const last = detail.last_episode_to_air?.season_number;
+  if (last && last >= 1) return last;
+  const count = detail.number_of_seasons ?? 1;
+  return count >= 1 ? count : 1;
 }
 
-export interface TmdbTitle {
+// ---------------------------------------------------------------------------------------------
+// Raw shapes (only the fields Hallyu reads)
+// ---------------------------------------------------------------------------------------------
+
+export interface TmdbListItem {
   id: number;
-  media_type?: 'tv' | 'movie';
+  media_type?: 'tv' | 'movie' | 'person';
   name?: string;
   title?: string;
   original_name?: string;
@@ -252,163 +368,199 @@ export interface TmdbTitle {
   poster_path?: string | null;
   backdrop_path?: string | null;
   first_air_date?: string;
-  last_air_date?: string;
   release_date?: string;
+  genre_ids?: number[];
+  genres?: { id: number; name: string }[];
+  popularity?: number;
+  vote_average?: number;
+  vote_count?: number;
+}
+
+export interface TmdbDetail extends TmdbListItem {
   status?: string;
+  last_air_date?: string;
   number_of_episodes?: number;
   number_of_seasons?: number;
   episode_run_time?: number[];
   runtime?: number;
-  genres?: { id: number; name: string }[];
-  genre_ids?: number[];
   networks?: { name: string }[];
-  vote_average?: number;
-  vote_count?: number;
-  popularity?: number;
-  next_episode_to_air?: { air_date?: string } | null;
-  credits?: { cast?: TmdbCastMember[]; crew?: TmdbCrewMember[] };
+  production_companies?: { name: string }[];
+  homepage?: string;
+  in_production?: boolean;
+  last_episode_to_air?: { air_date?: string; season_number?: number; episode_number?: number } | null;
+  next_episode_to_air?: { air_date?: string; season_number?: number; episode_number?: number } | null;
   videos?: { results?: { site?: string; type?: string; official?: boolean; key?: string }[] };
   'watch/providers'?: { results?: Record<string, WatchProviderRegion> };
-  [key: `season/${number}`]: TmdbSeason | undefined;
 }
 
 export interface TmdbSeason {
   season_number: number;
   episodes?: {
+    id: number;
     episode_number: number;
     name?: string;
     overview?: string;
     air_date?: string | null;
     runtime?: number | null;
     still_path?: string | null;
-    episode_type?: string;
+    vote_average?: number | null;
   }[];
 }
 
-export interface TmdbCastMember {
-  id: number;
-  name: string;
-  original_name?: string;
-  character?: string;
-  order?: number;
-  profile_path?: string | null;
-  popularity?: number;
+export interface TmdbCredits {
+  cast?: {
+    id: number;
+    name: string;
+    original_name?: string;
+    profile_path?: string | null;
+    character?: string;
+    order?: number;
+    roles?: { character?: string; episode_count?: number }[];
+  }[];
+  crew?: {
+    id: number;
+    name: string;
+    original_name?: string;
+    profile_path?: string | null;
+    job?: string;
+    jobs?: { job?: string }[];
+  }[];
 }
 
-export interface TmdbCrewMember {
-  id: number;
-  name: string;
-  original_name?: string;
-  job?: string;
-  profile_path?: string | null;
-  popularity?: number;
-}
+// ---------------------------------------------------------------------------------------------
+// Normalizers — produce the exact JSON shapes the `catalog_upsert_*` functions accept
+// ---------------------------------------------------------------------------------------------
 
-/** Shape `catalog_upsert_title` expects (migration 24). */
-export function normalizeTitle(raw: TmdbTitle, mediaType: 'tv' | 'movie'): Record<string, unknown> {
-  const countries =
-    raw.origin_country ?? raw.production_countries?.map((c) => c.iso_3166_1) ?? [];
-  const firstAir = (mediaType === 'tv' ? raw.first_air_date : raw.release_date) || null;
-  const lastAir = (mediaType === 'tv' ? raw.last_air_date : raw.release_date) || null;
-  const year = firstAir ? Number(firstAir.slice(0, 4)) : new Date().getUTCFullYear();
+const image = (path: string | null | undefined, size: string) =>
+  path ? `${IMAGE_BASE}/${size}${path}` : null;
+
+export function normalizeTitle(
+  raw: TmdbDetail,
+  mediaType: 'tv' | 'movie',
+  world: CatalogWorld,
+): Record<string, unknown> {
+  const title = (raw.name ?? raw.title ?? '').trim();
+  const original = (raw.original_name ?? raw.original_title ?? '').trim();
+  const firstAir = (raw.first_air_date ?? raw.release_date ?? '') || null;
+  const year = firstAir ? Number.parseInt(firstAir.slice(0, 4), 10) : null;
   const runtime =
-    mediaType === 'tv'
-      ? raw.episode_run_time?.[0] ?? null
-      : raw.runtime ?? null;
-
-  const streamingOn = extractStreamingProviders(raw['watch/providers'], raw.networks);
+    mediaType === 'movie'
+      ? (raw.runtime ?? null)
+      : (raw.episode_run_time && raw.episode_run_time.length > 0 ? raw.episode_run_time[0] : null);
+  const streaming = extractStreamingProviders(raw['watch/providers'], raw.networks);
   const trailerUrl = extractTrailerUrl(raw.videos);
 
   return {
+    provider_id: 'tmdb',
     external_id: String(raw.id),
     media_type: mediaType,
-    world: worldFor(raw.original_language, countries),
-    title: (raw.name ?? raw.title ?? 'Untitled').trim(),
-    original_title: (raw.original_name ?? raw.original_title ?? '').trim() || null,
-    original_language: raw.original_language ?? null,
-    origin_country: countries,
-    year: Number.isFinite(year) && year > 1880 ? year : new Date().getUTCFullYear(),
-    end_year: lastAir ? Number(lastAir.slice(0, 4)) || null : null,
-    first_air_date: firstAir,
-    last_air_date: lastAir,
-    next_episode_at: raw.next_episode_to_air?.air_date
-      ? `${raw.next_episode_to_air.air_date}T21:00:00Z`
-      : null,
-    status: statusFor(raw.status, firstAir),
-    episode_count: mediaType === 'tv' ? raw.number_of_episodes ?? 0 : 1,
-    season_count: mediaType === 'tv' ? Math.max(1, raw.number_of_seasons ?? 1) : 1,
-    runtime_minutes: runtime && runtime > 0 ? runtime : null,
-    synopsis: (raw.overview ?? '').trim() || null,
+    world,
+    title,
+    original_title: original && original !== title ? original : null,
+    year: Number.isFinite(year) ? year : null,
+    status: statusFor(raw, mediaType),
+    synopsis: raw.overview?.trim() || null,
     poster_url: image(raw.poster_path, 'w500'),
-    backdrop_url: image(raw.backdrop_path, 'w1280'),
-    trailer_url: trailerUrl,
+    backdrop_url: image(raw.backdrop_path, 'w780'),
     genres: normalizeGenres(raw.genres, raw.genre_ids),
-    streaming_on: streamingOn,
-    network: raw.networks?.[0]?.name ?? null,
-    vote_average: typeof raw.vote_average === 'number' ? Math.round(raw.vote_average * 100) / 100 : null,
-    vote_count: raw.vote_count ?? 0,
+    network: raw.networks?.[0]?.name ?? raw.production_companies?.[0]?.name ?? null,
+    streaming_on: streaming,
+    runtime_minutes: runtime,
+    episode_count: mediaType === 'tv' ? (raw.number_of_episodes ?? 0) : 0,
+    season_count: mediaType === 'tv' ? Math.max(1, raw.number_of_seasons ?? 1) : 1,
+    first_air_date: firstAir,
+    last_air_date: (raw.last_air_date || raw.last_episode_to_air?.air_date || null),
+    next_episode_at: raw.next_episode_to_air?.air_date
+      ? `${raw.next_episode_to_air.air_date}T00:00:00Z`
+      : null,
+    trailer_url: trailerUrl,
+    original_language: raw.original_language ?? null,
+    origin_country:
+      raw.origin_country ?? raw.production_countries?.map((c) => c.iso_3166_1) ?? [],
     popularity: raw.popularity ?? null,
-    provider_data: { status: raw.status ?? null },
+    vote_average: raw.vote_average ?? null,
+    vote_count: raw.vote_count ?? 0,
+    provider_data: {
+      homepage: raw.homepage ?? null,
+      status: raw.status ?? null,
+      in_production: raw.in_production ?? null,
+    },
   };
 }
 
-/** Shape `catalog_upsert_episodes` expects. */
 export function normalizeSeason(season: TmdbSeason): Record<string, unknown>[] {
-  return (season.episodes ?? [])
-    .filter((ep) => ep.episode_number >= 1)
-    .map((ep) => ({
-      number: ep.episode_number,
-      title: ep.name?.trim() || null,
-      synopsis: ep.overview?.trim() || null,
-      air_date: ep.air_date || null,
-      runtime_minutes: ep.runtime && ep.runtime > 0 ? ep.runtime : null,
-      still_url: image(ep.still_path, 'w500'),
-      episode_type: ep.episode_type === 'finale' ? 2 : 0,
-    }));
+  return (season.episodes ?? []).map((e) => ({
+    season: season.season_number,
+    number: e.episode_number,
+    title: e.name?.trim() || null,
+    synopsis: e.overview?.trim() || null,
+    air_date: e.air_date || null,
+    runtime_minutes: e.runtime ?? null,
+    still_url: image(e.still_path, 'w300'),
+    vote_average: e.vote_average ?? null,
+    external_id: String(e.id),
+  }));
 }
 
-const CREW_JOBS: Record<string, string> = {
-  Director: 'director',
-  'Series Director': 'director',
-  Writer: 'writer',
-  Screenplay: 'writer',
-  'Series Composition': 'writer',
-  'Original Story': 'creator',
-  Producer: 'producer',
-  'Executive Producer': 'producer',
-  Creator: 'creator',
-};
+const RELEVANT_JOBS = new Map<string, string>([
+  ['Director', 'director'],
+  ['Writer', 'writer'],
+  ['Screenplay', 'writer'],
+  ['Creator', 'creator'],
+  ['Executive Producer', 'producer'],
+]);
 
-/** Shape `catalog_upsert_title_people` expects. */
-export function normalizeCredits(credits: TmdbTitle['credits']): Record<string, unknown>[] {
-  if (!credits) return [];
-  const out: Record<string, unknown>[] = [];
+export function normalizeCredits(credits: TmdbCredits): {
+  external_id: string;
+  name: string;
+  korean_name: string | null;
+  photo_url: string | null;
+  job: string;
+  character: string | null;
+  order_index: number;
+}[] {
+  const out: {
+    external_id: string;
+    name: string;
+    korean_name: string | null;
+    photo_url: string | null;
+    job: string;
+    character: string | null;
+    order_index: number;
+  }[] = [];
 
-  for (const member of (credits.cast ?? []).slice(0, 18)) {
+  for (const member of (credits.cast ?? []).slice(0, 20)) {
+    const extId = String(member.id);
+    const role = (member.character ?? member.roles?.[0]?.character ?? '').trim() || null;
+    const isEastAsianOriginal =
+      member.original_name &&
+      member.original_name !== member.name &&
+      /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(member.original_name);
+
     out.push({
-      external_id: String(member.id),
+      external_id: extId,
       name: member.name,
-      korean_name: member.original_name && member.original_name !== member.name ? member.original_name : null,
-      photo_url: image(member.profile_path, 'w300'),
-      popularity: member.popularity ?? null,
+      korean_name: isEastAsianOriginal ? member.original_name! : null,
+      photo_url: image(member.profile_path, 'w185'),
       job: 'actor',
-      character: member.character?.trim() || null,
-      order_index: member.order ?? 0,
+      character: role,
+      order_index: member.order ?? out.length,
     });
   }
 
   for (const member of credits.crew ?? []) {
-    const job = CREW_JOBS[member.job ?? ''];
-    if (!job) continue;
+    const jobs = member.jobs?.map((j) => j.job ?? '') ?? (member.job ? [member.job] : []);
+    const matched = jobs.find((j) => RELEVANT_JOBS.has(j));
+    if (!matched) continue;
+
     out.push({
       external_id: String(member.id),
       name: member.name,
-      korean_name: member.original_name && member.original_name !== member.name ? member.original_name : null,
-      photo_url: image(member.profile_path, 'w300'),
-      popularity: member.popularity ?? null,
-      job,
+      korean_name: null,
+      photo_url: image(member.profile_path, 'w185'),
+      job: RELEVANT_JOBS.get(matched) ?? 'director',
       character: null,
-      order_index: 0,
+      order_index: out.length,
     });
   }
 

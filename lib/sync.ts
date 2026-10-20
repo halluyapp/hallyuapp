@@ -17,6 +17,7 @@
  *           activity from other devices/members lands without manual reloads.
  */
 import { reportError } from './analytics';
+import { presentServerNotificationBanner } from './reminders';
 import { fetchBootstrap, serverProfileToUser } from './api/bootstrap';
 import {
   fetchComments,
@@ -722,8 +723,26 @@ export function subscribeBackendRealtime(
     channel.on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${userId}` },
-      () => {
+      (payload) => {
         void adoptNotifications(cb);
+        if (payload.eventType === 'INSERT') {
+          const row = payload.new as {
+            id?: string;
+            group?: string;
+            title?: string | null;
+            body?: string | null;
+            deep_link?: string | null;
+          } | undefined;
+          if (row?.id) {
+            void presentServerNotificationBanner({
+              id: row.id,
+              group: row.group,
+              title: row.title,
+              body: row.body,
+              deepLink: row.deep_link,
+            });
+          }
+        }
       },
     );
   }

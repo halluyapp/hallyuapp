@@ -1,42 +1,50 @@
-// catalog-sync — the TMDB ingest job across all four Hallyu worlds (K-Drama, C-Drama, Anime, Hollywood).
+// Hallyu — catalog sync function.
 //
-// Jobs supported (`{"job": "<name>", ...}`):
+// The only thing in the system allowed to talk to the catalog provider. Runs on a schedule and on
+// operator request, writes normalized records through `public.catalog_upsert_*`, records every run
+// in `public.catalog_sync_runs`, and never runs concurrently with itself (`catalog_begin_run`
+// guards run state via idempotency keys).
 //
-//   trending    discover current + upcoming + popular TV/movies across all 4 worlds, enrich due
-//               titles with cast/episodes/streaming providers, and refresh Hallyu trending snapshots
-//   discover    seed all 4 worlds from TMDB discover/tv, discover/movie and trending/all/week
-//   refresh     enrich due records in parallel batches (credits -> people & title_people, seasons ->
-//               title_episodes, watch/providers -> streaming_on, videos -> trailer_url)
-//   detail      enrich one title's full record, seasons and cast
-//   seasons     upsert the episode list for one season of a TV title
+// Invocation (service role only):
+//   POST /functions/v1/catalog-sync   { "job": "trending" }
+//   POST /functions/v1/catalog-sync   { "job": "discover", "world": "kdrama", "pages": 2 }
+//   POST /functions/v1/catalog-sync   { "job": "refresh",  "limit": 48 }
+//   POST /functions/v1/catalog-sync   { "job": "detail",   "title_id": "<uuid>" }
+//   POST /functions/v1/catalog-sync   { "job": "seasons",  "title_id": "<uuid>", "season": 1 }
 
-import { adminClient, requireServiceRole } from '../_shared/supabase.ts';
+import { adminClient, type AdminClient, requireServiceRole } from '../_shared/supabase.ts';
 import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
 import {
-  TmdbError,
+  activeSeasonNumber,
+  type CatalogWorld,
   normalizeCredits,
   normalizeSeason,
   normalizeTitle,
   tmdb,
   tmdbConfigured,
+  type TmdbCredits,
+  type TmdbDetail,
+  TmdbError,
+  type TmdbListItem,
   type TmdbSeason,
-  type TmdbTitle,
+  WORLD_IDS,
+  worldFor,
 } from '../_shared/tmdb.ts';
 
-const DEFAULT_PROVIDER = Deno.env.get('CATALOG_PROVIDER_ID') ?? 'tmdb';
-const WORLD_IDS = ['kdrama', 'cdrama', 'anime', 'hollywood'] as const;
+type Job = 'trending' | 'discover' | 'refresh' | 'detail' | 'seasons';
 
-interface PagedResult {
-  page: number;
-  results: TmdbTitle[];
-  total_pages: number;
-  total_results: number;
+interface SyncRequest {
+  job?: Job;
+  world?: CatalogWorld;
+  pages?: number;
+  limit?: number;
+  title_id?: string;
+  season?: number;
 }
 
-interface JobResult {
-  job: string;
-  provider: string;
-  run_id: string;
+interface RunResult {
+  run_id: string | null;
+  job: Job;
   items_seen: number;
   items_written: number;
   items_unchanged: number;
@@ -46,443 +54,363 @@ interface JobResult {
   error?: string;
 }
 
-function isoDaysFromToday(offsetDays: number): string {
-  return new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
+function isoOffsetDays(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
-async function mapConcurrent<T, R>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let cursor = 0;
-
-  const runner = async () => {
-    while (cursor < items.length) {
-      const idx = cursor;
-      cursor += 1;
-      out[idx] = await worker(items[idx]);
-    }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => runner()));
-  return out;
-}
-
-interface WorldFeedSpec {
-  path: string;
-  mediaType?: 'tv' | 'movie';
-  query: Record<string, string | number>;
-}
-
-function feedsForWorld(world: string): WorldFeedSpec[] {
-  const recentWindow = isoDaysFromToday(-45);
-  const futureWindow = isoDaysFromToday(180);
+/**
+ * Full lifecycle coverage per world across TV & Movies:
+ *  - Popular TV & Movies
+ *  - Currently On-The-Air TV (active weekly broadcast schedule)
+ *  - Upcoming TV Premieres & Upcoming Movie Releases (future release dates)
+ *  - Top Rated TV & Movies (Bayesian discovery seed)
+ */
+function feedsForWorld(
+  world: CatalogWorld,
+): { path: string; mediaType: 'tv' | 'movie'; query: Record<string, string | number> }[] {
+  const airingStart = isoOffsetDays(-14);
+  const airingEnd = isoOffsetDays(21);
+  const today = isoOffsetDays(0);
+  const tomorrow = isoOffsetDays(1);
+  const upcomingHorizon = isoOffsetDays(270);
 
   switch (world) {
     case 'kdrama':
       return [
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: { with_original_language: 'ko', sort_by: 'popularity.desc', 'vote_count.gte': 5 },
-        },
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: {
-            with_original_language: 'ko',
-            sort_by: 'popularity.desc',
-            'air_date.gte': recentWindow,
-            'air_date.lte': futureWindow,
-          },
-        },
-        {
-          path: 'discover/movie',
-          mediaType: 'movie',
-          query: { with_original_language: 'ko', sort_by: 'popularity.desc', 'vote_count.gte': 15 },
-        },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'vote_average.desc', 'vote_count.gte': 100 } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'KR', with_original_language: 'ko', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'vote_average.desc', 'vote_count.gte': 150 } },
       ];
     case 'cdrama':
       return [
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: { with_original_language: 'zh', sort_by: 'popularity.desc', 'vote_count.gte': 3 },
-        },
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: {
-            with_original_language: 'zh',
-            sort_by: 'popularity.desc',
-            'air_date.gte': recentWindow,
-            'air_date.lte': futureWindow,
-          },
-        },
-        {
-          path: 'discover/movie',
-          mediaType: 'movie',
-          query: { with_original_language: 'zh', sort_by: 'popularity.desc', 'vote_count.gte': 10 },
-        },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', sort_by: 'vote_average.desc', 'vote_count.gte': 50 } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'CN|HK|TW', sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'CN|HK|TW', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'CN|HK|TW', sort_by: 'vote_average.desc', 'vote_count.gte': 100 } },
       ];
     case 'anime':
       return [
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: {
-            with_original_language: 'ja',
-            with_genres: '16',
-            sort_by: 'popularity.desc',
-            'vote_count.gte': 5,
-          },
-        },
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: {
-            with_original_language: 'ja',
-            with_genres: '16',
-            sort_by: 'popularity.desc',
-            'air_date.gte': recentWindow,
-            'air_date.lte': futureWindow,
-          },
-        },
-        {
-          path: 'discover/movie',
-          mediaType: 'movie',
-          query: {
-            with_original_language: 'ja',
-            with_genres: '16',
-            sort_by: 'popularity.desc',
-            'vote_count.gte': 15,
-          },
-        },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'vote_average.desc', 'vote_count.gte': 150 } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'JP', with_genres: '16', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'vote_average.desc', 'vote_count.gte': 200 } },
       ];
-    default:
+    case 'hollywood':
       return [
-        { path: 'trending/all/week', query: {} },
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: { with_original_language: 'en', sort_by: 'popularity.desc', 'vote_count.gte': 25 },
-        },
-        {
-          path: 'discover/tv',
-          mediaType: 'tv',
-          query: {
-            with_original_language: 'en',
-            sort_by: 'popularity.desc',
-            'air_date.gte': recentWindow,
-            'air_date.lte': futureWindow,
-          },
-        },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'vote_average.desc', 'vote_count.gte': 300 } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'vote_average.desc', 'vote_count.gte': 500 } },
       ];
   }
-}
-
-async function upsertTitle(
-  supabase: ReturnType<typeof adminClient>,
-  raw: TmdbTitle,
-  mediaType: 'tv' | 'movie',
-): Promise<{ id: string | null; written: boolean }> {
-  const payload = normalizeTitle(raw, mediaType);
-  const { data, error } = await supabase.rpc('catalog_upsert_title', {
-    p_provider_id: DEFAULT_PROVIDER,
-    p_payload: payload,
-  });
-  if (error) throw new Error(`catalog_upsert_title failed: ${error.message}`);
-  const first = Array.isArray(data) ? data[0] : null;
-  return { id: first?.id ?? null, written: Boolean(first?.written) };
 }
 
 async function syncWorldLists(
-  supabase: ReturnType<typeof adminClient>,
-  world: string,
-  perFeedPages: number,
+  supabase: AdminClient,
+  world: CatalogWorld,
+  pages: number,
   counter: { requests: number },
 ): Promise<{ seen: number; written: number }> {
-  const seen = new Set<string>();
-  const toUpsert: { raw: TmdbTitle; mediaType: 'tv' | 'movie' }[] = [];
+  let seen = 0;
+  let written = 0;
 
-  for (const spec of feedsForWorld(world)) {
-    for (let page = 1; page <= perFeedPages; page += 1) {
+  for (const feed of feedsForWorld(world)) {
+    for (let page = 1; page <= pages; page += 1) {
       counter.requests += 1;
-      const response = await tmdb<PagedResult>({
-        path: spec.path,
-        query: { page, ...spec.query },
+      const list = await tmdb<{ results: TmdbListItem[] }>({
+        path: feed.path,
+        query: { ...feed.query, include_adult: 'false', page },
       });
 
-      for (const raw of response.results ?? []) {
-        if (!raw.poster_path && !raw.backdrop_path) continue;
-        const mediaType = spec.mediaType ?? (raw.media_type === 'movie' ? 'movie' : 'tv');
-        const key = `${mediaType}:${raw.id}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        toUpsert.push({ raw, mediaType });
-      }
+      for (const item of list.results ?? []) {
+        const mediaType =
+          item.media_type === 'movie' || item.media_type === 'tv'
+            ? item.media_type
+            : feed.mediaType;
+        if (!(item.name ?? item.title)) continue;
 
-      if (page >= (response.total_pages ?? 1)) break;
+        const classified = worldFor(item, mediaType);
+        if (!classified) continue;
+
+        const payload = normalizeTitle(item as TmdbDetail, mediaType, classified);
+        if (!payload.year) continue;
+
+        seen += 1;
+        const { data, error } = await supabase.rpc('catalog_upsert_title', {
+          p_provider_id: 'tmdb',
+          p_payload: payload,
+        });
+        if (error) throw new Error(`catalog_upsert_title: ${error.message}`);
+        const row = Array.isArray(data) ? data[0] : data;
+        if ((row as { written?: boolean } | null)?.written) written += 1;
+      }
     }
   }
 
-  let written = 0;
-  await mapConcurrent(toUpsert, 8, async ({ raw, mediaType }) => {
-    const res = await upsertTitle(supabase, raw, mediaType);
-    if (res.written) written += 1;
-  });
-
-  return { seen: seen.size, written };
+  return { seen, written };
 }
 
-async function syncSeason(
-  supabase: ReturnType<typeof adminClient>,
-  titleId: string,
-  seasonNumber: number,
-  counter: { requests: number },
-): Promise<number> {
-  const { data: row, error: readError } = await supabase
-    .from('titles')
-    .select('external_id')
-    .eq('id', titleId)
-    .single();
+type DueRow = { id: string; external_id: string; media_type: 'tv' | 'movie' };
 
-  if (readError || !row) throw new Error(`title ${titleId} not found: ${readError?.message}`);
-
-  counter.requests += 1;
-  const season = await tmdb<TmdbSeason>({
-    path: `tv/${row.external_id}/season/${seasonNumber}`,
-  });
-
-  const { data, error } = await supabase.rpc('catalog_upsert_episodes', {
-    p_title_id: titleId,
-    p_season: seasonNumber,
-    p_episodes: normalizeSeason(season),
-  });
-  if (error) throw new Error(`catalog_upsert_episodes failed: ${error.message}`);
-  return typeof data === 'number' ? data : 0;
-}
+const DETAIL_CONCURRENCY = 8;
 
 async function enrichOneRecord(
-  supabase: ReturnType<typeof adminClient>,
-  row: { title_id: string; external_id: string; media_type: 'tv' | 'movie' },
+  supabase: AdminClient,
+  row: DueRow,
   counter: { requests: number },
-  allSeasons = false,
-): Promise<number> {
-  counter.requests += 1;
-  const append =
-    row.media_type === 'tv'
-      ? 'credits,watch/providers,videos,season/1'
-      : 'credits,watch/providers,videos';
-
-  const detail = await tmdb<TmdbTitle>({
-    path: row.media_type === 'tv' ? `tv/${row.external_id}` : `movie/${row.external_id}`,
-    query: { append_to_response: append },
-  });
-
+): Promise<{ written: number; missing: number }> {
   let written = 0;
-  const upserted = await upsertTitle(supabase, detail, row.media_type);
-  if (upserted.written) written += 1;
 
-  const creditItems = normalizeCredits(detail.credits);
-  if (creditItems.length > 0) {
-    const { data: creditRows, error: creditError } = await supabase.rpc(
-      'catalog_upsert_title_people',
-      {
-        p_title_id: row.title_id,
-        p_credits: creditItems,
-      },
-    );
-    if (creditError) throw new Error(`catalog_upsert_title_people failed: ${creditError.message}`);
-    written += typeof creditRows === 'number' ? creditRows : 0;
-  }
+  try {
+    counter.requests += 1;
+    const creditsField = row.media_type === 'tv' ? 'aggregate_credits' : 'credits';
+    const append =
+      row.media_type === 'tv'
+        ? `${creditsField},videos,watch/providers,season/1`
+        : `${creditsField},videos,watch/providers`;
 
-  if (row.media_type === 'tv') {
-    const embeddedSeason1 = detail['season/1'];
-    if (embeddedSeason1?.episodes?.length) {
-      const { data: epCount, error: epError } = await supabase.rpc('catalog_upsert_episodes', {
-        p_title_id: row.title_id,
-        p_season: 1,
-        p_episodes: normalizeSeason(embeddedSeason1),
+    const detail = await tmdb<
+      TmdbDetail & {
+        credits?: TmdbCredits;
+        aggregate_credits?: TmdbCredits;
+        'season/1'?: TmdbSeason;
+      }
+    >({
+      path: `${row.media_type}/${row.external_id}`,
+      query: { append_to_response: append },
+    });
+
+    const classified = worldFor(detail, row.media_type);
+    if (!classified) {
+      await supabase
+        .from('titles')
+        .update({ catalog_unavailable_at: new Date().toISOString() })
+        .eq('id', row.id);
+      return { written: 0, missing: 1 };
+    }
+
+    const payload = normalizeTitle(detail, row.media_type, classified);
+    if (!payload.year) return { written: 0, missing: 0 };
+
+    const { data, error } = await supabase.rpc('catalog_upsert_title', {
+      p_provider_id: 'tmdb',
+      p_payload: payload,
+    });
+    if (error) throw new Error(`catalog_upsert_title: ${error.message}`);
+    const upserted = Array.isArray(data) ? data[0] : data;
+    if ((upserted as { written?: boolean } | null)?.written) written += 1;
+
+    const credits = normalizeCredits(detail.aggregate_credits ?? detail.credits ?? {});
+    if (credits.length > 0) {
+      const { error: creditError } = await supabase.rpc('catalog_upsert_title_people', {
+        p_title_id: row.id,
+        p_credits: credits,
       });
-      if (!epError && typeof epCount === 'number') written += epCount;
+      if (creditError) throw new Error(`catalog_upsert_title_people: ${creditError.message}`);
     }
 
-    const totalSeasons = Math.min(detail.number_of_seasons ?? 1, allSeasons ? 12 : 2);
-    if (allSeasons) {
-      for (let season = 2; season <= totalSeasons; season += 1) {
-        written += await syncSeason(supabase, row.title_id, season, counter);
+    if (row.media_type === 'tv') {
+      const seasonOne = detail['season/1'];
+      if (seasonOne?.episodes && seasonOne.episodes.length > 0) {
+        const episodes = normalizeSeason(seasonOne);
+        const { data: count, error: epError } = await supabase.rpc('catalog_upsert_episodes', {
+          p_title_id: row.id,
+          p_season: seasonOne.season_number ?? 1,
+          p_episodes: episodes,
+        });
+        if (epError) throw new Error(`catalog_upsert_episodes: ${epError.message}`);
+        written += Number(count ?? 0);
       }
-    } else if ((detail.number_of_seasons ?? 1) > 1) {
-      const latestSeason = Math.min(detail.number_of_seasons ?? 2, 20);
-      try {
-        written += await syncSeason(supabase, row.title_id, latestSeason, counter);
-      } catch {
-        // Non-fatal if a future empty season returns 404.
+
+      const activeSeason = activeSeasonNumber(detail);
+      if (activeSeason > 1 && activeSeason <= 40) {
+        try {
+          counter.requests += 1;
+          const active = await tmdb<TmdbSeason>({
+            path: `tv/${row.external_id}/season/${activeSeason}`,
+          });
+          const episodes = normalizeSeason(active);
+          if (episodes.length > 0) {
+            const { data: count, error: epError } = await supabase.rpc('catalog_upsert_episodes', {
+              p_title_id: row.id,
+              p_season: activeSeason,
+              p_episodes: episodes,
+            });
+            if (!epError) written += Number(count ?? 0);
+          }
+        } catch {
+          // Best-effort if provider has no episode payload yet for an unscheduled future season.
+        }
       }
     }
+
+    return { written, missing: 0 };
+  } catch (error) {
+    if (error instanceof TmdbError && error.status === 404) {
+      await supabase.rpc('catalog_mark_missing', {
+        p_provider_id: 'tmdb',
+        p_media_type: row.media_type,
+        p_external_ids: [row.external_id],
+      });
+      return { written: 0, missing: 1 };
+    }
+    throw error;
   }
-
-  return written;
 }
 
 async function syncDetail(
-  supabase: ReturnType<typeof adminClient>,
+  supabase: AdminClient,
   titleId: string,
   counter: { requests: number },
 ): Promise<number> {
-  const { data: title, error: readError } = await supabase
+  const { data: row, error } = await supabase
     .from('titles')
     .select('id, external_id, media_type')
     .eq('id', titleId)
     .single();
+  if (error || !row) throw new Error(`title ${titleId} does not exist`);
 
-  if (readError || !title) throw new Error(`title ${titleId} not found: ${readError?.message}`);
+  const outcome = await enrichOneRecord(supabase, row as DueRow, counter);
+  return outcome.written;
+}
 
-  return enrichOneRecord(
-    supabase,
-    {
-      title_id: title.id as string,
-      external_id: title.external_id as string,
-      media_type: title.media_type as 'tv' | 'movie',
-    },
-    counter,
-    true,
-  );
+async function syncSeason(
+  supabase: AdminClient,
+  titleId: string,
+  seasonNumber: number,
+  counter: { requests: number },
+): Promise<number> {
+  const { data: row, error } = await supabase
+    .from('titles')
+    .select('id, external_id, media_type')
+    .eq('id', titleId)
+    .single();
+  if (error || !row) throw new Error(`title ${titleId} does not exist`);
+  if ((row as { media_type: string }).media_type !== 'tv') return 0;
+
+  counter.requests += 1;
+  const season = await tmdb<TmdbSeason>({
+    path: `tv/${(row as { external_id: string }).external_id}/season/${seasonNumber}`,
+  });
+  const episodes = normalizeSeason(season);
+  const { data: count, error: upsertError } = await supabase.rpc('catalog_upsert_episodes', {
+    p_title_id: titleId,
+    p_season: seasonNumber,
+    p_episodes: episodes,
+  });
+  if (upsertError) throw new Error(`catalog_upsert_episodes: ${upsertError.message}`);
+  return Number(count ?? 0);
 }
 
 async function syncDueRecords(
-  supabase: ReturnType<typeof adminClient>,
-  world: string | null,
+  supabase: AdminClient,
+  world: CatalogWorld | null,
   limit: number,
   counter: { requests: number },
 ): Promise<{ seen: number; written: number; missing: number }> {
-  const { data: due, error } = await supabase.rpc('titles_needing_refresh', {
+  const { data: due, error: dueError } = await supabase.rpc('titles_needing_refresh', {
     p_world: world,
-    p_limit: limit,
+    p_limit: limit * 2,
   });
+  if (dueError) throw new Error(`titles_needing_refresh: ${dueError.message}`);
 
-  if (error) throw new Error(`titles_needing_refresh failed: ${error.message}`);
+  const dueRows = ((due ?? []) as { title_id: string; external_id: string; media_type: 'tv' | 'movie' }[])
+    .map((d) => ({ id: d.title_id, external_id: d.external_id, media_type: d.media_type }));
 
-  // Also grab any titles that still have zero credits or zero episodes so recently discovered
-  // rows get enriched immediately even when `catalog_synced_at` was set during list discovery.
-  const rows = [...((due ?? []) as Array<{
-    title_id: string;
-    external_id: string;
-    media_type: 'tv' | 'movie';
-  }>)];
+  // Prioritize un-enriched rows missing provider status alongside stalest due rows.
+  let unenrichedQuery = supabase
+    .from('titles')
+    .select('id, external_id, media_type, provider_data')
+    .is('catalog_unavailable_at', null)
+    .order('popularity', { ascending: false, nullsFirst: false })
+    .limit(limit * 3);
+  if (world) unenrichedQuery = unenrichedQuery.eq('world', world);
+  const { data: extraRows } = await unenrichedQuery;
 
-  if (rows.length < limit) {
-    let query = supabase
-      .from('titles')
-      .select('id, external_id, media_type')
-      .is('catalog_unavailable_at', null)
-      .eq('streaming_on', '{}')
-      .order('popularity', { ascending: false, nullsFirst: false })
-      .limit(limit - rows.length);
-    if (world) query = query.eq('world', world);
-    const { data: unenriched } = await query;
-    const existing = new Set(rows.map((r) => r.title_id));
-    for (const u of unenriched ?? []) {
-      const tid = u.id as string;
-      if (existing.has(tid)) continue;
-      existing.add(tid);
-      rows.push({
-        title_id: tid,
-        external_id: u.external_id as string,
-        media_type: u.media_type as 'tv' | 'movie',
-      });
-    }
+  const missingStatus = ((extraRows ?? []) as (DueRow & { provider_data?: { status?: string | null } | null })[])
+    .filter((r) => !r.provider_data?.status)
+    .map(({ id, external_id, media_type }) => ({ id, external_id, media_type }));
+
+  const seenIds = new Set<string>();
+  const candidates: DueRow[] = [];
+  for (const r of [...missingStatus, ...dueRows]) {
+    if (seenIds.has(r.id)) continue;
+    seenIds.add(r.id);
+    candidates.push(r);
+    if (candidates.length >= limit) break;
   }
 
   let written = 0;
   let missing = 0;
-  const missingByType: Record<'tv' | 'movie', string[]> = { tv: [], movie: [] };
 
-  await mapConcurrent(rows, 6, async (row) => {
-    try {
-      written += await enrichOneRecord(supabase, row, counter, false);
-    } catch (tmdbError) {
-      if (tmdbError instanceof TmdbError && tmdbError.status === 404) {
-        missingByType[row.media_type].push(row.external_id);
-        missing += 1;
-        return;
-      }
-      throw tmdbError;
+  for (let i = 0; i < candidates.length; i += DETAIL_CONCURRENCY) {
+    const batch = candidates.slice(i, i + DETAIL_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map((row) => enrichOneRecord(supabase, row, counter)),
+    );
+    for (const r of results) {
+      written += r.written;
+      missing += r.missing;
     }
-  });
-
-  for (const mediaType of ['tv', 'movie'] as const) {
-    if (missingByType[mediaType].length === 0) continue;
-    const { error: markError } = await supabase.rpc('catalog_mark_missing', {
-      p_provider_id: DEFAULT_PROVIDER,
-      p_media_type: mediaType,
-      p_external_ids: missingByType[mediaType],
-    });
-    if (markError) throw new Error(`catalog_mark_missing failed: ${markError.message}`);
   }
 
-  return { seen: rows.length, written, missing };
+  return { seen: candidates.length, written, missing };
 }
 
 Deno.serve(async (request: Request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (request.method !== 'POST') return errorResponse('POST required', 405);
 
   const guard = requireServiceRole(request);
   if (!guard.ok) return guard.response;
 
-  let body: {
-    job?: string;
-    world?: string;
-    title_id?: string;
-    season?: number;
-    limit?: number;
-    pages?: number;
-  } = {};
-
-  if (request.method === 'POST') {
-    try {
-      body = await request.json();
-    } catch {
-      // Empty body defaults to 'trending'.
-    }
-  }
-
-  const job = body.job ?? 'trending';
-  const started = Date.now();
-  const counter = { requests: 0 };
-
-  const supabase = adminClient();
-
-  const { data: usable } = await supabase.rpc('catalog_provider_is_usable', {
-    p_provider_id: DEFAULT_PROVIDER,
-  });
-  if (usable === false) {
-    return errorResponse(`catalog provider ${DEFAULT_PROVIDER} is in backoff; skipping this run`, 429);
-  }
-
   if (!tmdbConfigured()) {
-    return errorResponse(
-      'TMDB_ACCESS_TOKEN (or TMDB_API_KEY) must be set as a function secret before the catalog can be synced',
+    return jsonResponse(
+      {
+        configured: false,
+        reason: 'TMDB_ACCESS_TOKEN or TMDB_API_KEY is not set in function secrets',
+      },
       503,
     );
   }
 
-  const runKey = `${job}:${body.world ?? 'all'}:${new Date().toISOString().slice(0, 16)}`;
+  let body: SyncRequest;
+  try {
+    body = (await request.json()) as SyncRequest;
+  } catch {
+    body = {};
+  }
 
-  const { data: runId, error: beginError } = await supabase.rpc('catalog_begin_run', {
+  const job: Job = body.job ?? 'trending';
+  const started = Date.now();
+  const counter = { requests: 0 };
+  const supabase = adminClient();
+
+  const { data: runId, error: startError } = await supabase.rpc('catalog_begin_run', {
     p_job: job,
-    p_provider_id: DEFAULT_PROVIDER,
-    p_idempotency_key: runKey,
+    p_provider_id: 'tmdb',
+    p_idempotency_key: `${job}:${body.world ?? 'all'}:${new Date().toISOString().slice(0, 19)}`,
   });
-  if (beginError) return errorResponse(`could not start the run: ${beginError.message}`, 500);
+  if (startError) return errorResponse(startError.message, 409);
 
-  const result: JobResult = {
+  const result: RunResult = {
+    run_id: (runId as string | null) ?? null,
     job,
-    provider: DEFAULT_PROVIDER,
-    run_id: String(runId ?? ''),
     items_seen: 0,
     items_written: 0,
     items_unchanged: 0,
@@ -497,9 +425,7 @@ Deno.serve(async (request: Request) => {
         const pages = Math.min(Math.max(body.pages ?? 1, 1), 3);
         const worlds = body.world ? [body.world] : [...WORLD_IDS];
         for (const world of worlds) {
-          if (!WORLD_IDS.includes(world as (typeof WORLD_IDS)[number])) {
-            throw new Error(`unknown world ${world}`);
-          }
+          if (!WORLD_IDS.includes(world)) throw new Error(`unknown world ${world}`);
           const outcome = await syncWorldLists(supabase, world, pages, counter);
           result.items_seen += outcome.seen;
           result.items_written += outcome.written;
@@ -507,7 +433,7 @@ Deno.serve(async (request: Request) => {
         const enriched = await syncDueRecords(
           supabase,
           body.world ?? null,
-          Math.min(Math.max(body.limit ?? 24, 1), 60),
+          Math.min(Math.max(body.limit ?? 24, 1), 80),
           counter,
         );
         result.items_written += enriched.written;
@@ -516,12 +442,10 @@ Deno.serve(async (request: Request) => {
       }
 
       case 'discover': {
-        const pages = Math.min(Math.max(body.pages ?? 2, 1), 4);
+        const pages = Math.min(Math.max(body.pages ?? 1, 1), 3);
         const worlds = body.world ? [body.world] : [...WORLD_IDS];
         for (const world of worlds) {
-          if (!WORLD_IDS.includes(world as (typeof WORLD_IDS)[number])) {
-            throw new Error(`unknown world ${world}`);
-          }
+          if (!WORLD_IDS.includes(world)) throw new Error(`unknown world ${world}`);
           const outcome = await syncWorldLists(supabase, world, pages, counter);
           result.items_seen += outcome.seen;
           result.items_written += outcome.written;
@@ -560,9 +484,9 @@ Deno.serve(async (request: Request) => {
         return errorResponse(`unknown job ${job}`, 400);
     }
 
-    await supabase.rpc('refresh_trending', { p_window: '7 days', p_world: null });
-    await supabase.rpc('job_reconcile_catalog_status', { p_limit: 500 });
-    await supabase.rpc('job_reconcile_episode_schedule', { p_limit: 500 });
+    await supabase.rpc('job_reconcile_episode_schedule', { p_limit: 1000 });
+    await supabase.rpc('job_reconcile_catalog_status', { p_limit: 1000 });
+    await supabase.rpc('refresh_trending', { p_world: null });
 
     result.items_unchanged = Math.max(0, result.items_seen - result.items_written);
     result.provider_requests = counter.requests;

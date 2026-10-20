@@ -2605,6 +2605,52 @@ export type Database = {
         };
         Returns: Database['public']['Tables']['titles']['Row'][];
       };
+      catalog_is_valid_world: {
+        Args: {
+          p_genres: string[];
+          p_media_type: string;
+          p_origin_country: string[];
+          p_original_language: string;
+          p_world: string;
+        };
+        Returns: boolean;
+      };
+      send_test_notification: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      top_rated_titles: {
+        Args: {
+          p_limit?: number;
+          p_world?: string;
+        };
+        Returns: Database['public']['Tables']['titles']['Row'][];
+      };
+      world_leaders: {
+        Args: Record<string, never>;
+        Returns: {
+          backdrop_url: string | null;
+          episode_count: number;
+          first_air_date: string | null;
+          follower_count: number;
+          genres: string[];
+          id: string;
+          lifecycle: Database['public']['Enums']['catalog_lifecycle'];
+          media_type: Database['public']['Enums']['media_type'];
+          network: string | null;
+          next_episode_at: string | null;
+          original_title: string | null;
+          poster_url: string | null;
+          score: number;
+          season_count: number;
+          status: Database['public']['Enums']['title_status'];
+          synopsis: string | null;
+          title: string;
+          vote_average: number | null;
+          world: string;
+          year: number;
+        }[];
+      };
       trending_titles: {
         Args: {
           p_genre?: string;

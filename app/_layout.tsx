@@ -20,10 +20,10 @@ import { ToastProvider, toast } from '../components/ui/Toast';
 import { colors } from '../constants/theme';
 import { reportError } from '../lib/analytics';
 import { installBackendAnalyticsSink } from '../lib/api/analyticsSink';
-import { registerDevicePushToken } from '../lib/api/pushToken';
+import { installPushTokenRotationListener, registerDevicePushToken } from '../lib/api/pushToken';
 import { AuthProvider, useAuth } from '../lib/auth';
 import { markBoot } from '../lib/boot';
-import { installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders } from '../lib/reminders';
+import { ensureAndroidNotificationChannels, installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders } from '../lib/reminders';
 import { setDownloadScope } from '../lib/media';
 import { freshMemberState, getState, GUEST_ID, guestState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
 import {
@@ -329,6 +329,18 @@ function AccountSync() {
     );
   }, [state.hydrated, auth.status, auth.user?.id]);
 
+  useEffect(() => {
+    if (auth.status !== 'signedIn' || !auth.user) return;
+    const detachRotation = installPushTokenRotationListener();
+    const fg = RNAppState.addEventListener('change', (st) => {
+      if (st === 'active') void registerDevicePushToken();
+    });
+    return () => {
+      detachRotation();
+      fg.remove();
+    };
+  }, [auth.status, auth.user]);
+
   return null;
 }
 
@@ -366,15 +378,26 @@ function ReminderSync() {
   const router = useRouter();
   const navReady = useRootNavigationState()?.key != null;
   const navReadyRef = useRef(navReady);
+  const pendingUrlRef = useRef<string | undefined>(undefined);
+  const handledResponseIds = useRef(new Set<string>());
   navReadyRef.current = navReady;
+
+  useEffect(() => {
+    if (navReady && pendingUrlRef.current) {
+      const target = pendingUrlRef.current;
+      pendingUrlRef.current = undefined;
+      setTimeout(() => router.push(target as never), 250);
+    }
+  }, [navReady, router]);
+
   useEffect(() => {
     if (!hydrated || !remindersSupported) return;
     installNotificationHandler();
+    void ensureAndroidNotificationChannels();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = (delay = 1500) => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        // Local notification scheduling must never crash the app if the OS rejects it.
         void syncEpisodeReminders(getState()).catch((e) => reportError('ReminderSync.schedule', e));
       }, delay);
     };
@@ -383,13 +406,22 @@ function ReminderSync() {
       if (s.follows.dramas !== prev.follows.dramas || s.dramaNotify !== prev.dramaNotify || s.prefs.notifications !== prev.prefs.notifications || s.importedDramas !== prev.importedDramas) schedule();
     });
     const fg = RNAppState.addEventListener('change', (st) => st === 'active' && schedule(800));
-    const open = (url: string | undefined) => {
-      if (!navReadyRef.current || !url) return;
-      setTimeout(() => router.push(url as never), 400);
+    const openResponse = (r: Notifications.NotificationResponse | null | undefined) => {
+      if (!r) return;
+      const responseId = r.notification.request.identifier;
+      if (responseId && handledResponseIds.current.has(responseId)) return;
+      const url = reminderUrl(r);
+      if (!url) return;
+      if (responseId) handledResponseIds.current.add(responseId);
+      if (!navReadyRef.current) {
+        pendingUrlRef.current = url;
+        return;
+      }
+      setTimeout(() => router.push(url as never), 300);
     };
-    const tapped = Notifications.addNotificationResponseReceivedListener((r) => open(reminderUrl(r)));
+    const tapped = Notifications.addNotificationResponseReceivedListener(openResponse);
     Notifications.getLastNotificationResponseAsync()
-      .then((r) => open(reminderUrl(r)))
+      .then(openResponse)
       .catch((e) => reportError('ReminderSync.lastResponse', e));
     return () => {
       clearTimeout(timer);

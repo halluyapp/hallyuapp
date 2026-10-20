@@ -23,7 +23,16 @@ export default function Trending() {
   const padding = useListPadding(false);
   const [tab, setTab] = useState<'dramas' | 'posts'>('dramas');
   const [worldFilter, setWorldFilter] = useState<FandomId | 'all'>('all');
-  const live = useLoad<Drama[]>(async (signal) => adoptDramas(await catalog.trending(signal)), [], catalog.available);
+  const live = useLoad<Drama[]>(
+    async (signal) =>
+      adoptDramas(
+        worldFilter === 'all'
+          ? await catalog.trending(signal)
+          : await catalog.byFandom(worldFilter, 'trending', 1, signal),
+      ),
+    [worldFilter],
+    catalog.available,
+  );
   const saved = useMemo(() => trendingDramas(state, 20), [state]);
   const rawDramas = useMemo(
     () => (live.data?.length ? live.data : !live.loading ? saved : []),
