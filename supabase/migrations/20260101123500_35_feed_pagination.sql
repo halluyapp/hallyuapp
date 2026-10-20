@@ -204,16 +204,19 @@ begin
       case
         when p_scope = 'for_you' then
           -- Engagement, decayed so a week-old post cannot hold the top of a feed.
-          ((e.loved_count + e.cried_count + e.screamed_count + e.swooned_count + e.laughed_count + e.furious_count) * 2.0
-           + e.comment_count * 3.0
-           + e.save_count * 1.5
-           + e.share_count * 2.0)
-          / power(greatest(extract(epoch from (now() - e.created_at)) / 3600.0, 1.0) / 24.0 + 1.0, 0.55)
-          + case when actor is not null and exists (select 1 from public.follows f where f.follower_id = actor and f.target_id = e.author_id) then 12.0 else 0.0 end
-          + case when actor is not null and exists (select 1 from public.mutes mu where mu.user_id = actor and mu.muted_title_id = e.title_id) then -1000000.0 else 0.0 end
+          round((
+            ((e.loved_count + e.cried_count + e.screamed_count + e.swooned_count + e.laughed_count + e.furious_count) * 2.0
+             + e.comment_count * 3.0
+             + e.save_count * 1.5
+             + e.share_count * 2.0)
+            / power(greatest(extract(epoch from (now() - e.created_at)) / 3600.0, 1.0) / 24.0 + 1.0, 0.55)
+            + case when actor is not null and exists (select 1 from public.follows f where f.follower_id = actor and f.target_id = e.author_id) then 12.0 else 0.0 end
+            + case when actor is not null and exists (select 1 from public.mutes mu where mu.user_id = actor and mu.muted_title_id = e.title_id) then -1000000.0 else 0.0 end
+          )::numeric, 6)::double precision
         else
-          -- Time-ordered scopes use a key derived from created_at, so the same comparison works.
-          extract(epoch from e.created_at)::double precision
+          -- Time-ordered scopes compare (created_at, id) directly below so IEEE-754 text rounding
+          -- of epoch timestamps can never make a row compare strictly less than its own cursor.
+          0.0::double precision
       end as rank_key
     from eligible e
   )
@@ -221,9 +224,17 @@ begin
     into page
   from (
     select v.* from ranked v
-    -- The keyset: strictly "after" the last row the client saw, on a unique triple.
+    -- The keyset: strictly "after" the last row the client saw, on a unique key.
     where cursor_row.id is null
-       or (v.rank_key, v.created_at, v.id) < (cursor_row.rank_key, cursor_row.created_at, cursor_row.id)
+       or (
+         v.id <> cursor_row.id
+         and case
+           when p_scope = 'for_you' then
+             (v.rank_key, v.created_at, v.id) < (cursor_row.rank_key, cursor_row.created_at, cursor_row.id)
+           else
+             (v.created_at, v.id) < (cursor_row.created_at, cursor_row.id)
+         end
+       )
     order by v.rank_key desc, v.created_at desc, v.id desc
     limit limit_rows + 1
   ) windowed;
