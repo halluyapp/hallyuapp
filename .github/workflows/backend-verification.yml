@@ -255,7 +255,7 @@ jobs:
             exit 1
           fi
           echo "::error title=Backend failure::The live suite FAILED (exit $code) — failing checks are listed in the job summary."
-          grep "✗" backend-verification.log | head -25 | while IFS= read -r line; do echo "::error title=Check failed::$line"; done
+          grep -E "(✗|⊘)" backend-verification.log | head -25 | while IFS= read -r line; do echo "::error title=Check failed::$line"; done
           exit 1
 
       # Why the suite failed, stated in terms the repository can answer: which function the project

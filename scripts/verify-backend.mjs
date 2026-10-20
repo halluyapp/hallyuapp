@@ -263,12 +263,22 @@ if (requireSchema()) {
     return `${Object.keys(EXPECTED_COLUMNS).length} tables column-checked`;
   });
 
-  // PostgREST only publishes relationship metadata in its OpenAPI 3 document. If the document
-  // carries none at all, this check cannot say anything about foreign keys — that is *blocked*, not
-  // failed. Failing here would claim thirteen broken constraints on a project that may have every
-  // one of them; the constraints are exercised behaviourally by the cascade and delete checks below.
+  // PostgREST publishes foreign keys either as `definition.relationships` or as `<fk table='...'/>`
+  // tags on each column's Swagger 2.0 property description. Support both representations so live
+  // PostgREST Swagger 2.0 schemas are genuinely checked rather than marked blocked.
+  const referencedTablesOf = (definition) => {
+    const refs = new Set((definition?.relationships ?? []).map((r) => r.referencedTable).filter(Boolean));
+    for (const prop of Object.values(definition?.properties ?? {})) {
+      const desc = String(prop?.description ?? '');
+      for (const m of desc.matchAll(/<fk\s+table='([^']+)'/g)) {
+        if (m[1]) refs.add(m[1]);
+      }
+    }
+    return refs;
+  };
+
   const declaresRelationships = Object.values(openapi.definitions).some(
-    (definition) => Array.isArray(definition?.relationships) && definition.relationships.length > 0,
+    (definition) => referencedTablesOf(definition).size > 0,
   );
 
   if (declaresRelationships) {
@@ -284,10 +294,9 @@ if (requireSchema()) {
       };
 
       for (const [table, targets] of Object.entries(expectRelationships)) {
-        const definition = openapi.definitions[table];
-        const relationships = definition?.relationships ?? [];
+        const refs = referencedTablesOf(openapi.definitions[table]);
         for (const target of targets) {
-          if (!relationships.some((r) => r.referencedTable === target)) {
+          if (!refs.has(target)) {
             problems.push(`${table} → ${target}`);
           }
         }
