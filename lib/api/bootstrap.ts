@@ -1,7 +1,7 @@
 /**
- * Server bootstrap (migration 20 `get_bootstrap()` + migration 40 `get_client_sync_state()`) —
- * one cold-start round trip for the member's profile, preferences, follows, saves, reactions,
- * collections, communities, blocks/mutes, alerts, watchlist and notification inbox.
+ * Server bootstrap (`public.get_bootstrap()`) — one cold-start round trip for the member's
+ * profile, preferences, follows, saves, reactions, collections, communities, blocks/mutes,
+ * alerts, watchlist and notification inbox.
  */
 import type { ReactionKind, User } from '../model';
 import { supabase } from './client';
@@ -69,54 +69,80 @@ export interface BootstrapPayload {
   muted_titles?: string[];
   alerts?: { title_id: string; episodes: boolean; trending?: boolean }[];
   notifications?: unknown[];
+  titles?: unknown[];
 }
 
-interface SyncStateRaw {
-  me: BootstrapProfile;
-  preferences: Record<string, unknown> | null;
-  unread_notifications: number;
-  follows: BootstrapPayload['follows'];
-  saved_post_ids: string[];
-  watchlist: unknown[];
+interface RawBootstrapResponse {
+  profile?: BootstrapProfile;
+  me?: BootstrapProfile;
+  prefs?: Record<string, unknown> | null;
+  preferences?: Record<string, unknown> | null;
+  unread_count?: number;
+  unread_notifications?: number;
+  follows?: BootstrapPayload['follows'];
+  saved_post_ids?: string[];
+  watchlist?: unknown[];
   communities?: string[];
   reactions?: BootstrapPayload['reactions'];
   collections?: ServerCollectionBundle[];
   blocks?: string[];
+  mutes?: { muted_user_id: string | null; muted_title_id: string | null }[];
   muted_users?: string[];
   muted_titles?: string[];
+  title_alerts?: string[];
   alerts?: BootstrapPayload['alerts'];
   notifications?: unknown[];
+  titles?: unknown[];
 }
 
 /**
- * Fetches `get_client_sync_state()` (falling back to `get_bootstrap()`) for the signed-in member.
+ * Fetches `get_bootstrap()` for the signed-in member in a single round trip.
  */
 export async function fetchBootstrap(): Promise<BootstrapPayload> {
   if (!supabase) throw new Error('No backend configured — cannot fetch bootstrap.');
-  const syncRes = await supabase.rpc('get_client_sync_state');
-  if (!syncRes.error && syncRes.data) {
-    const raw = syncRes.data as SyncStateRaw;
-    return {
-      profile: raw.me,
-      prefs: raw.preferences,
-      unread_count: raw.unread_notifications ?? 0,
-      follows: raw.follows ?? { users: [], titles: [], people: [], collections: [] },
-      saved_post_ids: raw.saved_post_ids ?? [],
-      watchlist: raw.watchlist ?? [],
-      communities: raw.communities ?? [],
-      reactions: raw.reactions ?? [],
-      collections: raw.collections ?? [],
-      blocks: raw.blocks ?? [],
-      muted_users: raw.muted_users ?? [],
-      muted_titles: raw.muted_titles ?? [],
-      alerts: raw.alerts ?? [],
-      notifications: raw.notifications ?? [],
-    };
-  }
   const { data, error } = await supabase.rpc('get_bootstrap');
   if (error) throw error;
   if (!data) throw new Error('get_bootstrap returned no payload.');
-  return data as BootstrapPayload;
+  const raw = data as RawBootstrapResponse;
+  const profile = raw.profile ?? raw.me;
+  if (!profile) throw new Error('get_bootstrap returned no member profile.');
+
+  const mutedUsers =
+    raw.muted_users ??
+    (raw.mutes ?? [])
+      .map((m) => m.muted_user_id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+  const mutedTitles =
+    raw.muted_titles ??
+    (raw.mutes ?? [])
+      .map((m) => m.muted_title_id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+  const alerts =
+    raw.alerts ??
+    (raw.title_alerts ?? []).map((title_id) => ({
+      title_id,
+      episodes: true,
+    }));
+
+  return {
+    profile,
+    prefs: raw.prefs ?? raw.preferences ?? null,
+    unread_count: raw.unread_count ?? raw.unread_notifications ?? 0,
+    follows: raw.follows ?? { users: [], titles: [], people: [], collections: [] },
+    saved_post_ids: raw.saved_post_ids ?? [],
+    watchlist: raw.watchlist ?? [],
+    communities: raw.communities ?? [],
+    reactions: raw.reactions ?? [],
+    collections: raw.collections ?? [],
+    blocks: raw.blocks ?? [],
+    muted_users: mutedUsers,
+    muted_titles: mutedTitles,
+    alerts,
+    notifications: raw.notifications ?? [],
+    titles: raw.titles ?? [],
+  };
 }
 
 /** Maps the server profile row onto the client `User` shape (partial patch). */

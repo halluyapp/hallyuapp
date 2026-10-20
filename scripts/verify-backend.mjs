@@ -674,6 +674,7 @@ await test('Block severs the follow relationship', async () => {
   assert(!blocked.error, `block failed: ${blocked.error?.message}`);
   const { data } = await admin().from('follows').select('follower_id').eq('follower_id', bobId).eq('target_id', aliceId);
   assert(data.length === 0, 'the follow survived the block');
+  await bob.rpc('set_block', { p_user_id: aliceId, p_on: false });
   return 'follow removed by block';
 });
 
@@ -1235,6 +1236,7 @@ await test('A transient failure schedules a retry instead of losing the notifica
     .from('notification_deliveries')
     .select('id')
     .eq('notification_id', notification)
+    .limit(1)
     .single();
 
   await admin().rpc('report_delivery', {
@@ -2189,9 +2191,16 @@ await test('Member reads their own object back', async () => {
 });
 
 await test('Another member cannot delete the object', async () => {
-  const { error } = await bob.storage.from('media').remove([uploadedPath]);
-  assert(error, "a member deleted another member's object");
-  return `rejected with ${error.statusCode ?? 'an error'}`;
+  const { data: removed, error } = await bob.storage.from('media').remove([uploadedPath]);
+  assert(error || (removed ?? []).length === 0, "a member deleted another member's object");
+  const { data: intact, error: readErr } = await alice.storage.from('media').download(uploadedPath);
+  assert(
+    !readErr && (intact?.byteLength ?? intact?.size ?? 0) > 0,
+    'the object disappeared after another member called remove()',
+  );
+  return error
+    ? `rejected with ${error.statusCode ?? 'an error'}`
+    : '0 objects removed by RLS; owner object verified intact';
 });
 
 await test('Member deletes their own object', async () => {

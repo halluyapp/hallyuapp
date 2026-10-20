@@ -35,6 +35,7 @@ immutable
 set search_path = public, pg_temp
 as $$
 declare
+  clean text;
   raw text;
   parts text[];
 begin
@@ -42,8 +43,16 @@ begin
     return;
   end if;
 
+  clean := rtrim(regexp_replace(p_cursor, '\s+', '', 'g'), '=');
+  if length(clean) = 0 or length(clean) % 4 = 1 then
+    return;
+  end if;
+
   begin
-    raw := convert_from(decode(rtrim(p_cursor, '='), 'base64'), 'UTF8');
+    raw := convert_from(
+      decode(rpad(clean, ((length(clean) + 3) / 4) * 4, '='), 'base64'),
+      'UTF8'
+    );
   exception when others then
     return;
   end;
@@ -79,12 +88,17 @@ immutable
 set search_path = public, pg_temp
 as $$
   select rtrim(
-    encode(
-      convert_to(
-        coalesce(p_rank_key, 0)::text || '|' || p_created_at::text || '|' || p_id::text,
-        'UTF8'
+    regexp_replace(
+      encode(
+        convert_to(
+          coalesce(p_rank_key, 0)::text || '|' || p_created_at::text || '|' || p_id::text,
+          'UTF8'
+        ),
+        'base64'
       ),
-      'base64'
+      '\s+',
+      '',
+      'g'
     ),
     '='
   )

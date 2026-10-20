@@ -78,9 +78,10 @@ begin
   select * into existing from public.job_runs where job = p_job and run_key = p_run_key;
 
   if found then
-    -- A finished run is never re-run under the same key. A failed or stuck run may be retried, and
-    -- the retry is counted rather than hidden.
-    if existing.status = 'succeeded' or existing.status = 'skipped' then
+    -- A finished or currently running job is never claimed again under the same key. Only a failed
+    -- run (including stale runs reclaimed by job_release_stale()) may be retried, and the retry is
+    -- counted rather than hidden.
+    if existing.status in ('succeeded', 'skipped', 'running') then
       return query select existing.id, false, existing.attempt;
       return;
     end if;

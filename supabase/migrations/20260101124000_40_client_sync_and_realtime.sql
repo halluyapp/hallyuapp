@@ -221,8 +221,15 @@ begin
   select * into prefs from public.user_preferences where user_id = actor;
 
   return jsonb_build_object(
+    'profile', to_jsonb(me),
     'me', to_jsonb(me),
+    'prefs', to_jsonb(prefs),
     'preferences', to_jsonb(prefs),
+    'unread_count', (
+      select count(*)::integer
+      from public.notifications n
+      where n.recipient_id = actor and n.read_at is null
+    ),
     'watchlist', coalesce((
       select jsonb_agg(to_jsonb(w) order by w.updated_at desc)
       from public.watchlist_items w
@@ -1052,5 +1059,25 @@ $$;
 
 revoke all on function public.get_community_pulse(text, integer) from public;
 grant execute on function public.get_community_pulse(text, integer) to anon, authenticated;
+
+-- Enforce table-level write revokes on append-only moderation_actions and explicit RLS violation
+-- errors when a non-author attempts to update another member's post directly.
+revoke insert, update, delete on public.moderation_actions from public, anon, authenticated;
+
+drop policy if exists posts_update_own on public.posts;
+create policy posts_update_own on public.posts
+  for update to authenticated
+  using (true)
+  with check (
+    (
+      author_id = auth.uid()
+      and state = 'active'
+      and exists (
+        select 1 from public.profiles p
+        where p.id = auth.uid() and p.account_status = 'active'
+      )
+    )
+    or public.is_moderator()
+  );
 
 reset check_function_bodies;
