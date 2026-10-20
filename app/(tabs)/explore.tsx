@@ -24,8 +24,10 @@ import { colors, radius, space } from '../../constants/theme';
 import { catalog, invalidateCatalogLists, friendlyCatalogCopy } from '../../lib/catalog';
 import { adoptActors, adoptDramas } from '../../lib/catalogSync';
 import { buildExploreRails } from '../../lib/exploreRails';
+import { discoverCatalogTitles } from '../../lib/api/features';
 import { FANDOMS, fandomById } from '../../lib/fandoms';
-import { Loadable, useApp, useCatalogHealth, useLayout, useLoad, useNetwork } from '../../lib/hooks';
+import { haptic, Loadable, useApp, useCatalogHealth, useLayout, useLoad, useNetwork } from '../../lib/hooks';
+import { useToast } from '../../components/ui/Toast';
 import { Actor, Drama, FandomId, GENRES } from '../../lib/model';
 import { publicCollections, shorts, trendingDiscussions, trendingHashtags, worldCounts } from '../../lib/selectors';
 import { getState } from '../../lib/store';
@@ -48,8 +50,30 @@ export default function Explore() {
   const refresh = useRefresh('explore');
   const online = useNetwork();
   const health = useCatalogHealth();
+  const toast = useToast();
   const { state } = useApp();
   const { width } = useLayout();
+  const [spinningPick, setSpinningPick] = useState(false);
+
+  const surpriseTonight = async () => {
+    if (spinningPick) return;
+    setSpinningPick(true);
+    haptic.medium();
+    try {
+      const picks = await discoverCatalogTitles(
+        { sort: 'random', minRating: 7.2, limit: 1 },
+        state.importedDramas,
+      );
+      if (picks[0]) {
+        const [adopted] = adoptDramas([picks[0]]);
+        const chosen = adopted ?? picks[0];
+        toast.show({ message: `Tonight’s pick: ${chosen.title}`, icon: 'sparkles', tone: 'success' });
+        router.push(`/drama/${chosen.id}`);
+      }
+    } finally {
+      setSpinningPick(false);
+    }
+  };
 
   const leadersLoad = useDramas((s) => catalog.worldLeaders(s));
   const trendingLoad = useDramas((s) => catalog.trending(s));
@@ -161,13 +185,25 @@ export default function Explore() {
           <View style={{ paddingHorizontal: space.margin }}>
             <SearchField asButton placeholder="Films, series, anime, actors, people…" onPressButton={() => router.push('/search')} />
           </View>
+          <FlatList<{ key: string; label: string; icon: 'options-outline' | 'sparkles-outline' | 'people-circle-outline'; onPress: () => void }>
+            horizontal
+            data={[
+              { key: 'filter', label: 'Filter Catalog', icon: 'options-outline', onPress: () => router.push('/search') },
+              { key: 'surprise', label: spinningPick ? 'Picking…' : 'Surprise Me Tonight', icon: 'sparkles-outline', onPress: () => void surpriseTonight() },
+              { key: 'communities', label: 'Communities', icon: 'people-circle-outline', onPress: () => router.push('/world/kdrama') },
+            ]}
+            keyExtractor={(x) => x.key}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: space.margin, paddingTop: space.x3, gap: space.x2 }}
+            renderItem={({ item }) => <Chip label={item.label} icon={item.icon} tone={item.key === 'surprise' ? 'accent' : 'default'} onPress={item.onPress} />}
+          />
           <FlatList
             horizontal
             data={FANDOMS}
             keyExtractor={(f) => f.id}
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: space.margin, paddingTop: space.x3, gap: space.x2 }}
-            renderItem={({ item: f }) => <Chip label={f.short} onPress={() => router.push(`/world/${f.id}`)} />}
+            contentContainerStyle={{ paddingHorizontal: space.margin, paddingTop: space.x2, gap: space.x2 }}
+            renderItem={({ item: f }) => <Chip label={`${f.flag} ${f.short}`} onPress={() => router.push(`/world/${f.id}`)} />}
           />
           {quickTags.length > 0 ? (
             <FlatList
@@ -261,9 +297,10 @@ export default function Explore() {
                 fallbackColor={activeLeader.drama.tone}
                 width={heroW}
                 height={heroH}
+                cinemaGradient
+                accentGlow={fandomById(activeLeader.world).tint}
                 style={StyleSheet.absoluteFill}
               />
-              <View style={styles.heroScrim} />
               <View style={styles.heroBody}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
                   <View style={[styles.signal, { backgroundColor: fandomById(activeLeader.world).tint }]} />

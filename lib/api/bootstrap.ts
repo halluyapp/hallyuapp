@@ -11,6 +11,7 @@ export interface BootstrapProfile {
   handle: string;
   display_name: string;
   avatar_path: string | null;
+  banner_url?: string | null;
   bio: string | null;
   worlds: string[];
   favorite_genres: string[];
@@ -155,6 +156,7 @@ export function serverProfileToUser(
     handle: p.handle,
     displayName: p.display_name,
     avatarUrl: resolved?.avatarUrl,
+    bannerUrl: p.banner_url ?? undefined,
     bio: p.bio ?? undefined,
     fandoms: (p.worlds ?? []) as User['fandoms'],
     favoriteGenres: p.favorite_genres ?? [],

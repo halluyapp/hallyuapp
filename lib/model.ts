@@ -42,6 +42,8 @@ export interface User {
   handle: string;
   displayName: string;
   avatarUrl?: string;
+  /** Optional custom drama/banner backdrop URL displayed on the member's profile hero. */
+  bannerUrl?: string;
   bio?: string;
   /** The worlds this member belongs to, shown on their profile as "Anime · K-Drama · Hollywood". */
   fandoms?: FandomId[];
@@ -162,6 +164,41 @@ export interface Community {
   createdAt: string;
 }
 
+export interface PostPoll {
+  question: string;
+  options: string[];
+  counts: number[];
+  totalVotes: number;
+  myVote?: number | null;
+  closesAt?: string | null;
+}
+
+export interface DirectMessage {
+  id: ID;
+  senderId: ID;
+  recipientId: ID;
+  body: string;
+  sharedDramaId?: ID;
+  sharedPostId?: ID;
+  readAt?: string | null;
+  createdAt: string;
+}
+
+export interface ConversationSummary {
+  peerId: ID;
+  handle: string;
+  displayName: string;
+  avatarUrl?: string;
+  verified?: boolean;
+  lastMessageId: ID;
+  lastSenderId: ID;
+  lastBody: string;
+  sharedDramaId?: ID;
+  sharedPostId?: ID;
+  lastAt: string;
+  unreadCount: number;
+}
+
 export interface Post {
   id: ID;
   type: PostType;
@@ -173,6 +210,7 @@ export interface Post {
   kind?: DiscussionKind; // discussion
   rating?: number; // review 1–10
   verdict?: string; // review one-liner
+  poll?: PostPoll;
   images?: (string | number)[];
   video?: { url: string; key?: string; poster?: string | number; duration: number; width?: number; height?: number };
   spoiler: SpoilerLevel;

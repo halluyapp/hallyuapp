@@ -72,7 +72,7 @@ export interface ServerComment {
   created_at: string;
 }
 
-interface ServerTitleRow {
+export interface ServerTitleRow {
   id: string;
   external_id: string;
   media_type: MediaType;
@@ -106,6 +106,7 @@ interface ServerProfileRow {
   handle: string;
   display_name: string;
   avatar_path?: string | null;
+  banner_url?: string | null;
   bio: string | null;
   worlds: string[] | null;
   favorite_genres: string[] | null;
@@ -117,7 +118,7 @@ interface ServerProfileRow {
   created_at?: string;
 }
 
-function serverTitleToDrama(row: ServerTitleRow): Drama {
+export function serverTitleToDrama(row: ServerTitleRow): Drama {
   const mediaType = row.media_type ?? 'tv';
   const format: Drama['format'] =
     row.world === 'kdrama' || row.world === 'cdrama' || row.world === 'anime'
@@ -278,11 +279,53 @@ async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promis
   });
 }
 
-/** Fetch the media for a page of posts and fold it in. Never throws. */
+/** Fetch the media and interactive polls for a page of posts and fold them in. Never throws. */
 async function attachMedia(posts: Post[]): Promise<Post[]> {
   if (!posts.length) return posts;
   try {
-    return await withMedia(posts, await fetchPostMedia(posts.map((p) => p.id)));
+    const ids = posts.map((p) => p.id);
+    const [mediaMap, pollsRes] = await Promise.all([
+      fetchPostMedia(ids),
+      (async () => {
+        try {
+          const res = await db().rpc('get_post_polls', { p_post_ids: ids });
+          return res.error || !res.data
+            ? {}
+            : (res.data as Record<string, {
+                question?: string;
+                options?: string[];
+                counts?: number[];
+                total_votes?: number;
+                my_vote?: number | null;
+                closes_at?: string | null;
+              }>);
+        } catch {
+          return {};
+        }
+      })(),
+    ]);
+    const withMediaPosts = await withMedia(posts, mediaMap);
+    return withMediaPosts.map((post) => {
+      const rawPoll = pollsRes[post.id];
+      if (!rawPoll || !Array.isArray(rawPoll.options) || rawPoll.options.length < 2) {
+        return post;
+      }
+      const counts = rawPoll.options.map((_: string, i: number) => Number(rawPoll.counts?.[i] ?? 0));
+      return {
+        ...post,
+        poll: {
+          question: rawPoll.question?.trim() || 'Vote below',
+          options: rawPoll.options,
+          counts,
+          totalVotes:
+            typeof rawPoll.total_votes === 'number'
+              ? rawPoll.total_votes
+              : counts.reduce((sum: number, n: number) => sum + n, 0),
+          myVote: typeof rawPoll.my_vote === 'number' ? rawPoll.my_vote : null,
+          closesAt: rawPoll.closes_at ?? null,
+        },
+      };
+    });
   } catch {
     return posts;
   }
@@ -330,6 +373,7 @@ export async function hydrateServerProfiles(rows: ServerProfileRow[]): Promise<{
     handle: r.handle,
     displayName: r.display_name,
     avatarUrl: r.avatar_path ? avatars.get(r.avatar_path) : undefined,
+    bannerUrl: r.banner_url ?? undefined,
     bio: r.bio ?? undefined,
     fandoms: (r.worlds ?? []) as User['fandoms'],
     favoriteGenres: r.favorite_genres ?? [],

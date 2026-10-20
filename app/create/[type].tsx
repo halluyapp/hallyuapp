@@ -112,7 +112,7 @@ export default function Composer() {
   const toast = useToast();
   const auth = useAuth();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ type: PostType; dramaId?: string; season?: string; episode?: string; actorId?: string; draftId?: string; tag?: string; editId?: string }>();
+  const params = useLocalSearchParams<{ type: PostType; dramaId?: string; season?: string; episode?: string; actorId?: string; communityId?: string; draftId?: string; tag?: string; editId?: string; poll?: string }>();
   const { state, dispatch, me, getDrama, getPost, watch } = useApp();
   const type: PostType = (CREATE_TYPES.some((t) => t.type === params.type) ? params.type : 'post') as PostType;
   const meta = CREATE_TYPES.find((t) => t.type === type)!;
@@ -124,6 +124,9 @@ export default function Composer() {
   const [kind, setKind] = useState<DiscussionKind>(draft?.kind ?? editing?.kind ?? 'general');
   const [rating, setRating] = useState<number | undefined>(draft?.rating ?? editing?.rating);
   const [verdict, setVerdict] = useState(draft?.verdict ?? editing?.verdict ?? '');
+  const [pollOpen, setPollOpen] = useState<boolean>(Boolean(params.poll === '1' || editing?.poll));
+  const [pollQuestion, setPollQuestion] = useState<string>(editing?.poll?.question ?? '');
+  const [pollOptions, setPollOptions] = useState<string[]>(editing?.poll?.options ?? ['', '']);
   const [dramaId, setDramaId] = useState<string | undefined>(draft?.context.dramaId ?? editing?.context.dramaId ?? params.dramaId);
   const [secondaryId, setSecondaryId] = useState<string | undefined>(draft?.context.secondaryDramaId ?? editing?.context.secondaryDramaId);
   const [ep, setEp] = useState<{ season: number; episode?: number } | undefined>(
@@ -187,12 +190,14 @@ export default function Composer() {
 
   const problems: string[] = [];
   if (needsDrama && !drama) problems.push(`${meta.label}s need a drama.`);
+  const validPollOptions = pollOptions.map((o) => o.trim()).filter(Boolean);
+  if (pollOpen && validPollOptions.length < 2) problems.push('Add at least 2 poll options.');
   if (type === 'discussion' && title.trim().length < 3) problems.push('Give the discussion a title.');
   if (type === 'review' && !rating) problems.push('Pick a rating.');
   if (type === 'review' && !verdict.trim()) problems.push('Write a one-line verdict.');
   if (type === 'recommendation' && !secondary) problems.push('Add the drama you’re comparing it to.');
   if (type === 'short' && !video) problems.push('Add a video.');
-  if (type !== 'review' && type !== 'short' && !body.trim()) problems.push('Write something.');
+  if (type !== 'review' && type !== 'short' && !body.trim() && !(pollOpen && pollQuestion.trim())) problems.push('Write something.');
   if (body.length > bodyLimit) problems.push(`Body is ${body.length - bodyLimit} over the limit.`);
   if (spoiler !== 'none' && !drama) problems.push('Spoiler levels need a drama attached.');
   const canPost = problems.length === 0 && !posting;
@@ -301,13 +306,31 @@ export default function Composer() {
     const mentions = extractMentions(body)
       .map((h) => Object.values(state.users).find((u) => u.handle.toLowerCase() === h.toLowerCase())?.id)
       .filter(Boolean) as string[];
-    const context = { dramaId, season: ep?.season, episode: ep?.episode, actorIds: actorIds.length ? actorIds : undefined, secondaryDramaId: secondaryId };
+    const context = {
+      dramaId,
+      season: ep?.season,
+      episode: ep?.episode,
+      actorIds: actorIds.length ? actorIds : undefined,
+      secondaryDramaId: secondaryId,
+      communityId: params.communityId,
+    };
+    const builtPoll =
+      pollOpen && validPollOptions.length >= 2
+        ? {
+            question: pollQuestion.trim() || body.trim().slice(0, 140) || 'Vote below',
+            options: validPollOptions.slice(0, 4),
+            counts: validPollOptions.slice(0, 4).map(() => 0),
+            totalVotes: 0,
+            myVote: null,
+          }
+        : undefined;
     const common = {
-      body: body.trim(),
+      body: (body.trim() || pollQuestion.trim()).trim(),
       title: type === 'discussion' ? title.trim() : undefined,
       kind: type === 'discussion' ? kind : undefined,
       rating: type === 'review' ? rating : undefined,
       verdict: type === 'review' ? verdict.trim() : undefined,
+      poll: builtPoll,
       spoiler,
       context,
       hashtags,
@@ -815,6 +838,69 @@ export default function Composer() {
             ) : null}
           </View>
 
+          {pollOpen && (type === 'post' || type === 'discussion') ? (
+            <View style={{ paddingHorizontal: space.margin, marginTop: space.x3 }}>
+              <View style={{ padding: space.x3, borderRadius: radius.md, backgroundColor: colors.surface1, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong, gap: space.x2 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="stats-chart" size={14} color={colors.accent} />
+                    <Text variant="overline" tone="accent">
+                      INTERACTIVE POLL
+                    </Text>
+                  </View>
+                  <Pressable onPress={() => setPollOpen(false)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Remove poll">
+                    <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+                  </Pressable>
+                </View>
+                <TextInput
+                  editable={!posting}
+                  value={pollQuestion}
+                  onChangeText={(t) => setPollQuestion(t.slice(0, 140))}
+                  placeholder="Ask a question (e.g. Who stole Episode 10?)"
+                  placeholderTextColor={colors.textTertiary}
+                  style={{ color: colors.textPrimary, fontSize: 15, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle }}
+                />
+                {pollOptions.map((opt, idx) => (
+                  <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+                    <TextInput
+                      editable={!posting}
+                      value={opt}
+                      onChangeText={(t) =>
+                        setPollOptions((prev) => prev.map((item, i) => (i === idx ? t.slice(0, 80) : item)))
+                      }
+                      placeholder={`Choice ${idx + 1}${idx < 2 ? ' (required)' : ' (optional)'}`}
+                      placeholderTextColor={colors.textTertiary}
+                      style={{ flex: 1, color: colors.textPrimary, fontSize: 14, paddingHorizontal: space.x3, paddingVertical: 9, borderRadius: radius.sm, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle }}
+                    />
+                    {pollOptions.length > 2 ? (
+                      <Pressable
+                        onPress={() => setPollOptions((prev) => prev.filter((_, i) => i !== idx))}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove choice ${idx + 1}`}
+                      >
+                        <Ionicons name="remove-circle-outline" size={18} color={colors.textTertiary} />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ))}
+                {pollOptions.length < 4 ? (
+                  <Pressable
+                    onPress={() => setPollOptions((prev) => [...prev, ''])}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 4 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add poll option"
+                  >
+                    <Ionicons name="add-circle-outline" size={16} color={colors.accent} />
+                    <Text variant="label" tone="accent">
+                      Add choice ({pollOptions.length}/4)
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+
           {images.length ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.margin, gap: space.x2, marginTop: space.x2 }}>
               {images.map((uri) => (
@@ -916,6 +1002,19 @@ export default function Composer() {
             {type === 'post' || type === 'discussion' ? (
               <Pressable onPress={pickVideo} style={styles.tool} accessibilityRole="button" accessibilityLabel={video ? 'Replace video' : 'Add a video'}>
                 <Ionicons name={video ? 'videocam' : 'videocam-outline'} size={22} color={video ? colors.accentText : colors.textPrimary} />
+              </Pressable>
+            ) : null}
+            {type === 'post' || type === 'discussion' ? (
+              <Pressable
+                onPress={() => {
+                  haptic.select();
+                  setPollOpen((v) => !v);
+                }}
+                style={styles.tool}
+                accessibilityRole="button"
+                accessibilityLabel={pollOpen ? 'Remove poll' : 'Add interactive poll'}
+              >
+                <Ionicons name={pollOpen ? 'stats-chart' : 'stats-chart-outline'} size={21} color={pollOpen ? colors.accent : colors.textPrimary} />
               </Pressable>
             ) : null}
             <Pressable onPress={() => setBody((b) => `${b}${b.endsWith(' ') || !b ? '' : ' '}#`)} style={styles.tool} accessibilityRole="button" accessibilityLabel="Add hashtag">

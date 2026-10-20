@@ -30,6 +30,8 @@ export default function EditProfile() {
   const [handle, setHandle] = useState(me.handle);
   const [bio, setBio] = useState(me.bio ?? '');
   const [avatarUrl, setAvatarUrl] = useState(me.avatarUrl);
+  const [bannerUrl, setBannerUrl] = useState(me.bannerUrl);
+  const [bannerPicker, setBannerPicker] = useState(false);
   const [fandoms, setFandoms] = useState<FandomId[]>(me.fandoms ?? []);
   const [genres, setGenres] = useState<string[]>(me.favoriteGenres);
   const [favorites, setFavorites] = useState<string[]>(me.favoriteDramaIds.slice(0, 4));
@@ -61,7 +63,7 @@ export default function EditProfile() {
           return;
         }
       }
-      dispatch({ type: 'profile', patch: { displayName: displayName.trim(), handle: handleClean, bio: bio.trim() || undefined, avatarUrl, fandoms, favoriteGenres: genres, favoriteDramaIds: favorites, isPrivate } });
+      dispatch({ type: 'profile', patch: { displayName: displayName.trim(), handle: handleClean, bio: bio.trim() || undefined, avatarUrl, bannerUrl, fandoms, favoriteGenres: genres, favoriteDramaIds: favorites, isPrivate } });
       dispatch({ type: 'onboarding', patch: { fandoms } });
       haptic.success();
       toast.show({ message: 'Profile updated', icon: 'checkmark-circle', tone: 'success' });
@@ -74,6 +76,30 @@ export default function EditProfile() {
   return (
     <Screen header={<TopBar mode="modal" title="Edit profile" right={<Button label="Save" size="sm" onPress={save} disabled={!valid} />} />}>
       <ScrollScreen keyboard column padded>
+        <Pressable
+          onPress={() => setBannerPicker(true)}
+          style={{
+            height: 108,
+            borderRadius: radius.md,
+            backgroundColor: colors.surface2,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: colors.borderStrong,
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginTop: space.x3,
+            overflow: 'hidden',
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Choose profile cover backdrop drama"
+        >
+          <Ionicons name="sparkles-outline" size={20} color={colors.accent} />
+          <Text variant="label" tone="accent" style={{ marginTop: 4 }}>
+            {bannerUrl ? 'Change drama cover backdrop' : 'Pick a drama cover backdrop'}
+          </Text>
+          <Text variant="caption" tone="tertiary">
+            Lights up the top of your profile
+          </Text>
+        </Pressable>
         <Pressable onPress={pickAvatar} style={styles.avatarWrap} accessibilityRole="button" accessibilityLabel="Change profile picture">
           <Avatar uri={avatarUrl} name={displayName || me.displayName} size="xl" />
           <View style={styles.camera}>
@@ -149,6 +175,16 @@ export default function EditProfile() {
         </View>
       </ScrollScreen>
       <DramaPickerSheet visible={picker} onClose={() => setPicker(false)} title="Add a favourite" onPick={(d) => setFavorites((p) => (p.includes(d.id) || p.length >= 4 ? p : [...p, d.id]))} />
+      <DramaPickerSheet
+        visible={bannerPicker}
+        onClose={() => setBannerPicker(false)}
+        title="Choose profile cover backdrop"
+        onPick={(d) => {
+          setBannerUrl(d.backdropUrl ?? d.posterUrl);
+          setBannerPicker(false);
+          toast.show({ message: `Cover set to ${d.title}`, icon: 'image-outline', tone: 'success' });
+        }}
+      />
     </Screen>
   );
 }

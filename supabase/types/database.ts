@@ -1317,10 +1317,134 @@ export type Database = {
           },
         ];
       };
+      direct_messages: {
+        Row: {
+          body: string;
+          created_at: string;
+          id: string;
+          read_at: string | null;
+          recipient_id: string;
+          sender_id: string;
+          shared_drama_id: string | null;
+          shared_post_id: string | null;
+        };
+        Insert: {
+          body: string;
+          created_at?: string;
+          id?: string;
+          read_at?: string | null;
+          recipient_id: string;
+          sender_id: string;
+          shared_drama_id?: string | null;
+          shared_post_id?: string | null;
+        };
+        Update: {
+          body?: string;
+          created_at?: string;
+          id?: string;
+          read_at?: string | null;
+          recipient_id?: string;
+          sender_id?: string;
+          shared_drama_id?: string | null;
+          shared_post_id?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'direct_messages_sender_id_fkey';
+            columns: ['sender_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'direct_messages_recipient_id_fkey';
+            columns: ['recipient_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'direct_messages_shared_post_id_fkey';
+            columns: ['shared_post_id'];
+            isOneToOne: false;
+            referencedRelation: 'posts';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      post_poll_votes: {
+        Row: {
+          created_at: string;
+          option_index: number;
+          post_id: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          option_index: number;
+          post_id: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          option_index?: number;
+          post_id?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'post_poll_votes_post_id_fkey';
+            columns: ['post_id'];
+            isOneToOne: false;
+            referencedRelation: 'post_polls';
+            referencedColumns: ['post_id'];
+          },
+          {
+            foreignKeyName: 'post_poll_votes_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      post_polls: {
+        Row: {
+          closes_at: string | null;
+          created_at: string;
+          options: string[];
+          post_id: string;
+          question: string;
+        };
+        Insert: {
+          closes_at?: string | null;
+          created_at?: string;
+          options: string[];
+          post_id: string;
+          question: string;
+        };
+        Update: {
+          closes_at?: string | null;
+          created_at?: string;
+          options?: string[];
+          post_id?: string;
+          question?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'post_polls_post_id_fkey';
+            columns: ['post_id'];
+            isOneToOne: true;
+            referencedRelation: 'posts';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       profiles: {
         Row: {
           account_status: Database['public']['Enums']['account_status'];
           avatar_path: string | null;
+          banner_url: string | null;
           bio: string | null;
           comment_count: number;
           created_at: string;
@@ -1346,6 +1470,7 @@ export type Database = {
         Insert: {
           account_status?: Database['public']['Enums']['account_status'];
           avatar_path?: string | null;
+          banner_url?: string | null;
           bio?: string | null;
           comment_count?: number;
           created_at?: string;
@@ -1371,6 +1496,7 @@ export type Database = {
         Update: {
           account_status?: Database['public']['Enums']['account_status'];
           avatar_path?: string | null;
+          banner_url?: string | null;
           bio?: string | null;
           comment_count?: number;
           created_at?: string;
@@ -1955,6 +2081,45 @@ export type Database = {
             foreignKeyName: 'user_preferences_user_id_fkey';
             columns: ['user_id'];
             isOneToOne: true;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      title_ratings: {
+        Row: {
+          created_at: string;
+          score: number;
+          title_id: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          score: number;
+          title_id: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          score?: number;
+          title_id?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'title_ratings_title_id_fkey';
+            columns: ['title_id'];
+            isOneToOne: false;
+            referencedRelation: 'titles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'title_ratings_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
             referencedRelation: 'profiles';
             referencedColumns: ['id'];
           },
@@ -2846,6 +3011,58 @@ export type Database = {
         };
         Returns: Database['public']['Tables']['watchlist_items']['Row'];
       };
+      create_post_poll: {
+        Args: {
+          p_hours?: number;
+          p_options: string[];
+          p_post_id: string;
+          p_question: string;
+        };
+        Returns: Json;
+      };
+      discover_catalog: {
+        Args: {
+          p_genre?: string | null;
+          p_limit?: number;
+          p_min_rating?: number | null;
+          p_min_year?: number | null;
+          p_offset?: number;
+          p_provider?: string | null;
+          p_sort?: string;
+          p_status?: string | null;
+          p_world?: string | null;
+        };
+        Returns: Database['public']['Tables']['titles']['Row'][];
+      };
+      get_post_polls: {
+        Args: { p_post_ids: string[] };
+        Returns: Json;
+      };
+      list_conversations: {
+        Args: { p_limit?: number };
+        Returns: Json;
+      };
+      list_direct_messages: {
+        Args: { p_limit?: number; p_peer_handle: string };
+        Returns: Json;
+      };
+      mark_conversation_read: {
+        Args: { p_peer_handle: string };
+        Returns: number;
+      };
+      rate_title: {
+        Args: { p_score: number; p_title_id: string };
+        Returns: Json;
+      };
+      send_direct_message: {
+        Args: {
+          p_body: string;
+          p_recipient_handle: string;
+          p_shared_drama_id?: string | null;
+          p_shared_post_id?: string | null;
+        };
+        Returns: Json;
+      };
       video_access: {
         Args: { p_user?: string };
         Returns: boolean;
@@ -2860,6 +3077,10 @@ export type Database = {
       };
       video_quota: {
         Args: { p_user?: string };
+        Returns: Json;
+      };
+      vote_post_poll: {
+        Args: { p_option_index: number; p_post_id: string };
         Returns: Json;
       };
     };

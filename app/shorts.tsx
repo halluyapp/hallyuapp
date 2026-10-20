@@ -1,9 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { ResizeMode, Video } from 'expo-av';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Pressable, Share, StatusBar, StyleSheet, useWindowDimensions, View, ViewToken } from 'react-native';
+import { Animated, FlatList, Pressable, StatusBar, StyleSheet, TextInput, useWindowDimensions, View, ViewToken } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ShareCardModal } from '../components/share/ShareCardModal';
+import { commentsFor } from '../lib/selectors';
 import { ReactionButton } from '../components/feed/Reactions';
 import { RichText } from '../components/feed/RichText';
 import { Avatar } from '../components/ui/Avatar';
@@ -17,7 +20,7 @@ import { useToast } from '../components/ui/Toast';
 import { colors, radius, space } from '../constants/theme';
 import { compact } from '../lib/format';
 import { haptic, useApp, useReduceMotion, useRequireMember } from '../lib/hooks';
-import { Post } from '../lib/model';
+import { emptyReactions, Post } from '../lib/model';
 import { shorts as selectShorts } from '../lib/selectors';
 import { veilCopy } from '../lib/spoiler';
 
@@ -97,15 +100,20 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
   const router = useRouter();
   const toast = useToast();
   const insets = useSafeAreaInsets();
-  const { getUser, getDrama, isPostVeiled, dispatch, isSaved, state, watch } = useApp();
+  const { getUser, getDrama, isPostVeiled, dispatch, isSaved, state, watch, me } = useApp();
   const require = useRequireMember();
   const author = getUser(post.authorId);
   const drama = getDrama(post.context.dramaId);
   const veiled = isPostVeiled(post);
   const [menu, setMenu] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [replyText, setReplyText] = useState('');
   const [failed, setFailed] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [durationMs, setDurationMs] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const postComments = useMemo(() => commentsFor(state, post.id), [state, post.id]);
   const videoRef = useRef<Video>(null);
   const heart = useRef(new Animated.Value(0)).current;
   const lastTap = useRef(0);
@@ -165,12 +173,34 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
   return (
     <View style={{ height, width, backgroundColor: drama?.tone ?? '#000' }}>
       {!veiled && post.video && !failed ? (
-        <Video ref={videoRef} source={{ uri: post.video.url }} style={StyleSheet.absoluteFill} resizeMode={ResizeMode.COVER} shouldPlay={playing} isLooping isMuted={muted} onError={() => setFailed(true)} onPlaybackStatusUpdate={(s) => { if (s.isLoaded && s.durationMillis) setProgress(s.positionMillis / s.durationMillis); }} progressUpdateIntervalMillis={250} accessibilityLabel={`Video: ${post.body}`} />
+        <Video
+          ref={videoRef}
+          source={{ uri: post.video.url }}
+          style={StyleSheet.absoluteFill}
+          resizeMode={ResizeMode.COVER}
+          shouldPlay={playing}
+          isLooping
+          isMuted={muted}
+          onError={() => setFailed(true)}
+          onPlaybackStatusUpdate={(s) => {
+            if (s.isLoaded && s.durationMillis) {
+              setDurationMs(s.durationMillis);
+              setProgress(s.positionMillis / s.durationMillis);
+            }
+          }}
+          progressUpdateIntervalMillis={180}
+          accessibilityLabel={`Video: ${post.body}`}
+        />
       ) : drama ? (
         <Poster drama={drama} width={width} rounded={0} style={{ height, opacity: veiled ? 0.2 : 0.7 }} />
       ) : null}
       <Pressable style={StyleSheet.absoluteFill} onPress={doubleTap} accessibilityRole="button" accessibilityLabel={paused ? 'Play' : 'Pause'} accessibilityHint="Double tap to react" />
-      <View pointerEvents="none" style={styles.scrimBottom} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.42)', 'rgba(0,0,0,0.88)']}
+        locations={[0, 0.52, 1]}
+        style={styles.scrimBottom}
+      />
 
       {paused && !veiled ? (
         <View pointerEvents="none" style={styles.center}>
@@ -213,17 +243,33 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
         <View style={styles.railItem}>
           <ReactionButton targetId={post.id} counts={post.reactions} />
         </View>
-        <Pressable onPress={() => router.push({ pathname: '/post/[id]', params: { id: post.id, focus: 'comment' } })} style={styles.railItem} accessibilityRole="button" accessibilityLabel={`${post.commentCount} comments`}>
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            setCommentsOpen(true);
+          }}
+          style={styles.railItem}
+          accessibilityRole="button"
+          accessibilityLabel={`${post.commentCount} comments`}
+        >
           <Ionicons name="chatbubble-outline" size={26} color={colors.onMedia} />
           <Text variant="caption" style={{ color: colors.onMedia }} numeric>
-            {compact(post.commentCount)}
+            {compact(Math.max(post.commentCount, postComments.length))}
           </Text>
         </Pressable>
         <Pressable onPress={() => require('save posts', () => { dispatch({ type: 'save', postId: post.id }); toast.show({ message: isSaved(post.id) ? 'Removed from saved' : 'Saved', aboveTabBar: false }); })} style={styles.railItem} accessibilityRole="button" accessibilityLabel={isSaved(post.id) ? 'Unsave' : 'Save'}>
           <Ionicons name={isSaved(post.id) ? 'bookmark' : 'bookmark-outline'} size={26} color={colors.onMedia} />
         </Pressable>
-        <Pressable onPress={() => Share.share({ message: `${post.body} — https://hallyu.app/s/${post.id}` })} style={styles.railItem} accessibilityRole="button" accessibilityLabel="Share">
-          <Ionicons name="arrow-redo-outline" size={26} color={colors.onMedia} />
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            setShareOpen(true);
+          }}
+          style={styles.railItem}
+          accessibilityRole="button"
+          accessibilityLabel="Share card or send to friend"
+        >
+          <Ionicons name="paper-plane-outline" size={25} color={colors.onMedia} />
         </Pressable>
         <Pressable onPress={() => setMenu(true)} style={styles.railItem} accessibilityRole="button" accessibilityLabel="More">
           <Ionicons name="ellipsis-horizontal" size={26} color={colors.onMedia} />
@@ -258,9 +304,102 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
         </Text>
       </Animated.View>
 
-      <View style={[styles.progress, { bottom: insets.bottom }]}>
+      <Pressable
+        onPress={(e) => {
+          if (!durationMs) return;
+          const ratio = Math.max(0, Math.min(1, e.nativeEvent.locationX / Math.max(1, width)));
+          setProgress(ratio);
+          videoRef.current?.setPositionAsync(Math.round(ratio * durationMs)).catch(() => {});
+        }}
+        hitSlop={12}
+        style={[styles.progress, { bottom: insets.bottom }]}
+        accessibilityRole="adjustable"
+        accessibilityLabel="Scrub video timeline"
+      >
         <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
-      </View>
+      </Pressable>
+
+      {/* Slide-Up In-Player Live Comments Drawer */}
+      <Sheet visible={commentsOpen} onClose={() => setCommentsOpen(false)} title={`Comments · ${Math.max(post.commentCount, postComments.length)}`}>
+        <View style={{ paddingHorizontal: space.margin, paddingBottom: space.x3, gap: space.x3, maxHeight: 380 }}>
+          {postComments.length === 0 ? (
+            <Text variant="bodySmall" tone="secondary" style={{ paddingVertical: space.x4 }}>
+              No comments yet — be the first to react to this short.
+            </Text>
+          ) : (
+            <FlatList
+              data={postComments}
+              keyExtractor={(c) => c.id}
+              style={{ maxHeight: 260 }}
+              ItemSeparatorComponent={() => <View style={{ height: space.x3 }} />}
+              renderItem={({ item: c }) => {
+                const cu = getUser(c.authorId);
+                return (
+                  <View style={{ flexDirection: 'row', gap: space.x2 + 2 }}>
+                    <Avatar uri={cu?.avatarUrl} name={cu?.displayName ?? '?'} size="xs" />
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text variant="label">{cu?.displayName ?? 'Member'}</Text>
+                      <Text variant="bodySmall" tone="secondary">
+                        {c.body}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }}
+            />
+          )}
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2, paddingTop: space.x2, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderSubtle }}>
+            <TextInput
+              value={replyText}
+              onChangeText={setReplyText}
+              placeholder="Add a comment…"
+              placeholderTextColor={colors.textTertiary}
+              style={{
+                flex: 1,
+                height: 38,
+                paddingHorizontal: 12,
+                borderRadius: radius.full,
+                backgroundColor: colors.surface2,
+                color: colors.textPrimary,
+                fontSize: 14,
+              }}
+            />
+            <Button
+              label="Post"
+              size="sm"
+              disabled={!replyText.trim()}
+              onPress={() => {
+                const clean = replyText.trim();
+                if (!clean) return;
+                require('comment on shorts', () => {
+                  haptic.success();
+                  dispatch({
+                    type: 'addComment',
+                    comment: {
+                      id: `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                      postId: post.id,
+                      authorId: me.id,
+                      body: clean,
+                      createdAt: new Date().toISOString(),
+                      spoiler: 'none',
+                      reactions: emptyReactions(),
+                    },
+                  });
+                  setReplyText('');
+                });
+              }}
+            />
+          </View>
+        </View>
+      </Sheet>
+
+      <ShareCardModal
+        visible={shareOpen}
+        onClose={() => setShareOpen(false)}
+        post={post}
+        drama={drama}
+      />
 
       <Sheet visible={menu} onClose={() => setMenu(false)} title="This short">
         <SheetRow icon="open-outline" label="Open as post" onPress={() => { setMenu(false); router.push(`/post/${post.id}`); }} />
@@ -274,7 +413,7 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
 
 const styles = StyleSheet.create({
   top: { position: 'absolute', left: 0, right: 0, height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space.x2 },
-  scrimBottom: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 260, backgroundColor: 'rgba(0,0,0,0.45)' },
+  scrimBottom: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 280 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   playBadge: { width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', paddingLeft: 4 },
   veil: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.x8, backgroundColor: 'rgba(10,10,10,0.7)' },

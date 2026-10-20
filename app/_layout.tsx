@@ -125,6 +125,8 @@ export default function RootLayout() {
                 <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(onboarding)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+                <Stack.Screen name="messages/index" />
+                <Stack.Screen name="messages/[handle]" />
                 <Stack.Screen
                   name="create/[type]"
                   options={{

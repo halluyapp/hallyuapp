@@ -19,8 +19,10 @@ import { TopBar } from '../components/ui/TopBar';
 import { colors, space } from '../constants/theme';
 import { catalog } from '../lib/catalog';
 import { adoptActors, adoptDramas } from '../lib/catalogSync';
-import { useApp, useDebounced, useLoad, useNetwork } from '../lib/hooks';
-import { Actor, Drama } from '../lib/model';
+import { discoverCatalogTitles, type CatalogFilterQuery } from '../lib/api/features';
+import { FANDOMS } from '../lib/fandoms';
+import { haptic, useApp, useDebounced, useLoad, useNetwork } from '../lib/hooks';
+import { Actor, Drama, FandomId, GENRES } from '../lib/model';
 import { searchLocal, trendingDramas, trendingHashtags } from '../lib/selectors';
 import { track } from '../lib/analytics';
 
@@ -39,6 +41,31 @@ export default function Search() {
   const inputRef = useRef<TextInput>(null);
   const [q, setQ] = useState(params.q ?? '');
   const [scope, setScope] = useState<Scope>(params.scope ?? (params.q?.startsWith('#') ? 'posts' : 'all'));
+  const [fWorld, setFWorld] = useState<FandomId | null>(null);
+  const [fProvider, setFProvider] = useState<string | null>(null);
+  const [fStatus, setFStatus] = useState<'airing' | 'upcoming' | 'completed' | null>(null);
+  const [fGenre, setFGenre] = useState<string | null>(null);
+  const [fMinRating, setFMinRating] = useState<number | null>(null);
+  const [fSort, setFSort] = useState<'relevance' | 'rating' | 'popular' | 'newest'>('relevance');
+
+  const hasFilters = Boolean(fWorld || fProvider || fStatus || fGenre || fMinRating || fSort !== 'relevance');
+  const filterLoad = useLoad(
+    async () => {
+      const query: CatalogFilterQuery = {
+        world: fWorld,
+        provider: fProvider,
+        status: fStatus,
+        genre: fGenre,
+        minRating: fMinRating,
+        sort: fSort,
+        limit: 36,
+      };
+      const items = await discoverCatalogTitles(query, state.importedDramas);
+      return adoptDramas(items);
+    },
+    [fWorld, fProvider, fStatus, fGenre, fMinRating, fSort],
+    hasFilters,
+  );
   const debounced = useDebounced(q.trim(), 250);
   const local = useMemo(() => searchLocal(state, debounced), [state, debounced]);
   const isTag = debounced.startsWith('#');
@@ -127,6 +154,164 @@ export default function Search() {
 
       {idle ? (
         <ScrollView contentContainerStyle={padding} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+          {/* Multi-Filter Catalog Discovery + Tonight's Pick */}
+          <View style={styles.group}>
+            <View style={styles.groupHead}>
+              <Text variant="overline" tone="accent">
+                MULTI-FILTER CATALOG BROWSER
+              </Text>
+              {hasFilters ? (
+                <Pressable
+                  onPress={() => {
+                    haptic.select();
+                    setFWorld(null);
+                    setFProvider(null);
+                    setFStatus(null);
+                    setFGenre(null);
+                    setFMinRating(null);
+                    setFSort('relevance');
+                  }}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                >
+                  <Text variant="label" tone="accent">
+                    Reset filters
+                  </Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={async () => {
+                    haptic.medium();
+                    const pick = await discoverCatalogTitles(
+                      { world: fWorld, genre: fGenre, provider: fProvider, minRating: 7.2, sort: 'random', limit: 1 },
+                      state.importedDramas,
+                    );
+                    if (pick[0]) openDrama(pick[0]);
+                  }}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                >
+                  <Text variant="label" tone="accent">
+                    ✨ Surprise me
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+
+            {/* World Filter */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.margin, gap: space.x2, marginBottom: space.x2 }}>
+              <Chip label="All Worlds" size="sm" selected={!fWorld} onPress={() => setFWorld(null)} />
+              {FANDOMS.map((w) => (
+                <Chip
+                  key={w.id}
+                  label={`${w.flag} ${w.short}`}
+                  size="sm"
+                  selected={fWorld === w.id}
+                  onPress={() => {
+                    haptic.select();
+                    setFWorld(fWorld === w.id ? null : w.id);
+                  }}
+                />
+              ))}
+            </ScrollView>
+
+            {/* Platform + Status + Score + Sort */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.margin, gap: space.x2, marginBottom: space.x2 }}>
+              {(['airing', 'upcoming', 'completed'] as const).map((st) => (
+                <Chip
+                  key={st}
+                  label={st === 'airing' ? '● Airing' : st === 'upcoming' ? 'Upcoming' : 'Completed'}
+                  size="sm"
+                  selected={fStatus === st}
+                  onPress={() => {
+                    haptic.select();
+                    setFStatus(fStatus === st ? null : st);
+                  }}
+                />
+              ))}
+              {['Netflix', 'Viki', 'Crunchyroll', 'Disney+', 'Prime Video', 'iQIYI'].map((prov) => (
+                <Chip
+                  key={prov}
+                  label={prov}
+                  size="sm"
+                  selected={fProvider === prov}
+                  onPress={() => {
+                    haptic.select();
+                    setFProvider(fProvider === prov ? null : prov);
+                  }}
+                />
+              ))}
+              {[7.5, 8.2].map((sc) => (
+                <Chip
+                  key={sc}
+                  label={`★ ${sc}+`}
+                  size="sm"
+                  selected={fMinRating === sc}
+                  onPress={() => {
+                    haptic.select();
+                    setFMinRating(fMinRating === sc ? null : sc);
+                  }}
+                />
+              ))}
+              {([
+                { key: 'rating', label: 'Top Rated' },
+                { key: 'popular', label: 'Most Popular' },
+                { key: 'newest', label: 'Newest' },
+              ] as const).map((s) => (
+                <Chip
+                  key={s.key}
+                  label={s.label}
+                  size="sm"
+                  selected={fSort === s.key}
+                  onPress={() => {
+                    haptic.select();
+                    setFSort(fSort === s.key ? 'relevance' : s.key);
+                  }}
+                />
+              ))}
+            </ScrollView>
+
+            {/* Genre Filter */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.margin, gap: space.x2 }}>
+              {GENRES.slice(0, 10).map((g) => (
+                <Chip
+                  key={g}
+                  label={g}
+                  size="sm"
+                  selected={fGenre === g}
+                  onPress={() => {
+                    haptic.select();
+                    setFGenre(fGenre === g ? null : g);
+                  }}
+                />
+              ))}
+            </ScrollView>
+
+            {hasFilters ? (
+              <View style={{ marginTop: space.x3 }}>
+                <View style={styles.groupHead}>
+                  <Text variant="overline">
+                    MATCHING TITLES {filterLoad.data ? `· ${filterLoad.data.length}` : ''}
+                  </Text>
+                </View>
+                {filterLoad.showSkeleton ? <ListSkeleton rows={4} /> : null}
+                {(filterLoad.data ?? []).map((d) => (
+                  <DramaListRow
+                    key={d.id}
+                    drama={d}
+                    subtitle={`${d.year}${d.rating ? ` · ★ ${d.rating.toFixed(1)}` : ''}${d.network ? ` · ${d.network}` : ''} · ${d.genres.slice(0, 2).join(', ')}`}
+                    onPress={() => openDrama(d)}
+                  />
+                ))}
+                {!filterLoad.loading && (filterLoad.data?.length ?? 0) === 0 ? (
+                  <Text variant="bodySmall" tone="secondary" style={{ paddingHorizontal: space.margin, paddingVertical: space.x3 }}>
+                    No exact matches for that combination — tap a chip to widen your filter.
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+
           {state.recentSearches.length ? (
             <View style={styles.group}>
               <View style={styles.groupHead}>

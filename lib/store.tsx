@@ -163,6 +163,8 @@ export type Action =
   | { type: 'report'; id: string; targetType?: 'post' | 'comment' | 'user' | 'drama' | 'collection'; reason?: string; detail?: string }
   | { type: 'recentSearch'; q?: string; clear?: boolean }
   | { type: 'import'; dramas?: Drama[]; actors?: Actor[] }
+  | { type: 'votePoll'; postId: string; optionIndex: number; serverPoll?: Post['poll'] }
+  | { type: 'rateDrama'; dramaId: string; rating: number }
   | { type: 'seenActivity' };
 
 function toggle(list: string[], id: string, on?: boolean): string[] {
@@ -480,6 +482,38 @@ function reducer(s: AppState, a: Action): AppState {
         }));
       }
       return { ...s, importedDramas: dramas, importedActors: actors };
+    }
+    case 'votePoll': {
+      const idx = s.posts.findIndex((p) => p.id === a.postId);
+      if (idx < 0) return s;
+      const target = s.posts[idx]!;
+      if (!target.poll) return s;
+      const nextPoll =
+        a.serverPoll ??
+        (() => {
+          const prevVote = target.poll.myVote;
+          const counts = target.poll.options.map((_, i) => {
+            let n = target.poll!.counts[i] ?? 0;
+            if (prevVote === i) n = Math.max(0, n - 1);
+            if (a.optionIndex === i) n += 1;
+            return n;
+          });
+          return {
+            ...target.poll,
+            counts,
+            totalVotes: counts.reduce((sum, n) => sum + n, 0),
+            myVote: a.optionIndex,
+          };
+        })();
+      const posts = [...s.posts];
+      posts[idx] = { ...target, poll: nextPoll };
+      return { ...s, posts };
+    }
+    case 'rateDrama': {
+      const importedDramas = s.importedDramas.map((d) =>
+        d.id === a.dramaId ? { ...d, rating: Math.round(a.rating * 10) / 10 } : d,
+      );
+      return { ...s, importedDramas };
     }
     case 'seenActivity':
       return { ...s, lastSeenActivity: new Date().toISOString() };

@@ -123,6 +123,19 @@ export async function insertPost(post: Post, authorId: string, world?: string | 
       created_at: post.createdAt,
     });
   if (error) fail('post insert', error.message);
+
+  if (post.poll && post.poll.options.length >= 2) {
+    const cleanOptions = post.poll.options.map((o) => o.trim()).filter(Boolean).slice(0, 4);
+    if (cleanOptions.length >= 2) {
+      const { error: pollError } = await db().rpc('create_post_poll', {
+        p_post_id: post.id,
+        p_question: post.poll.question.trim() || 'Vote below',
+        p_options: cleanOptions,
+        p_hours: 168,
+      });
+      if (pollError) fail('poll insert', pollError.message);
+    }
+  }
 }
 
 /** Edit by its author. Only the fields the compose surface can change, plus `edited_at`. */
@@ -284,6 +297,7 @@ export async function updateProfile(userId: string, patch: Partial<User>): Promi
   if (patch.displayName !== undefined) row.display_name = patch.displayName;
   if (patch.handle !== undefined) row.handle = patch.handle.trim().toLowerCase().replace(/^@/, '');
   if (patch.bio !== undefined) row.bio = patch.bio ?? null;
+  if (patch.bannerUrl !== undefined) row.banner_url = patch.bannerUrl ?? null;
   if (patch.favoriteGenres !== undefined) row.favorite_genres = patch.favoriteGenres;
   if (patch.isPrivate !== undefined) row.is_private = patch.isPrivate;
   if (patch.fandoms !== undefined) row.worlds = patch.fandoms;

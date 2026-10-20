@@ -36,7 +36,9 @@ import { getState } from '../../lib/store';
 import { catalog } from '../../lib/catalog';
 import { adoptDramas } from '../../lib/catalogSync';
 import { fetchHomeDiscovery } from '../../lib/api/homeDiscovery';
+import { fetchConversations, subscribeDirectMessages } from '../../lib/api/features';
 import { useInteractionGate } from '../../lib/interactive';
+import { onTabReTap } from '../../lib/tabEvents';
 
 type Row =
   | { key: string; kind: 'post'; post: Post; reason?: string }
@@ -93,6 +95,7 @@ function Home() {
   const router = useRouter();
   const tabBar = useTabBarMotion();
   const auth = useAuth();
+  const [unreadDmCount, setUnreadDmCount] = useState(0);
   const { state, getDrama } = useApp();
   const [tab, setTab] = useState<'forYou' | 'following'>('forYou');
   // Universe selector (spec 3.3): For You + one chip per fandom world; narrows the feed.
@@ -195,6 +198,37 @@ function Home() {
     listRef.current?.scrollToOffset({ offset: 0, animated: !reduceMotion });
     haptic.select();
   };
+
+  useEffect(() => {
+    return onTabReTap('index', () => {
+      adoptFeed(liveFeed);
+      setPage(1);
+      listRef.current?.scrollToOffset({ offset: 0, animated: !reduceMotion });
+    });
+  }, [adoptFeed, liveFeed, reduceMotion]);
+
+  useEffect(() => {
+    if (guest) {
+      setUnreadDmCount(0);
+      return;
+    }
+    let alive = true;
+    const syncUnread = () => {
+      fetchConversations()
+        .then((list) => {
+          if (alive) {
+            setUnreadDmCount(list.reduce((sum, c) => sum + c.unreadCount, 0));
+          }
+        })
+        .catch(() => {});
+    };
+    syncUnread();
+    const unsub = subscribeDirectMessages(state.profile.id, () => syncUnread());
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [guest, state.profile.id]);
 
   // Pagination: render 12 posts at a time; the footer spinner appears while the next page mounts.
   const PAGE = 12;
@@ -441,6 +475,32 @@ function Home() {
             right={
               <>
                 <IconButton icon="search-outline" label="Search" onPress={() => router.push('/search')} />
+                {!guest ? (
+                  <View style={{ position: 'relative' }}>
+                    <IconButton icon="chatbubble-ellipses-outline" label="Direct messages" onPress={() => router.push('/messages')} />
+                    {unreadDmCount > 0 ? (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: 'absolute',
+                          top: 6,
+                          right: 6,
+                          minWidth: 16,
+                          height: 16,
+                          paddingHorizontal: 4,
+                          borderRadius: 8,
+                          backgroundColor: colors.accent,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Text style={{ fontSize: 9.5, lineHeight: 11, color: colors.onAccent, fontWeight: '700' }}>
+                          {unreadDmCount > 9 ? '9+' : String(unreadDmCount)}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
                 <LiveIndicator count={tonight.length} onPress={() => router.push('/schedule')} />
                 {guest ? <IconButton icon="person-circle-outline" label="Sign in" onPress={() => router.push('/(auth)/welcome')} /> : null}
               </>
