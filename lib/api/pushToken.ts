@@ -116,9 +116,14 @@ export async function registerPushTokenValue(
   return true;
 }
 
+let nativePushMissingThisSession = false;
+
 export async function registerDevicePushToken(): Promise<boolean> {
   if (!supabase || Platform.OS === 'web') {
     setPushState({ status: 'unsupported' });
+    return false;
+  }
+  if (nativePushMissingThisSession) {
     return false;
   }
   try {
@@ -136,11 +141,16 @@ export async function registerDevicePushToken(): Promise<boolean> {
     const msg = e instanceof Error ? e.message : String(e);
     const missingNativeCreds =
       /FirebaseApp|google-services|projectId|FCM/i.test(msg);
+    if (missingNativeCreds) {
+      nativePushMissingThisSession = true;
+    }
     setPushState({
       status: missingNativeCreds ? 'missing_native_push_credentials' : 'backend_error',
       lastError: msg,
     });
-    reportError('pushToken.register', e);
+    if (!missingNativeCreds) {
+      reportError('pushToken.register', e);
+    }
     return false;
   }
 }

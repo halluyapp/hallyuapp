@@ -227,6 +227,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email: address, password });
       if (error) throw error;
+      setBackendAccessToken(data.session?.access_token ?? null);
       await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
       const next = mapSupabaseUser(data.user);
       setUser(next);
@@ -265,6 +266,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error) throw error;
       await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
       if (data.session?.user) {
+        setBackendAccessToken(data.session.access_token ?? null);
         setUser(mapSupabaseUser(data.session.user));
         setStatus('signedIn');
         track('auth.signup', { provider: 'email' });

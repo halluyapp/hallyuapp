@@ -78,7 +78,22 @@ export default function Index() {
   const navReady = useRootNavigationState()?.key != null;
   const online = useNetwork();
   const configured = isBackendConfigured();
-  const accountAligned = auth.status === 'signedIn' ? state.profile.id === auth.user?.id : auth.status === 'guest' ? state.profile.id === GUEST_ID : true;
+  const [syncTimedOut, setSyncTimedOut] = useState(false);
+
+  useEffect(() => {
+    setSyncTimedOut(false);
+    if (auth.status !== 'signedIn' || !configured) return;
+    if (state.backendSyncedUserId === auth.user?.id) return;
+    const t = setTimeout(() => setSyncTimedOut(true), 3500);
+    return () => clearTimeout(t);
+  }, [auth.status, auth.user?.id, configured, state.backendSyncedUserId]);
+
+  const accountAligned =
+    auth.status === 'signedIn'
+      ? state.profile.id === auth.user?.id && (!configured || state.backendSyncedUserId === auth.user?.id || syncTimedOut)
+      : auth.status === 'guest'
+        ? state.profile.id === GUEST_ID
+        : true;
   const coreReady = auth.status !== 'loading' && state.hydrated && accountAligned;
   // The connection gate: with a backend configured, cold start waits for the bounded probe —
   // never longer than the bailout window — and publishes the true state via BackendHealth.

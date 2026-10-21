@@ -14,9 +14,9 @@
  * Nothing here runs without a session: `hasSession()` gates the mirror, so a device-local build or a
  * signed-out member keeps the original device-local behaviour untouched.
  */
-import type { Collection, Comment, NotificationGroup, Post, ReactionKind, User } from '../model';
+import type { Actor, Collection, Comment, Drama, NotificationGroup, Post, ReactionKind, User } from '../model';
 import type { Prefs } from '../store';
-import { getBackendAccessToken, supabase } from './client';
+import { ensureBackendSessionToken, getBackendAccessToken, supabase } from './client';
 import { uploadAvatar } from './media';
 
 /** True when a real backend session exists (Supabase client + a member access token). */
@@ -24,9 +24,11 @@ export function hasSession(): boolean {
   return Boolean(supabase && getBackendAccessToken());
 }
 
-function db() {
+async function dbSession() {
   const client = supabase;
-  if (!client || !getBackendAccessToken()) throw new Error('a backend session is required');
+  if (!client || !(await ensureBackendSessionToken())) {
+    throw new Error('a backend session is required');
+  }
   return client;
 }
 
@@ -39,67 +41,158 @@ export const isUuid = (value?: string | null): value is string => Boolean(value 
 
 // ── Provider id ↔ server uuid resolution ──────────────────────────────────────────────────────
 // Client catalog ids are provider slugs (`tmdb-<external>`, `tmdb-movie-<external>`); the database
-// keys titles by uuid. Everything that writes a title reference goes through these caches.
+// keys titles by uuid. Everything that writes a title reference goes through these caches and
+// materialises newly discovered TMDB titles/people on demand via `ensure_client_title` / `ensure_client_person`.
 
-const titleIdBySlug = new Map<string, Promise<string | null>>();
-const personIdBySlug = new Map<string, Promise<string | null>>();
+let lookupClientDrama: ((id: string) => Drama | undefined) | null = null;
+let lookupClientActor: ((id: string) => Actor | undefined) | null = null;
+
+export function registerCatalogLookup(
+  getDrama: (id: string) => Drama | undefined,
+  getActor: (id: string) => Actor | undefined,
+) {
+  lookupClientDrama = getDrama;
+  lookupClientActor = getActor;
+}
+
+const titleIdBySlug = new Map<string, string>();
+const titleInflight = new Map<string, Promise<string | null>>();
+const personIdBySlug = new Map<string, string>();
+const personInflight = new Map<string, Promise<string | null>>();
 
 function parseProviderSlug(clientId: string): { external: string; mediaType: 'tv' | 'movie' } | null {
   const m = /^tmdb-(movie-)?(.+)$/.exec(clientId);
   if (!m) return null;
-  return { external: m[2], mediaType: m[1] ? 'movie' : 'tv' };
+  return { external: m[2]!, mediaType: m[1] ? 'movie' : 'tv' };
 }
 
-/** Client drama id (`tmdb-…`) → `titles.id` uuid, or null when the title is not in the catalog. */
+function worldForDrama(drama?: Drama): string {
+  if (!drama) return 'hollywood';
+  if (drama.format === 'kdrama' || drama.format === 'cdrama' || drama.format === 'anime') return drama.format;
+  return 'hollywood';
+}
+
+/** Client drama id (`tmdb-…`) → `titles.id` uuid, materialising imported TMDB titles on demand. */
 export function resolveTitleUuid(clientId?: string | null): Promise<string | null> {
   if (!clientId) return Promise.resolve(null);
   if (isUuid(clientId)) return Promise.resolve(clientId);
   const cached = titleIdBySlug.get(clientId);
-  if (cached) return cached;
+  if (cached) return Promise.resolve(cached);
+  const inflight = titleInflight.get(clientId);
+  if (inflight) return inflight;
+
   const run = (async (): Promise<string | null> => {
     if (!supabase) return null;
     const parsed = parseProviderSlug(clientId);
     if (!parsed) return null;
+
     const exact = await supabase
       .from('titles')
       .select('id')
       .eq('external_id', parsed.external)
       .eq('media_type', parsed.mediaType)
       .limit(1);
-    if (exact.error) return null;
-    if (exact.data?.length) return exact.data[0].id as string;
+    if (!exact.error && exact.data?.length) {
+      const found = exact.data[0]!.id as string;
+      titleIdBySlug.set(clientId, found);
+      return found;
+    }
+
     const loose = await supabase.from('titles').select('id').eq('external_id', parsed.external).limit(1);
-    return loose.error ? null : ((loose.data?.[0]?.id as string | undefined) ?? null);
-  })().catch(() => null);
-  titleIdBySlug.set(clientId, run);
+    if (!loose.error && loose.data?.length) {
+      const found = loose.data[0]!.id as string;
+      titleIdBySlug.set(clientId, found);
+      return found;
+    }
+
+    const drama = lookupClientDrama?.(clientId);
+    if (drama && (await ensureBackendSessionToken())) {
+      const { data: ensured, error: ensureErr } = await supabase.rpc('ensure_client_title', {
+        p_external_id: parsed.external,
+        p_media_type: drama.mediaType ?? parsed.mediaType,
+        p_world: worldForDrama(drama),
+        p_title: drama.title,
+        p_original_title: drama.originalTitle ?? null,
+        p_year: drama.year || 2024,
+        p_status: drama.status ?? 'completed',
+        p_genres: drama.genres ?? [],
+        p_synopsis: drama.synopsis ?? '',
+        p_poster_url: drama.posterUrl ?? null,
+        p_backdrop_url: drama.backdropUrl ?? null,
+        p_tone: drama.tone ?? '#1F2430',
+        p_episode_count: drama.episodeCount ?? 0,
+        p_vote_average: drama.rating ?? null,
+      });
+      if (!ensureErr && typeof ensured === 'string' && isUuid(ensured)) {
+        titleIdBySlug.set(clientId, ensured);
+        return ensured;
+      }
+    }
+    return null;
+  })()
+    .catch(() => null)
+    .finally(() => {
+      titleInflight.delete(clientId);
+    });
+
+  titleInflight.set(clientId, run);
   return run;
 }
 
-/** Client actor id (`tmdb-<external>`) → `people.id` uuid, or null when the person is unknown. */
+/** Client actor id (`tmdb-<external>`) → `people.id` uuid, materialising imported TMDB actors on demand. */
 export function resolvePersonUuid(clientId?: string | null): Promise<string | null> {
   if (!clientId) return Promise.resolve(null);
   if (isUuid(clientId)) return Promise.resolve(clientId);
   const cached = personIdBySlug.get(clientId);
-  if (cached) return cached;
+  if (cached) return Promise.resolve(cached);
+  const inflight = personInflight.get(clientId);
+  if (inflight) return inflight;
+
   const run = (async (): Promise<string | null> => {
     if (!supabase) return null;
     const parsed = parseProviderSlug(clientId);
     if (!parsed) return null;
     const { data, error } = await supabase.from('people').select('id').eq('external_id', parsed.external).limit(1);
-    return error ? null : ((data?.[0]?.id as string | undefined) ?? null);
-  })().catch(() => null);
-  personIdBySlug.set(clientId, run);
+    if (!error && data?.length) {
+      const found = data[0]!.id as string;
+      personIdBySlug.set(clientId, found);
+      return found;
+    }
+
+    const actor = lookupClientActor?.(clientId);
+    if (actor && (await ensureBackendSessionToken())) {
+      const { data: ensured, error: ensureErr } = await supabase.rpc('ensure_client_person', {
+        p_external_id: parsed.external,
+        p_name: actor.name,
+        p_original_name: actor.koreanName ?? null,
+        p_photo_url: actor.photoUrl ?? null,
+        p_bio: actor.bio ?? '',
+      });
+      if (!ensureErr && typeof ensured === 'string' && isUuid(ensured)) {
+        personIdBySlug.set(clientId, ensured);
+        return ensured;
+      }
+    }
+    return null;
+  })()
+    .catch(() => null)
+    .finally(() => {
+      personInflight.delete(clientId);
+    });
+
+  personInflight.set(clientId, run);
   return run;
 }
 
 // ── Posts ─────────────────────────────────────────────────────────────────────────────────────
 
 export async function insertPost(post: Post, authorId: string, world?: string | null): Promise<void> {
+  const client = await dbSession();
   const [titleId, secondaryId] = await Promise.all([
     resolveTitleUuid(post.context.dramaId),
     resolveTitleUuid(post.context.secondaryDramaId),
   ]);
-  const { error } = await db()
+  const { error } = await client
     .from('posts')
     .insert({
       id: post.id,
@@ -127,7 +220,7 @@ export async function insertPost(post: Post, authorId: string, world?: string | 
   if (post.poll && post.poll.options.length >= 2) {
     const cleanOptions = post.poll.options.map((o) => o.trim()).filter(Boolean).slice(0, 4);
     if (cleanOptions.length >= 2) {
-      const { error: pollError } = await db().rpc('create_post_poll', {
+      const { error: pollError } = await client.rpc('create_post_poll', {
         p_post_id: post.id,
         p_question: post.poll.question.trim() || 'Vote below',
         p_options: cleanOptions,
@@ -140,25 +233,28 @@ export async function insertPost(post: Post, authorId: string, world?: string | 
 
 /** Edit by its author. Only the fields the compose surface can change, plus `edited_at`. */
 export async function updatePost(id: string, patch: Partial<Post>): Promise<void> {
+  const client = await dbSession();
   const row: Record<string, unknown> = { edited_at: new Date().toISOString() };
   if (patch.body !== undefined) row.body = patch.body;
   if (patch.title !== undefined) row.title = patch.title;
   if (patch.spoiler !== undefined) row.spoiler = patch.spoiler;
   if (patch.verdict !== undefined) row.verdict = patch.verdict;
-  const { error } = await db().from('posts').update(row).eq('id', id);
+  const { error } = await client.from('posts').update(row).eq('id', id);
   if (error) fail('post update', error.message);
 }
 
 /** Soft delete: the row stays (comment threads intact), its state becomes `deleted`. */
 export async function deletePost(id: string): Promise<void> {
-  const { error } = await db().from('posts').update({ state: 'deleted', deleted_at: new Date().toISOString() }).eq('id', id);
+  const client = await dbSession();
+  const { error } = await client.from('posts').update({ state: 'deleted', deleted_at: new Date().toISOString() }).eq('id', id);
   if (error) fail('post delete', error.message);
 }
 
 // ── Comments ──────────────────────────────────────────────────────────────────────────────────
 
 export async function insertComment(comment: Comment, authorId: string): Promise<void> {
-  const { error } = await db()
+  const client = await dbSession();
+  const { error } = await client
     .from('comments')
     .insert({
       id: comment.id,
@@ -173,7 +269,8 @@ export async function insertComment(comment: Comment, authorId: string): Promise
 }
 
 export async function deleteComment(id: string): Promise<void> {
-  const { error } = await db().from('comments').update({ state: 'deleted', deleted_at: new Date().toISOString() }).eq('id', id);
+  const client = await dbSession();
+  const { error } = await client.from('comments').update({ state: 'deleted', deleted_at: new Date().toISOString() }).eq('id', id);
   if (error) fail('comment delete', error.message);
 }
 
@@ -184,7 +281,7 @@ export async function setReaction(userId: string, target: { postId?: string; com
   const column = target.commentId ? 'comment_id' : 'post_id';
   const targetId = target.commentId ?? target.postId;
   if (!isUuid(userId) || !isUuid(targetId)) return;
-  const client = db();
+  const client = await dbSession();
   // Owner-scoped by RLS: a member can only clear their own reaction.
   const { error } = await client.from('reactions').delete().eq(column, targetId);
   if (error) fail('reaction clear', error.message);
@@ -196,7 +293,7 @@ export async function setReaction(userId: string, target: { postId?: string; com
 /** Save/unsave a post. Idempotent on the (user, post) primary key; save rows carry no default user. */
 export async function setSaved(userId: string, postId: string, on: boolean): Promise<void> {
   if (!isUuid(userId) || !isUuid(postId)) return;
-  const client = db();
+  const client = await dbSession();
   if (on) {
     const { error } = await client
       .from('saves')
@@ -213,30 +310,34 @@ export async function setSaved(userId: string, postId: string, on: boolean): Pro
 export type FollowKind = 'user' | 'title' | 'person' | 'collection';
 
 export async function setFollow(kind: FollowKind, targetId: string, on: boolean): Promise<void> {
+  const client = await dbSession();
   const target = kind === 'title' ? await resolveTitleUuid(targetId) : kind === 'person' ? await resolvePersonUuid(targetId) : targetId;
   if (!isUuid(target)) return;
-  const { error } = await db().rpc('set_follow', { p_kind: kind, p_target_id: target, p_on: on });
+  const { error } = await client.rpc('set_follow', { p_kind: kind, p_target_id: target, p_on: on });
   if (error) fail('follow', error.message);
 }
 
 export async function upsertWatchlist(dramaId: string, item: { status: string; season: number; currentEpisode: number; note?: string }): Promise<void> {
+  const client = await dbSession();
   const titleId = await resolveTitleUuid(dramaId);
   if (!titleId) return;
-  const { error } = await db().rpc('upsert_watchlist_item', {
+  const { error } = await client.rpc('upsert_watchlist_item', {
     p_title_id: titleId,
     p_status: item.status,
     p_season: item.season,
     p_episode: item.currentEpisode,
     p_total: null,
     p_note: item.note ?? null,
+    p_allow_rewind: true,
   });
   if (error) fail('watchlist upsert', error.message);
 }
 
 export async function removeWatchlist(dramaId: string): Promise<void> {
+  const client = await dbSession();
   const titleId = await resolveTitleUuid(dramaId);
   if (!titleId) return;
-  const { error } = await db().from('watchlist_items').delete().eq('title_id', titleId);
+  const { error } = await client.from('watchlist_items').delete().eq('title_id', titleId);
   if (error) fail('watchlist remove', error.message);
 }
 
@@ -268,7 +369,8 @@ export function prefsPatch(patch: Partial<Prefs>): Record<string, unknown> {
 export async function mergePreferences(patch: Partial<Prefs>): Promise<void> {
   const body = prefsPatch(patch);
   if (!Object.keys(body).length) return;
-  const { error } = await db().rpc('merge_preferences', { p_patch: body });
+  const client = await dbSession();
+  const { error } = await client.rpc('merge_preferences', { p_patch: body });
   if (error) fail('preferences merge', error.message);
 }
 
@@ -280,7 +382,8 @@ export interface OnboardingPatch {
 }
 
 export async function completeOnboarding(patch: OnboardingPatch): Promise<void> {
-  const { error } = await db().rpc('complete_onboarding', {
+  const client = await dbSession();
+  const { error } = await client.rpc('complete_onboarding', {
     p_worlds: patch.worlds ?? [],
     p_genres: patch.genres ?? [],
     p_step: patch.step ?? null,
@@ -293,6 +396,7 @@ export async function completeOnboarding(patch: OnboardingPatch): Promise<void> 
 /** Update the member's own profile row (RLS: own row only; the id filter pins it further). */
 export async function updateProfile(userId: string, patch: Partial<User>): Promise<void> {
   if (!isUuid(userId)) return;
+  const client = await dbSession();
   const row: Record<string, unknown> = {};
   if (patch.displayName !== undefined) row.display_name = patch.displayName;
   if (patch.handle !== undefined) row.handle = patch.handle.trim().toLowerCase().replace(/^@/, '');
@@ -305,7 +409,9 @@ export async function updateProfile(userId: string, patch: Partial<User>): Promi
     const resolved = await Promise.all(patch.favoriteDramaIds.slice(0, 4).map((id) => resolveTitleUuid(id)));
     row.favorite_title_ids = resolved.filter((id): id is string => Boolean(id));
   }
-  if (patch.avatarUrl !== undefined) {
+  if (patch.avatarPath !== undefined) {
+    row.avatar_path = patch.avatarPath ?? null;
+  } else if (patch.avatarUrl !== undefined) {
     if (!patch.avatarUrl) {
       row.avatar_path = null;
     } else if (/^u\//.test(patch.avatarUrl)) {
@@ -316,22 +422,24 @@ export async function updateProfile(userId: string, patch: Partial<User>): Promi
     }
   }
   if (!Object.keys(row).length) return;
-  const { error } = await db().from('profiles').update(row).eq('id', userId);
+  const { error } = await client.from('profiles').update(row).eq('id', userId);
   if (error) fail('profile update', error.message);
 }
 
 /** Enable or disable per-drama airing alerts (`set_title_alert` RPC). */
 export async function setTitleAlert(dramaId: string, on: boolean): Promise<void> {
+  const client = await dbSession();
   const titleId = await resolveTitleUuid(dramaId);
   if (!titleId) return;
-  const { error } = await db().rpc('set_title_alert', { p_title_id: titleId, p_on: on });
+  const { error } = await client.rpc('set_title_alert', { p_title_id: titleId, p_on: on });
   if (error) fail('title alert', error.message);
 }
 
 // ── Notification read state ───────────────────────────────────────────────────────────────────
 
 export async function markNotificationsRead(ids?: string[], group?: NotificationGroup): Promise<void> {
-  const { error } = await db().rpc('mark_notifications_read', {
+  const client = await dbSession();
+  const { error } = await client.rpc('mark_notifications_read', {
     p_ids: (ids ?? []).filter(isUuid),
     p_group: group ?? null,
   });
@@ -342,20 +450,23 @@ export async function markNotificationsRead(ids?: string[], group?: Notification
 
 export async function setBlock(userId: string, on: boolean): Promise<void> {
   if (!isUuid(userId)) return;
-  const { error } = await db().rpc('set_block', { p_user_id: userId, p_on: on });
+  const client = await dbSession();
+  const { error } = await client.rpc('set_block', { p_user_id: userId, p_on: on });
   if (error) fail('block', error.message);
 }
 
 export async function setMute(kind: 'user' | 'title', targetId: string, on: boolean): Promise<void> {
+  const client = await dbSession();
   const target = kind === 'title' ? await resolveTitleUuid(targetId) : targetId;
   if (!isUuid(target)) return;
-  const { error } = await db().rpc('set_mute', { p_kind: kind, p_target_id: target, p_on: on });
+  const { error } = await client.rpc('set_mute', { p_kind: kind, p_target_id: target, p_on: on });
   if (error) fail('mute', error.message);
 }
 
 export async function reportContent(targetType: string, targetId: string, reason: string, detail?: string): Promise<void> {
   if (!isUuid(targetId)) return;
-  const { error } = await db().rpc('report_content', {
+  const client = await dbSession();
+  const { error } = await client.rpc('report_content', {
     p_target_type: targetType,
     p_target_id: targetId,
     p_reason: reason,
@@ -366,14 +477,16 @@ export async function reportContent(targetType: string, targetId: string, reason
 
 export async function joinCommunity(communityId: string, on: boolean): Promise<void> {
   if (!isUuid(communityId)) return;
-  const { error } = await db().rpc('join_community', { p_community_id: communityId, p_on: on });
+  const client = await dbSession();
+  const { error } = await client.rpc('join_community', { p_community_id: communityId, p_on: on });
   if (error) fail('community membership', error.message);
 }
 
 /** Create or update a collection the member owns (title/visibility only — items are separate). */
 export async function upsertCollection(collection: Collection, ownerId: string): Promise<void> {
   if (!isUuid(collection.id)) return;
-  const { error } = await db()
+  const client = await dbSession();
+  const { error } = await client
     .from('collections')
     .upsert(
       {
@@ -390,15 +503,16 @@ export async function upsertCollection(collection: Collection, ownerId: string):
 
 export async function deleteCollection(id: string): Promise<void> {
   if (!isUuid(id)) return;
-  const { error } = await db().from('collections').delete().eq('id', id);
+  const client = await dbSession();
+  const { error } = await client.from('collections').delete().eq('id', id);
   if (error) fail('collection delete', error.message);
 }
 
 export async function setCollectionItem(collectionId: string, dramaId: string, on: boolean, note?: string): Promise<void> {
   if (!isUuid(collectionId)) return;
+  const client = await dbSession();
   const titleId = await resolveTitleUuid(dramaId);
   if (!titleId) return;
-  const client = db();
   if (on) {
     const { error } = await client
       .from('collection_items')

@@ -70,6 +70,44 @@ export function getBackendAccessToken(): string | null {
   return currentToken;
 }
 
+/**
+ * Ensures the in-memory member access token is populated from the active Supabase session
+ * whenever React auth state transitions slightly ahead of `onAuthStateChange`.
+ */
+export async function ensureBackendSessionToken(): Promise<string | null> {
+  if (currentToken) return currentToken;
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token ?? null;
+    if (token) currentToken = token;
+    return token;
+  } catch {
+    return currentToken;
+  }
+}
+
+/**
+ * Repairs any relative Supabase Storage path (such as `/object/sign/media/...` returned by
+ * `row.signedURL` in older `@supabase/storage-js` shapes) into a full `https://` URL so native
+ * Android/iOS decoders (`expo-image` / `expo-av`) never treat signed URLs as local disk paths.
+ */
+export function normalizeMediaUrl(url?: string | null): string | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+  const trimmed = url.trim();
+  if (!trimmed) return undefined;
+  if (/^https?:\/\//i.test(trimmed) || /^(file:|content:|blob:|ph:|data:|assets-library:)/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('/storage/v1/') && SUPABASE_URL) {
+    return `${SUPABASE_URL.replace(/\/$/, '')}${trimmed}`;
+  }
+  if (trimmed.startsWith('/object/') && SUPABASE_URL) {
+    return `${SUPABASE_URL.replace(/\/$/, '')}/storage/v1${trimmed}`;
+  }
+  return trimmed;
+}
+
 // ── Health store (CatalogHealth pattern) ──────────────────────────────────────────────────────
 
 export interface BackendHealth {

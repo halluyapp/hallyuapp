@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect } from 'react';
 import { create } from 'zustand';
 import { useStoreWithEqualityFn } from 'zustand/traditional';
+import { normalizeMediaUrl } from './api/client';
 import { markBoot } from './boot';
 import { mirrorAction, setApplyDispatcher } from './sync';
 import { uid } from './format';
@@ -29,6 +30,8 @@ export interface Prefs {
 
 export interface AppState {
   hydrated: boolean;
+  /** User UUID whose `get_bootstrap()` state has been adopted in this session (runtime-only). */
+  backendSyncedUserId: string | null;
   onboarding: { done: boolean; step: number; intent?: Intent; genres: string[]; /** the worlds the member picked — empty means ALL, which is the default */ fandoms: FandomId[] };
   prefs: Prefs;
   profile: User;
@@ -80,6 +83,7 @@ const defaultPrefs: Prefs = {
 export function initialState(): AppState {
   return {
     hydrated: false,
+    backendSyncedUserId: null,
     onboarding: { done: false, step: 0, genres: [], fandoms: [] },
     prefs: defaultPrefs,
     profile: emptyProfile(),
@@ -203,8 +207,17 @@ function reducer(s: AppState, a: Action): AppState {
       return { ...s, onboarding: { ...s.onboarding, ...a.patch } };
     case 'prefs':
       return { ...s, prefs: { ...s.prefs, ...a.patch } };
-    case 'profile':
-      return { ...s, profile: { ...s.profile, ...a.patch } };
+    case 'profile': {
+      const nextProfile: User = { ...s.profile, ...a.patch };
+      return {
+        ...s,
+        profile: nextProfile,
+        users: {
+          ...s.users,
+          [nextProfile.id]: { ...s.users[nextProfile.id], ...nextProfile },
+        },
+      };
+    }
     case 'follow':
       return { ...s, follows: { ...s.follows, [a.kind]: toggle(s.follows[a.kind], a.id, a.on) } };
     case 'joinCommunity':
@@ -298,6 +311,7 @@ function reducer(s: AppState, a: Action): AppState {
                     ...p,
                     ...a.post,
                     images: a.post.images && a.post.images.length > 0 ? a.post.images : p.images,
+                    imagePaths: a.post.imagePaths && a.post.imagePaths.length > 0 ? a.post.imagePaths : p.imagePaths,
                     video: a.post.video ?? p.video,
                     poll: a.post.poll ?? p.poll,
                   }
@@ -577,6 +591,8 @@ const PERSISTED_KEYS: (keyof AppState)[] = [
   'posts',
   'comments',
   'collections',
+  'communities',
+  'joinedCommunities',
   'notifications',
   'users',
   'drafts',
@@ -600,11 +616,40 @@ function serialise(s: AppState): string {
   return JSON.stringify(out);
 }
 
+export function sanitizePersistedState(data: Partial<AppState> | null | undefined): Partial<AppState> | null {
+  if (!data || typeof data !== 'object') return null;
+  const cleaned: Partial<AppState> = { ...data, backendSyncedUserId: null };
+  if (cleaned.profile?.avatarUrl) {
+    cleaned.profile = { ...cleaned.profile, avatarUrl: normalizeMediaUrl(cleaned.profile.avatarUrl) };
+  }
+  if (cleaned.users && typeof cleaned.users === 'object') {
+    const users: Record<string, User> = {};
+    for (const [id, u] of Object.entries(cleaned.users)) {
+      if (!u) continue;
+      users[id] = u.avatarUrl ? { ...u, avatarUrl: normalizeMediaUrl(u.avatarUrl) } : u;
+    }
+    cleaned.users = users;
+  }
+  if (Array.isArray(cleaned.posts)) {
+    cleaned.posts = cleaned.posts.map((p) => ({
+      ...p,
+      images: p.images?.map((img) => (typeof img === 'string' ? normalizeMediaUrl(img) ?? img : img)),
+      video: p.video
+        ? {
+            ...p.video,
+            url: normalizeMediaUrl(p.video.url) ?? p.video.url,
+            poster: typeof p.video.poster === 'string' ? normalizeMediaUrl(p.video.poster) ?? p.video.poster : p.video.poster,
+          }
+        : undefined,
+    }));
+  }
+  return cleaned;
+}
+
 function deserialise(raw: string): Partial<AppState> | null {
   try {
     const data = JSON.parse(raw) as Partial<AppState>;
-    if (!data || typeof data !== 'object') return null;
-    return data;
+    return sanitizePersistedState(data);
   } catch {
     return null;
   }

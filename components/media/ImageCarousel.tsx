@@ -1,13 +1,16 @@
 import { Image } from 'expo-image';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, NativeScrollEvent, NativeSyntheticEvent, Pressable, StyleSheet, View } from 'react-native';
 import { colors, radius, space } from '../../constants/theme';
+import { normalizeMediaUrl } from '../../lib/api/client';
+import { refreshSignedUrl } from '../../lib/api/media';
 import { Text } from '../ui/Text';
 
 type Img = string | number;
 
 interface Props {
   images: Img[];
+  imagePaths?: string[];
   width: number;
   /** Height of the frame; defaults to 4:5 for multi-image and 5:4-ish for a single image. */
   height?: number;
@@ -16,11 +19,69 @@ interface Props {
   rounded?: number;
 }
 
+function SlideImage({
+  source,
+  storagePath,
+  width,
+  height,
+}: {
+  source: Img;
+  storagePath?: string;
+  width: number;
+  height: number;
+}) {
+  const initialUri = typeof source === 'string' ? normalizeMediaUrl(source) : undefined;
+  const [liveUri, setLiveUri] = useState<string | undefined>(initialUri);
+  const [retried, setRetried] = useState(false);
+
+  useEffect(() => {
+    setLiveUri(initialUri);
+    setRetried(false);
+  }, [initialUri, storagePath]);
+
+  if (typeof source !== 'string') {
+    return (
+      <Image
+        source={source}
+        style={{ width, height, backgroundColor: colors.surface2 }}
+        contentFit="cover"
+        transition={200}
+      />
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: liveUri ?? source }}
+      style={{ width, height, backgroundColor: colors.surface2 }}
+      contentFit="cover"
+      transition={200}
+      cachePolicy="memory-disk"
+      recyclingKey={liveUri ?? source}
+      onError={() => {
+        if (retried) return;
+        setRetried(true);
+        void refreshSignedUrl(storagePath ?? initialUri ?? source).then((fresh) => {
+          if (fresh) setLiveUri(fresh);
+        });
+      }}
+    />
+  );
+}
+
 /**
  * Swipeable photo slides for posts: one image at a time, snap paging, a "2 / 4" counter and dots.
  * A single image is just the image. Tapping opens the full-screen viewer at that slide.
  */
-export function ImageCarousel({ images, width, height, onPressImage, initialIndex = 0, rounded = radius.md }: Props) {
+export function ImageCarousel({
+  images,
+  imagePaths,
+  width,
+  height,
+  onPressImage,
+  initialIndex = 0,
+  rounded = radius.md,
+}: Props) {
   const multi = images.length > 1;
   const h = height ?? Math.round(width * (multi ? 1.05 : 0.8));
   const [index, setIndex] = useState(initialIndex);
@@ -36,11 +97,16 @@ export function ImageCarousel({ images, width, height, onPressImage, initialInde
 
   const renderItem = useCallback(
     ({ item, index: i }: { item: Img; index: number }) => (
-      <Pressable onPress={() => onPressImage?.(i)} accessibilityRole="imagebutton" accessibilityLabel={`Image ${i + 1} of ${images.length}`} style={{ width, height: h }}>
-        <Image source={typeof item === 'string' ? { uri: item } : item} style={{ width, height: h, backgroundColor: colors.surface2 }} contentFit="cover" transition={200} />
+      <Pressable
+        onPress={() => onPressImage?.(i)}
+        accessibilityRole="imagebutton"
+        accessibilityLabel={`Image ${i + 1} of ${images.length}`}
+        style={{ width, height: h }}
+      >
+        <SlideImage source={item} storagePath={imagePaths?.[i]} width={width} height={h} />
       </Pressable>
     ),
-    [width, h, images.length, onPressImage],
+    [width, h, images.length, imagePaths, onPressImage],
   );
 
   if (!multi) {

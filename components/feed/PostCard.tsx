@@ -251,6 +251,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
       ) : post.images?.length ? (
         <ImageCarousel
           images={post.images}
+          imagePaths={post.imagePaths}
           width={imageW}
           height={post.images.length > 1 ? Math.round(imageW * 1.05) : Math.round(imageW / aspect.postImage) * 0.7}
           onPressImage={(i) => router.push({ pathname: '/media', params: { postId: post.id, index: String(i) } })}
@@ -274,7 +275,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
         {/* Author */}
         <View style={styles.author}>
           <Pressable onPress={() => author && router.push(`/user/${author.handle}`)} accessibilityRole="link" accessibilityLabel={`${author?.displayName ?? 'Unknown'} profile`} hitSlop={6}>
-            <Avatar uri={author?.avatarUrl} name={author?.displayName ?? '?'} size="md" />
+            <Avatar uri={author?.avatarUrl} avatarPath={author?.avatarPath} name={author?.displayName ?? '?'} size="md" />
           </Pressable>
           <View style={{ flex: 1 }}>
             <View style={styles.nameRow}>

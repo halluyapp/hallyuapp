@@ -31,15 +31,18 @@ import {
   fetchProfiles,
   fetchPublicCollections,
   hydrateCollectionBundles,
+  hydrateServerPosts,
   resolveActorClientIds,
+  serverTitleToDrama,
   toComment,
   type ServerComment,
+  type ServerTitleRow,
 } from './api/feed';
 import { signedUrls } from './api/media';
 import * as social from './api/social';
-import { getBackendAccessToken, supabase } from './api/client';
+import { ensureBackendSessionToken, getBackendAccessToken, supabase } from './api/client';
 import type { AppState, Action, Prefs } from './store';
-import type { Collection, Comment, Drama, FandomId, Post, ReactionKind, User, WatchlistItem } from './model';
+import type { Collection, Comment, Community, Drama, FandomId, Post, ReactionKind, User, WatchlistItem } from './model';
 
 // ── Failed writes ──────────────────────────────────────────────────────────────────────────────
 
@@ -93,6 +96,7 @@ const FAILURE_COPY: Record<string, string> = {
   upsertCollection: 'That collection was not saved',
   deleteCollection: 'That collection was not deleted',
   collectionItem: 'That change to the collection was not saved',
+  joinCommunity: 'That community membership change was not saved',
 };
 
 // ── Mirror ────────────────────────────────────────────────────────────────────────────────────
@@ -115,7 +119,7 @@ const MIRRORED_SLICES: Record<string, (keyof AppState)[]> = {
   progress: ['watchlist', 'follows'],
   note: ['watchlist'],
   prefs: ['prefs'],
-  profile: ['profile'],
+  profile: ['profile', 'users'],
   onboarding: ['onboarding'],
   readNotifications: ['notifications'],
   block: ['blockedUsers', 'follows'],
@@ -125,6 +129,7 @@ const MIRRORED_SLICES: Record<string, (keyof AppState)[]> = {
   upsertCollection: ['collections'],
   deleteCollection: ['collections'],
   collectionItem: ['collections'],
+  joinCommunity: ['joinedCommunities'],
 };
 
 let applyWithoutMirror: ((action: Action) => void) | null = null;
@@ -179,7 +184,7 @@ const FOLLOW_KINDS: Record<keyof AppState['follows'], social.FollowKind> = {
 };
 
 export function mirrorAction(action: Action, prev: AppState, next: AppState): void {
-  if (adopting || !sessionReady()) return;
+  if (adopting || !supabase || !social.isUuid(next.profile.id)) return;
   const me = next.profile.id;
 
   switch (action.type) {
@@ -310,6 +315,13 @@ function mergeDramas(existing: Drama[], incoming: Drama[]): Drama[] {
   return [...byId.values()];
 }
 
+function mergeCommunities(existing: Community[], incoming: Community[]): Community[] {
+  if (!incoming.length) return existing;
+  const byId = new Map(existing.map((c) => [c.id, c]));
+  for (const c of incoming) byId.set(c.id, c);
+  return [...byId.values()];
+}
+
 function mergeCollections(existing: Collection[], incoming: Collection[]): Collection[] {
   if (!incoming.length) return existing;
   const byId = new Map(existing.map((c) => [c.id, c]));
@@ -420,13 +432,15 @@ export async function adoptPublicState(cb: Pick<AdoptionCallbacks, 'getState' | 
     const allUsers = [...postAuthors, ...(pulse?.topVoices ?? []), ...(publicCols?.owners ?? [])];
     const allDramas = [...(pulse?.dramas ?? []), ...(publicCols?.dramas ?? [])];
     const allCollections = publicCols?.collections ?? [];
+    const allCommunities = pulse?.communities ?? [];
 
-    if (allUsers.length || allDramas.length || allCollections.length) {
+    if (allUsers.length || allDramas.length || allCollections.length || allCommunities.length) {
       const latest = cb.getState();
       cb.apply({
         users: mergeUsers(latest.users, allUsers),
         importedDramas: mergeDramas(latest.importedDramas, allDramas),
         collections: mergeCollections(latest.collections, allCollections),
+        communities: mergeCommunities(latest.communities, allCommunities),
       });
     }
   } catch (e) {
@@ -438,9 +452,11 @@ export async function adoptPublicState(cb: Pick<AdoptionCallbacks, 'getState' | 
 
 /**
  * Read the member's server state and fold it into the cache.
+ * Server collections, follows, watchlist, saves, alerts, memberships, onboarding, and profile
+ * are treated as authoritative so mutations on Device B synchronize cleanly onto Device A.
  */
 export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
-  if (!sessionReady()) return;
+  if (!supabase || !(await ensureBackendSessionToken())) return;
   const stale = cb.isStale ?? (() => false);
   adopting = true;
   try {
@@ -453,6 +469,17 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     const alertTitleUuids = (boot.alerts ?? []).filter((a) => a.episodes).map((a) => a.title_id);
     const mutedTitleUuids = boot.muted_titles ?? [];
 
+    const bootTitleRows = Array.isArray(boot.titles) ? (boot.titles as ServerTitleRow[]) : [];
+    const bootDramas: Drama[] = [];
+    const preResolvedIds = new Map<string, string>();
+    for (const row of bootTitleRows) {
+      if (row && row.id && row.external_id) {
+        const d = serverTitleToDrama(row);
+        bootDramas.push(d);
+        preResolvedIds.set(row.id, d.id);
+      }
+    }
+
     const allTitleUuids = [
       ...boot.follows.titles,
       ...watchRows.map((r) => r.title_id),
@@ -460,14 +487,17 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
       ...alertTitleUuids,
       ...mutedTitleUuids,
     ];
+    const missingTitleUuids = allTitleUuids.filter((id) => !preResolvedIds.has(id));
 
-    const [{ dramas: hydratedDramas, idMap: dramaIds }, actorIds, avatarMap, colHydrated] = await Promise.all([
-      fetchDramasByUuids(allTitleUuids),
+    const [{ dramas: hydratedDramas, idMap: fetchedIds }, actorIds, avatarMap, colHydrated] = await Promise.all([
+      fetchDramasByUuids(missingTitleUuids),
       resolveActorClientIds(boot.follows.people),
       boot.profile.avatar_path ? signedUrls([boot.profile.avatar_path]).catch(() => new Map<string, string>()) : Promise.resolve(new Map<string, string>()),
       hydrateCollectionBundles(boot.collections ?? []),
     ]);
     if (stale()) return;
+
+    const dramaIds = new Map<string, string>([...preResolvedIds, ...fetchedIds]);
 
     const watchlist: Record<string, WatchlistItem> = {};
     for (const row of watchRows) {
@@ -485,70 +515,84 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
       };
     }
 
-    const reactions: Record<string, ReactionKind> = { ...current.reactions };
+    const reactions: Record<string, ReactionKind> = {};
     for (const r of boot.reactions ?? []) {
       const targetId = r.comment_id ?? r.post_id;
       if (targetId && r.kind) reactions[targetId] = r.kind;
     }
 
-    const dramaNotify: Record<string, boolean> = { ...current.dramaNotify };
+    const dramaNotify: Record<string, boolean> = {};
     for (const id of alertTitleUuids) {
       const clientId = dramaIds.get(id);
       if (clientId) dramaNotify[clientId] = true;
     }
 
-    const union = <T,>(local: T[], remote: T[]): T[] => [...new Set([...local, ...remote])];
-    const resolvedAvatarUrl =
-      (boot.profile.avatar_path ? avatarMap.get(boot.profile.avatar_path) : undefined) ?? current.profile.avatarUrl;
+    const resolvedAvatarUrl = boot.profile.avatar_path
+      ? avatarMap.get(boot.profile.avatar_path) ?? (current.profile.avatarPath === boot.profile.avatar_path ? current.profile.avatarUrl : undefined)
+      : undefined;
     const resolvedProfile = serverProfileToUser(boot.profile, {
       avatarUrl: resolvedAvatarUrl,
       favoriteDramaIds: favTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
     });
-    const mergedMe: User = { ...current.profile, ...resolvedProfile };
+    const mergedMe: User = {
+      ...current.profile,
+      ...resolvedProfile,
+      avatarUrl: resolvedAvatarUrl,
+      avatarPath: boot.profile.avatar_path ?? undefined,
+      bannerUrl: boot.profile.banner_url ?? undefined,
+    };
+
+    const otherCollections = current.collections.filter((c) => c.ownerId !== boot.profile.id);
+    const syncedCollections = mergeCollections(otherCollections, colHydrated.collections);
 
     cb.apply({
+      backendSyncedUserId: boot.profile.id,
       profile: mergedMe,
       onboarding: {
         ...current.onboarding,
-        done: Boolean(boot.profile.onboarding_completed || current.onboarding.done),
-        step: Math.max(current.onboarding.step, boot.profile.onboarding_step ?? 0),
-        genres: union(current.onboarding.genres, boot.profile.favorite_genres ?? []),
-        fandoms: union(current.onboarding.fandoms, (boot.profile.worlds ?? []) as FandomId[]),
+        done: Boolean(boot.profile.onboarding_completed),
+        step: boot.profile.onboarding_step ?? 0,
+        genres: boot.profile.favorite_genres ?? [],
+        fandoms: (boot.profile.worlds ?? []) as FandomId[],
       },
       prefs: adoptPrefs((boot.prefs ?? null) as ServerPrefs | null, current.prefs),
       follows: {
-        users: union(current.follows.users, boot.follows.users),
-        dramas: union(
-          current.follows.dramas,
-          boot.follows.titles.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
-        ),
-        actors: union(
-          current.follows.actors,
-          boot.follows.people.map((id) => actorIds.get(id)).filter((id): id is string => Boolean(id)),
-        ),
-        collections: union(current.follows.collections, boot.follows.collections),
+        users: [...new Set(boot.follows.users)],
+        dramas: [...new Set(boot.follows.titles.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)))],
+        actors: [...new Set(boot.follows.people.map((id) => actorIds.get(id)).filter((id): id is string => Boolean(id)))],
+        collections: [...new Set(boot.follows.collections)],
       },
-      saves: union(current.saves, boot.saved_post_ids),
-      joinedCommunities: union(current.joinedCommunities ?? [], boot.communities ?? []),
+      saves: [...new Set(boot.saved_post_ids)],
+      joinedCommunities: [...new Set(boot.communities ?? [])],
       reactions,
       dramaNotify,
-      watchlist: { ...current.watchlist, ...watchlist },
-      blockedUsers: union(current.blockedUsers, boot.blocks ?? []),
-      mutedUsers: union(current.mutedUsers, boot.muted_users ?? []),
-      mutedDramas: union(
-        current.mutedDramas,
-        mutedTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
-      ),
-      collections: mergeCollections(current.collections, colHydrated.collections),
+      watchlist,
+      blockedUsers: [...new Set(boot.blocks ?? [])],
+      mutedUsers: [...new Set(boot.muted_users ?? [])],
+      mutedDramas: [...new Set(mutedTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)))],
+      collections: syncedCollections,
       users: mergeUsers(current.users, [mergedMe, ...colHydrated.owners]),
-      importedDramas: mergeDramas(current.importedDramas, [...hydratedDramas, ...colHydrated.dramas]),
+      importedDramas: mergeDramas(current.importedDramas, [...bootDramas, ...hydratedDramas, ...colHydrated.dramas]),
     });
 
-    const [feed, pulse] = await Promise.all([
+    const [myPosts, feed, pulse] = await Promise.all([
+      hydrateServerPosts(boot.my_posts ?? []).catch(() => []),
       fetchFeed('latest', { limit: 25 }).catch(() => null),
       fetchCommunityPulse(null, 16).catch(() => null),
     ]);
     if (stale()) return;
+
+    // Remove own posts soft-deleted on another device before re-applying active server posts.
+    if (Array.isArray(boot.my_posts)) {
+      const activeOwnIds = new Set(boot.my_posts.map((p) => p.id));
+      const snap = cb.getState();
+      const filteredPosts = snap.posts.filter((p) => p.authorId !== boot.profile.id || activeOwnIds.has(p.id));
+      if (filteredPosts.length !== snap.posts.length) {
+        cb.apply({ posts: filteredPosts });
+      }
+    }
+
+    if (myPosts.length) cb.addPosts(myPosts);
     if (feed?.items.length) cb.addPosts(feed.items);
 
     if (boot.saved_post_ids.length) {
@@ -567,6 +611,7 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     cb.apply({
       users: mergeUsers(latest.users, [...profiles, ...(pulse?.topVoices ?? [])]),
       importedDramas: mergeDramas(latest.importedDramas, pulse?.dramas ?? []),
+      communities: mergeCommunities(latest.communities, pulse?.communities ?? []),
     });
 
     const notifications = await fetchNotifications();

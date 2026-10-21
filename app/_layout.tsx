@@ -20,12 +20,13 @@ import { ToastProvider, toast } from '../components/ui/Toast';
 import { colors } from '../constants/theme';
 import { reportError } from '../lib/analytics';
 import { installBackendAnalyticsSink } from '../lib/api/analyticsSink';
+import { registerCatalogLookup } from '../lib/api/social';
 import { installPushTokenRotationListener, registerDevicePushToken } from '../lib/api/pushToken';
 import { AuthProvider, useAuth } from '../lib/auth';
 import { markBoot } from '../lib/boot';
 import { ensureAndroidNotificationChannels, installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders } from '../lib/reminders';
 import { setDownloadScope } from '../lib/media';
-import { freshMemberState, getState, GUEST_ID, guestState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
+import { freshMemberState, getState, GUEST_ID, guestState, sanitizePersistedState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
 import {
   adoptBackendState,
   adoptLocal,
@@ -72,6 +73,10 @@ export default function RootLayout() {
   // a no-op in device-local builds (the in-memory buffer behaves exactly as before).
   useEffect(() => {
     installBackendAnalyticsSink();
+    registerCatalogLookup(
+      (id) => getState().importedDramas.find((d) => d.id === id),
+      (id) => getState().importedActors.find((a) => a.id === id),
+    );
   }, []);
 
   // Hide the native splash as soon as fonts settle OR the gate times out — whichever comes first.
@@ -204,7 +209,7 @@ function AccountSync() {
     if (!state.hydrated || !state.profile.id || state.profile.id === GUEST_ID) return;
     const id = state.profile.id;
     const t = setTimeout(() => {
-      AsyncStorage.setItem(`hallyu.account.v4.${id}`, JSON.stringify(state)).catch(() => {});
+      AsyncStorage.setItem(`hallyu.account.v4.${id}`, JSON.stringify({ ...state, backendSyncedUserId: null })).catch(() => {});
     }, 200);
     return () => clearTimeout(t);
   }, [state]);
@@ -223,12 +228,12 @@ function AccountSync() {
       if ((auth.status === 'guest' || auth.status === 'signedOut') && state.profile.id !== GUEST_ID) {
         const prevId = state.profile.id;
         if (prevId) {
-          AsyncStorage.setItem(`hallyu.account.v4.${prevId}`, JSON.stringify(getState())).catch(() => {});
+          AsyncStorage.setItem(`hallyu.account.v4.${prevId}`, JSON.stringify({ ...getState(), backendSyncedUserId: null })).catch(() => {});
         }
         const device = { reduceMotion: state.prefs.reduceMotion, trueBlack: state.prefs.trueBlack };
         setDownloadScope(null);
         reset(guestState());
-        dispatch({ type: 'prefs', patch: device });
+        adoptLocal({ type: 'prefs', patch: device });
       }
       if (auth.status === 'guest' || auth.status === 'signedOut') {
         void adoptPublicState({
@@ -268,9 +273,9 @@ function AccountSync() {
           let restored = false;
           if (rawSnap) {
             try {
-              const parsed = JSON.parse(rawSnap);
+              const parsed = sanitizePersistedState(JSON.parse(rawSnap));
               if (parsed && parsed.profile?.id === u.id) {
-                reset({ ...parsed, hydrated: true });
+                reset({ ...(freshMemberState(parsed.profile)), ...parsed, hydrated: true, backendSyncedUserId: null });
                 restored = true;
               }
             } catch {
@@ -292,16 +297,16 @@ function AccountSync() {
               }),
             );
           }
-          dispatch({ type: 'prefs', patch: device });
+          adoptLocal({ type: 'prefs', patch: device });
         }
         if (stale()) return;
         applied.current = u.id; // mark COMPLETE once the local snapshot is in
         // Server-side push registration so episode alerts can reach this device (local reminders
         // stay in addition — §6.4 of the connection contract). Silent no-op on any failure.
         void registerDevicePushToken();
-        // Adopt the member's real backend state (profile, prefs, follows, saves, watchlist, the
-        // latest feed page, the notification inbox) into the cache. No-op without a session.
-        void adoptBackendState({
+        // Adopt the member's real backend state (profile, prefs, follows, saves, watchlist, own posts,
+        // communities, the latest feed page, the notification inbox) into the cache.
+        await adoptBackendState({
           getState,
           apply: (patch) => {
             if (!stale()) adoptLocal({ type: 'hydrate', state: patch });
@@ -311,6 +316,10 @@ function AccountSync() {
             for (const post of posts) adoptLocal({ type: 'addPost', post });
           },
           isStale: stale,
+        }).finally(() => {
+          if (!stale() && getState().backendSyncedUserId !== u.id) {
+            adoptLocal({ type: 'hydrate', state: { backendSyncedUserId: u.id } });
+          }
         });
       } catch (e) {
         // Expected async failures: log diagnostics, keep the app usable.
@@ -346,15 +355,26 @@ function AccountSync() {
         return;
       }
       if (st === 'active') {
-        if (backgroundedAt && Date.now() - backgroundedAt > 15_000) {
+        const awayMs = backgroundedAt ? Date.now() - backgroundedAt : 0;
+        if (awayMs > 15_000) {
           setRealtimeEpoch((n) => n + 1);
         }
         if (auth.status === 'signedIn' && auth.user) {
           void registerDevicePushToken();
-          void adoptNotifications({
-            getState,
-            apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
-          });
+          if (awayMs > 8_000) {
+            void adoptBackendState({
+              getState,
+              apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+              addPosts: (posts) => {
+                for (const post of posts) adoptLocal({ type: 'addPost', post });
+              },
+            });
+          } else {
+            void adoptNotifications({
+              getState,
+              apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+            });
+          }
         }
       }
     });

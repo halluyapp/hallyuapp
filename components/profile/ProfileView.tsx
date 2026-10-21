@@ -1,14 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { FlatList, Pressable, RefreshControl, StyleSheet, View } from 'react-native';
 import { colors, radius, sizes, space } from '../../constants/theme';
 import { Fandom, fandomById, isFandomId } from '../../lib/fandoms';
 import { compact } from '../../lib/format';
 import { useApp } from '../../lib/hooks';
 import { Post, User } from '../../lib/model';
 import { currentlyWatching, postsByUser } from '../../lib/selectors';
+import { getState } from '../../lib/store';
+import { adoptBackendState, adoptLocal, adoptProfileByHandle } from '../../lib/sync';
 import { CollectionCard } from '../collections/CollectionCard';
 import { FollowButton } from '../drama/FollowButton';
 import { PostCard } from '../feed/PostCard';
@@ -38,10 +40,41 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
   const [tab, setTab] = useState<Tab>('posts');
   const [menu, setMenu] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const padding = useListPadding();
   const blocked = state.blockedUsers.includes(user.id);
   const followingThem = state.follows.users.includes(user.id);
   const isPrivate = !!user.isPrivate && !isMe && !followingThem;
+
+  const syncProfile = useCallback(async () => {
+    const syncCb = {
+      getState,
+      apply: (patch: Parameters<typeof adoptBackendState>[0]['apply'] extends (p: infer P) => void ? P : never) =>
+        adoptLocal({ type: 'hydrate', state: patch }),
+      addPosts: (incoming: Post[]) => {
+        for (const post of incoming) adoptLocal({ type: 'addPost', post });
+      },
+    };
+    if (isMe) {
+      await Promise.all([
+        adoptBackendState(syncCb).catch(() => {}),
+        user.handle && user.handle !== 'you' && user.handle !== 'guest'
+          ? adoptProfileByHandle(user.handle, syncCb).catch(() => {})
+          : Promise.resolve(),
+      ]);
+    } else if (user.handle && user.handle !== 'guest') {
+      await adoptProfileByHandle(user.handle, syncCb).catch(() => {});
+    }
+  }, [isMe, user.handle]);
+
+  useEffect(() => {
+    void syncProfile();
+  }, [syncProfile]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    void syncProfile().finally(() => setRefreshing(false));
+  }, [syncProfile]);
 
   const posts = useMemo(() => postsByUser(state, user.id), [state, user.id]);
   const byTab = useMemo<Post[]>(
@@ -117,7 +150,7 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
 
       <View style={[styles.head, { marginTop: -34 }]}>
         <View style={styles.avatarHeroRing}>
-          <Avatar uri={user.avatarUrl} name={user.displayName} size={sizes.avatar.xl} />
+          <Avatar uri={user.avatarUrl} avatarPath={user.avatarPath} name={user.displayName} size={sizes.avatar.xl} />
         </View>
         <View style={{ flex: 1, paddingTop: 28 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -413,12 +446,17 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
       : { title: 'No public collections', body: 'Their shelves are private or empty.' },
   };
 
+  const refreshControl = (
+    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} colors={[colors.accent]} />
+  );
+
   return (
     <>
       {tab === 'collections' ? (
         <FlatList
           onScroll={tabBar.onScroll}
           scrollEventThrottle={16}
+          refreshControl={refreshControl}
           data={collections}
           key="collections"
           numColumns={2}
@@ -435,6 +473,7 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
         <FlatList
           onScroll={tabBar.onScroll}
           scrollEventThrottle={16}
+          refreshControl={refreshControl}
           data={byTab}
           key="shorts"
           numColumns={3}
@@ -451,6 +490,7 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
             <FlatList
               onScroll={tabBar.onScroll}
               scrollEventThrottle={16}
+              refreshControl={refreshControl}
               data={byTab}
               key={tab}
               keyExtractor={(p) => p.id}

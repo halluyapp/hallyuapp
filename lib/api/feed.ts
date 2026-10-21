@@ -115,6 +115,7 @@ interface ServerProfileRow {
   following_count: number;
   verified: boolean;
   is_private?: boolean;
+  role?: 'member' | 'moderator' | 'admin';
   created_at?: string;
 }
 
@@ -258,7 +259,9 @@ async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promis
   return posts.map((post) => {
     const rows = media.get(post.id);
     if (!rows?.length) return post;
-    const images = rows.filter((m) => m.kind === 'image').map((m) => urls.get(m.storagePath)).filter((u): u is string => Boolean(u));
+    const imageRows = rows.filter((m) => m.kind === 'image');
+    const images = imageRows.map((m) => urls.get(m.storagePath)).filter((u): u is string => Boolean(u));
+    const imagePaths = imageRows.map((m) => m.storagePath);
     const clip = rows.find((m) => m.kind === 'video');
     const videoUrl = clip ? urls.get(clip.storagePath) : undefined;
     if (clip && videoUrl) {
@@ -266,8 +269,11 @@ async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promis
       return {
         ...post,
         images: images.length ? images : undefined,
+        imagePaths: images.length ? imagePaths : undefined,
         video: {
           url: videoUrl,
+          storagePath: clip.storagePath,
+          posterPath: clip.posterPath ?? undefined,
           duration: clip.durationMs ? Math.round(clip.durationMs / 1000) : 15,
           poster,
           width: clip.width ?? undefined,
@@ -275,7 +281,7 @@ async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promis
         },
       };
     }
-    return images.length ? { ...post, images } : post;
+    return images.length ? { ...post, images, imagePaths } : post;
   });
 }
 
@@ -373,6 +379,7 @@ export async function hydrateServerProfiles(rows: ServerProfileRow[]): Promise<{
     handle: r.handle,
     displayName: r.display_name,
     avatarUrl: r.avatar_path ? avatars.get(r.avatar_path) : undefined,
+    avatarPath: r.avatar_path ?? undefined,
     bannerUrl: r.banner_url ?? undefined,
     bio: r.bio ?? undefined,
     fandoms: (r.worlds ?? []) as User['fandoms'],
@@ -383,6 +390,7 @@ export async function hydrateServerProfiles(rows: ServerProfileRow[]): Promise<{
     joinedAt: r.created_at ?? new Date().toISOString(),
     verified: r.verified,
     isPrivate: Boolean(r.is_private),
+    role: r.role ?? undefined,
   }));
   return { users, dramas };
 }
@@ -531,13 +539,22 @@ export async function fetchPosts(ids: string[]): Promise<Post[]> {
 
 // ── Profiles, Collections, Community Pulse ───────────────────────────────────────────────────
 
+/** Hydrate raw ServerPost rows (such as `boot.my_posts`) with title mappings, signed media, and polls. */
+export async function hydrateServerPosts(rows: ServerPost[]): Promise<Post[]> {
+  if (!rows.length) return [];
+  const dramaIds = await resolveDramaClientIds(
+    rows.flatMap((p) => [p.title_id, p.secondary_title_id]).filter((x): x is string => Boolean(x)),
+  );
+  return attachMedia(rows.map((p) => toPost(p, dramaIds)));
+}
+
 /** Public profile rows for the users a page references (RLS: visible profiles only). */
 export async function fetchProfiles(ids: string[]): Promise<User[]> {
   const uuids = [...new Set(ids.filter(Boolean))];
   if (!uuids.length) return [];
   const { data, error } = await db()
     .from('profiles')
-    .select('id, handle, display_name, avatar_path, bio, worlds, favorite_genres, favorite_title_ids, follower_count, following_count, verified, is_private, created_at')
+    .select('id, handle, display_name, avatar_path, banner_url, bio, worlds, favorite_genres, favorite_title_ids, follower_count, following_count, verified, is_private, role, created_at')
     .in('id', uuids);
   if (error) throw new Error(`profile lookup failed: ${error.message}`);
   const { users } = await hydrateServerProfiles((data ?? []) as ServerProfileRow[]);

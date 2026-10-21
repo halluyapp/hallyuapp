@@ -4,6 +4,8 @@ import { Image } from 'expo-image';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { colors, radius, space } from '../../constants/theme';
+import { normalizeMediaUrl } from '../../lib/api/client';
+import { refreshSignedUrl } from '../../lib/api/media';
 import { haptic, useAutoplayAllowed } from '../../lib/hooks';
 import { Post } from '../../lib/model';
 import { Text } from '../ui/Text';
@@ -42,9 +44,17 @@ function FeedVideoBase({ post, width, onOpen, detail }: Props) {
   const [ready, setReady] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [videoUri, setVideoUri] = useState<string>(() => normalizeMediaUrl(video.url) ?? video.url);
+  const [retried, setRetried] = useState(false);
   const [progress, setProgress] = useState<{ pos: number; dur: number; playing: boolean }>({ pos: 0, dur: video.duration * 1000, playing: false });
   const [aspect, setAspect] = useState<number | null>(post.type === 'short' ? 9 / 16 : null); // shorts are portrait by definition
   const ref = useRef<Video>(null);
+
+  useEffect(() => {
+    setVideoUri(normalizeMediaUrl(video.url) ?? video.url);
+    setRetried(false);
+    setFailed(false);
+  }, [video.url]);
 
   useEffect(() => feedSound.subscribe(setMuted), []);
   // Scrolled away → drop the manual override so it doesn't keep playing off-screen.
@@ -84,7 +94,8 @@ function FeedVideoBase({ post, width, onOpen, detail }: Props) {
     setManual(true);
   };
 
-  const poster = video.poster ?? post.images?.[0];
+  const rawPoster = video.poster ?? post.images?.[0];
+  const poster = typeof rawPoster === 'string' ? normalizeMediaUrl(rawPoster) ?? rawPoster : rawPoster;
   const remaining = progress.playing || progress.pos > 0 ? clock(progress.dur - progress.pos) : clock(video.duration * 1000);
   const showPlayGlyph = !shouldPlay || failed;
 
@@ -94,7 +105,7 @@ function FeedVideoBase({ post, width, onOpen, detail }: Props) {
       {armed ? (
         <Video
           ref={ref}
-          source={{ uri: video.url }}
+          source={{ uri: videoUri }}
           style={[StyleSheet.absoluteFill, { opacity: ready ? 1 : 0 }]}
           resizeMode={ResizeMode.COVER}
           shouldPlay={shouldPlay}
@@ -111,7 +122,21 @@ function FeedVideoBase({ post, width, onOpen, detail }: Props) {
             if (w && h) setAspect(n?.orientation === 'portrait' && w > h ? h / w : w / h);
             setReady(true);
           }}
-          onError={() => setFailed(true)}
+          onError={() => {
+            if (!retried) {
+              setRetried(true);
+              void refreshSignedUrl(video.storagePath ?? videoUri).then((fresh) => {
+                if (fresh) {
+                  setVideoUri(fresh);
+                  setFailed(false);
+                } else {
+                  setFailed(true);
+                }
+              });
+              return;
+            }
+            setFailed(true);
+          }}
           videoStyle={{ width: '100%', height: '100%' }}
           useNativeControls={false}
         />

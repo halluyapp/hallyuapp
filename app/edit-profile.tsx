@@ -14,9 +14,8 @@ import { TextField } from '../components/ui/TextField';
 import { useToast } from '../components/ui/Toast';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, radius, sizes, space } from '../constants/theme';
-import { supabase } from '../lib/api/client';
+import { ensureBackendSessionToken, supabase } from '../lib/api/client';
 import { uploadAvatar } from '../lib/api/media';
-import { hasSession } from '../lib/api/social';
 import { FANDOMS } from '../lib/fandoms';
 import { haptic, useApp } from '../lib/hooks';
 import { FandomId } from '../lib/model';
@@ -59,7 +58,9 @@ export default function EditProfile() {
       let persistedAvatarUrl = avatarUrl;
       let persistedAvatarPath = me.avatarPath;
 
-      if (handleClean !== me.handle.toLowerCase() && supabase && hasSession()) {
+      const token = supabase ? await ensureBackendSessionToken() : null;
+
+      if (handleClean !== me.handle.toLowerCase() && supabase && token) {
         const { data: available, error } = await supabase.rpc('handle_is_available', { p_handle: handleClean });
         if (!error && available === false) {
           toast.show({ message: `@${handleClean} is already taken.`, tone: 'danger' });
@@ -72,14 +73,20 @@ export default function EditProfile() {
         avatarUrl &&
         /^(blob:|file:|content:|ph:|data:|assets-library:)/i.test(avatarUrl) &&
         supabase &&
-        hasSession()
+        token
       ) {
         try {
           const uploaded = await uploadAvatar(me.id, avatarUrl);
           persistedAvatarUrl = uploaded.signedUrl;
           persistedAvatarPath = uploaded.storagePath;
           setAvatarUrl(uploaded.signedUrl);
-          await supabase.from('profiles').update({ avatar_path: uploaded.storagePath }).eq('id', me.id);
+          const { error: avatarRowErr } = await supabase
+            .from('profiles')
+            .update({ avatar_path: uploaded.storagePath })
+            .eq('id', me.id);
+          if (avatarRowErr) {
+            throw new Error(avatarRowErr.message);
+          }
         } catch (err) {
           toast.show({
             message: err instanceof Error ? err.message : 'Could not upload profile photo.',

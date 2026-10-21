@@ -158,8 +158,15 @@ export default function Composer() {
   const [videoAccessOpen, setVideoAccessOpen] = useState(false);
   const [videoAccess, setVideoAccess] = useState<VideoAccessStatus | null>(null);
 
+  const isStaff = me.role === 'admin' || me.role === 'moderator';
+
   useEffect(() => {
     if (auth.status !== 'signedIn') return;
+    if (isStaff) {
+      setVideoAccess({ allowed: true, role: me.role ?? 'admin', status: 'approved', monthlyBudget: 0, usedThisMonth: 0 });
+      setVideoAccessOpen(false);
+      return;
+    }
     let alive = true;
     void fetchVideoAccessStatus()
       .then((s) => {
@@ -173,7 +180,7 @@ export default function Composer() {
     return () => {
       alive = false;
     };
-  }, [auth.status, type, editing]);
+  }, [auth.status, type, editing, isStaff, me.role]);
   /**
    * What the publish is doing right now. A spinner on the Post button was the whole story before:
    * a 45MB clip took minutes and the screen looked frozen. Every entry here is a step that really
@@ -218,7 +225,7 @@ export default function Composer() {
   if (type === 'review' && !verdict.trim()) problems.push('Write a one-line verdict.');
   if (type === 'recommendation' && !secondary) problems.push('Add the drama you’re comparing it to.');
   if (type === 'short' && !video) problems.push('Add a video.');
-  if (type !== 'review' && type !== 'short' && !body.trim() && !(pollOpen && pollQuestion.trim())) problems.push('Write something.');
+  if (type !== 'review' && type !== 'short' && !body.trim() && !images.length && !video && !(pollOpen && pollQuestion.trim())) problems.push('Write something.');
   if (body.length > bodyLimit) problems.push(`Body is ${body.length - bodyLimit} over the limit.`);
   if (spoiler !== 'none' && !drama) problems.push('Spoiler levels need a drama attached.');
   const canPost = problems.length === 0 && !posting;
@@ -302,11 +309,13 @@ export default function Composer() {
     if (auth.status !== 'signedIn') {
       return router.push({ pathname: '/(auth)/gate', params: { reason: 'publish videos & Shorts' } });
     }
-    const access = videoAccess ?? (await fetchVideoAccessStatus().catch(() => null));
-    if (access) setVideoAccess(access);
-    if (!access?.allowed) {
-      setVideoAccessOpen(true);
-      return;
+    if (!isStaff) {
+      const access = videoAccess ?? (await fetchVideoAccessStatus().catch(() => null));
+      if (access) setVideoAccess(access);
+      if (!access?.allowed) {
+        setVideoAccessOpen(true);
+        return;
+      }
     }
     if (!(await videoUploadsAvailable()))
       return toast.show({ message: 'Video uploads aren’t available right now — the backend has no media bucket.', tone: 'danger' });
@@ -416,13 +425,15 @@ export default function Composer() {
         setStage({ step: 'upload', detail });
         const asset = await uploadAsset({ userId: me.id, uri, kind: 'image', unique: `${post.id}-${i}`, onProgress: onProgress(detail) });
         uploaded.push(asset.storagePath);
-        assets.push({ uploadId: asset.uploadId });
+        assets.push({ uploadId: asset.uploadId, width: asset.width ?? null, height: asset.height ?? null });
       }
 
       if (video) {
         // The poster is its own object; `complete_media_upload` records its path on the video row.
         setStage({ step: 'upload', detail: 'Your video’s cover frame' });
-        const posterPath = video.poster ? await uploadPoster({ userId: me.id, posterUri: video.poster, unique: post.id }) : undefined;
+        const posterPath = video.poster
+          ? await uploadPoster({ userId: me.id, posterUri: video.poster, unique: post.id }).catch(() => undefined)
+          : undefined;
         if (posterPath) uploaded.push(posterPath);
         setStage({ step: 'upload', detail: 'Your video' });
         const asset = await uploadAsset({ userId: me.id, uri: video.uri, kind: 'video', unique: post.id, onProgress: onProgress('Your video') });
@@ -480,7 +491,10 @@ export default function Composer() {
       setPosting(false);
       setStage(null);
       const why = e instanceof MediaPipelineError ? e.message : (e as Error)?.message || 'unknown error';
-      track('post.publish.failed', { step: e instanceof MediaPipelineError ? e.step : 'unknown' });
+      track('post.publish.failed', {
+        step: e instanceof MediaPipelineError ? e.step : 'insert_or_verify',
+        reason: why.slice(0, 180),
+      });
       toast.show({
         message: `Not posted — ${why}. Your draft was kept; you can retry.`,
         tone: 'danger',

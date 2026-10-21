@@ -215,7 +215,17 @@ export interface Post {
   verdict?: string; // review one-liner
   poll?: PostPoll;
   images?: (string | number)[];
-  video?: { url: string; key?: string; poster?: string | number; duration: number; width?: number; height?: number };
+  imagePaths?: string[];
+  video?: {
+    url: string;
+    key?: string;
+    storagePath?: string;
+    posterPath?: string;
+    poster?: string | number;
+    duration: number;
+    width?: number;
+    height?: number;
+  };
   spoiler: SpoilerLevel;
   context: PostContext;
   hashtags: string[];

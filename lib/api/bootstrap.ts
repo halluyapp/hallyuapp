@@ -4,7 +4,8 @@
  * alerts, watchlist and notification inbox.
  */
 import type { ReactionKind, User } from '../model';
-import { supabase } from './client';
+import { ensureBackendSessionToken, supabase } from './client';
+import type { ServerPost } from './feed';
 
 export interface BootstrapProfile {
   id: string;
@@ -71,6 +72,7 @@ export interface BootstrapPayload {
   muted_titles?: string[];
   alerts?: { title_id: string; episodes: boolean; trending?: boolean }[];
   notifications?: unknown[];
+  my_posts?: ServerPost[];
   titles?: unknown[];
 }
 
@@ -94,6 +96,7 @@ interface RawBootstrapResponse {
   title_alerts?: string[];
   alerts?: BootstrapPayload['alerts'];
   notifications?: unknown[];
+  my_posts?: ServerPost[];
   titles?: unknown[];
 }
 
@@ -102,6 +105,7 @@ interface RawBootstrapResponse {
  */
 export async function fetchBootstrap(): Promise<BootstrapPayload> {
   if (!supabase) throw new Error('No backend configured — cannot fetch bootstrap.');
+  await ensureBackendSessionToken();
   const { data, error } = await supabase.rpc('get_bootstrap');
   if (error) throw error;
   if (!data) throw new Error('get_bootstrap returned no payload.');
@@ -143,6 +147,7 @@ export async function fetchBootstrap(): Promise<BootstrapPayload> {
     muted_titles: mutedTitles,
     alerts,
     notifications: raw.notifications ?? [],
+    my_posts: raw.my_posts ?? [],
     titles: raw.titles ?? [],
   };
 }

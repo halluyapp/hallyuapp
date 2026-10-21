@@ -16,7 +16,7 @@ import type {
   ReactionKind,
   User,
 } from '../model';
-import { getBackendAccessToken, supabase } from './client';
+import { ensureBackendSessionToken, supabase } from './client';
 import { serverTitleToDrama, type ServerTitleRow } from './feed';
 import { signedUrls } from './media';
 import { isUuid, resolveTitleUuid } from './social';
@@ -56,7 +56,7 @@ export async function createPollOnServer(
   options: string[],
   hours = 168,
 ): Promise<PostPoll | undefined> {
-  if (!supabase || !getBackendAccessToken() || !isUuid(postId)) return undefined;
+  if (!supabase || !(await ensureBackendSessionToken()) || !isUuid(postId)) return undefined;
   const cleanOptions = options.map((o) => o.trim()).filter(Boolean).slice(0, 4);
   if (cleanOptions.length < 2) return undefined;
   const { data, error } = await supabase.rpc('create_post_poll', {
@@ -70,7 +70,7 @@ export async function createPollOnServer(
 }
 
 export async function votePollOnServer(postId: string, optionIndex: number): Promise<PostPoll | undefined> {
-  if (!supabase || !getBackendAccessToken() || !isUuid(postId)) return undefined;
+  if (!supabase || !(await ensureBackendSessionToken()) || !isUuid(postId)) return undefined;
   const { data, error } = await supabase.rpc('vote_post_poll', {
     p_post_id: postId,
     p_option_index: optionIndex,
@@ -124,7 +124,7 @@ export async function fetchTitleRatingSummary(dramaId: string, userId?: string):
 }
 
 export async function rateTitleOnServer(dramaId: string, score: number): Promise<TitleRatingSummary | null> {
-  if (!supabase || !getBackendAccessToken()) return null;
+  if (!supabase || !(await ensureBackendSessionToken())) return null;
   const titleId = await resolveTitleUuid(dramaId);
   if (!titleId) return null;
   const { data, error } = await supabase.rpc('rate_title', {
@@ -186,7 +186,7 @@ function toDirectMessage(raw: RawDirectMessage): DirectMessage {
 }
 
 export async function fetchConversations(): Promise<ConversationSummary[]> {
-  if (!supabase || !getBackendAccessToken()) return [];
+  if (!supabase || !(await ensureBackendSessionToken())) return [];
   const { data, error } = await supabase.rpc('list_conversations', { p_limit: 50 });
   if (error || !Array.isArray(data)) return [];
   const rows = data as RawConversation[];
@@ -216,7 +216,7 @@ export async function fetchConversations(): Promise<ConversationSummary[]> {
 }
 
 export async function fetchDirectMessages(peerHandle: string): Promise<DirectMessage[]> {
-  if (!supabase || !getBackendAccessToken()) return [];
+  if (!supabase || !(await ensureBackendSessionToken())) return [];
   const { data, error } = await supabase.rpc('list_direct_messages', {
     p_peer_handle: peerHandle,
     p_limit: 80,
@@ -230,7 +230,7 @@ export async function sendDirectMessage(
   body: string,
   options?: { sharedDramaId?: string; sharedPostId?: string },
 ): Promise<DirectMessage | null> {
-  if (!supabase || !getBackendAccessToken()) {
+  if (!supabase || !(await ensureBackendSessionToken())) {
     throw new Error('Sign in to send messages');
   }
   const { data, error } = await supabase.rpc('send_direct_message', {
@@ -244,19 +244,22 @@ export async function sendDirectMessage(
 }
 
 export async function markConversationReadOnServer(peerHandle: string): Promise<void> {
-  if (!supabase || !getBackendAccessToken()) return;
+  if (!supabase || !(await ensureBackendSessionToken())) return;
   await supabase.rpc('mark_conversation_read', {
     p_peer_handle: peerHandle.trim().replace(/^@/, ''),
   });
 }
+
+let dmChannelSeq = 0;
 
 export function subscribeDirectMessages(
   myUserId: string,
   onNewMessage: (msg: DirectMessage) => void,
 ): () => void {
   if (!supabase || !isUuid(myUserId)) return () => {};
+  dmChannelSeq += 1;
   const channel = supabase
-    .channel(`dm-live:${myUserId}`)
+    .channel(`dm-live:${myUserId}:${dmChannelSeq}`)
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'direct_messages' },
@@ -484,7 +487,7 @@ export async function recordPostShare(postId: string, channel = 'copy_link'): Pr
 }
 
 export async function fetchVideoAccessStatus(): Promise<VideoAccessStatus> {
-  if (!supabase || !getBackendAccessToken()) {
+  if (!supabase || !(await ensureBackendSessionToken())) {
     return { allowed: false, role: 'guest', status: 'signed_out', monthlyBudget: 0, usedThisMonth: 0 };
   }
   const { data, error } = await supabase.rpc('my_video_access_status');
@@ -499,10 +502,12 @@ export async function fetchVideoAccessStatus(): Promise<VideoAccessStatus> {
     };
   }
   const raw = data as Record<string, unknown>;
+  const role = String(raw.role ?? 'member');
+  const isStaff = role === 'admin' || role === 'moderator';
   return {
-    allowed: Boolean(raw.allowed),
-    role: String(raw.role ?? 'member'),
-    status: (raw.status as VideoAccessStatus['status']) ?? 'none',
+    allowed: Boolean(raw.allowed) || isStaff,
+    role,
+    status: isStaff ? 'approved' : ((raw.status as VideoAccessStatus['status']) ?? 'none'),
     requestId: (raw.request_id as string | null) ?? null,
     requestNote: (raw.request_note as string | null) ?? null,
     decisionNote: (raw.decision_note as string | null) ?? null,
@@ -512,7 +517,7 @@ export async function fetchVideoAccessStatus(): Promise<VideoAccessStatus> {
 }
 
 export async function requestVideoCreatorAccess(note?: string): Promise<string> {
-  if (!supabase || !getBackendAccessToken()) throw new Error('Sign in to request creator access');
+  if (!supabase || !(await ensureBackendSessionToken())) throw new Error('Sign in to request creator access');
   const { data, error } = await supabase.rpc('request_video_access', {
     p_note: note?.trim() ? note.trim() : undefined,
   });
@@ -565,7 +570,7 @@ export interface StaffOverviewPayload {
 }
 
 export async function fetchStaffOverview(): Promise<StaffOverviewPayload> {
-  if (!supabase || !getBackendAccessToken()) throw new Error('Staff authentication required');
+  if (!supabase || !(await ensureBackendSessionToken())) throw new Error('Staff authentication required');
   const { data, error } = await supabase.rpc('get_staff_overview');
   if (error) throw new Error(error.message);
   const raw = (data ?? {}) as Record<string, unknown>;
@@ -695,7 +700,7 @@ export async function fetchFollowRequests(): Promise<{
   incoming: IncomingFollowRequest[];
   outgoingIds: string[];
 }> {
-  if (!supabase || !getBackendAccessToken()) return { incoming: [], outgoingIds: [] };
+  if (!supabase || !(await ensureBackendSessionToken())) return { incoming: [], outgoingIds: [] };
   const { data, error } = await supabase.rpc('list_follow_requests');
   if (error || !data) return { incoming: [], outgoingIds: [] };
   const raw = data as { incoming?: Record<string, unknown>[]; outgoing_ids?: string[] };
@@ -720,7 +725,7 @@ export async function fetchFollowRequests(): Promise<{
 }
 
 export async function respondFollowRequest(requesterId: string, accept: boolean): Promise<void> {
-  if (!supabase || !getBackendAccessToken()) throw new Error('Sign in required');
+  if (!supabase || !(await ensureBackendSessionToken())) throw new Error('Sign in required');
   const { error } = await supabase.rpc('respond_follow_request', {
     p_requester_id: requesterId,
     p_accept: accept,
@@ -750,7 +755,7 @@ export async function createCommunityRoom(input: {
   description?: string;
   coverTone?: string;
 }): Promise<LiveCommunityDetail> {
-  if (!supabase || !getBackendAccessToken()) throw new Error('Sign in to create a community');
+  if (!supabase || !(await ensureBackendSessionToken())) throw new Error('Sign in to create a community');
   const { data, error } = await supabase.rpc('create_community_room', {
     p_name: input.name.trim(),
     p_fandom: input.fandom,

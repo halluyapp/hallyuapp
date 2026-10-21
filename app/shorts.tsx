@@ -7,7 +7,9 @@ import { Animated, FlatList, Pressable, StatusBar, StyleSheet, TextInput, useWin
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ShareCardModal } from '../components/share/ShareCardModal';
 import { VideoAccessSheet } from '../components/video/VideoAccessSheet';
+import { normalizeMediaUrl } from '../lib/api/client';
 import { fetchVideoAccessStatus, type VideoAccessStatus } from '../lib/api/features';
+import { refreshSignedUrl } from '../lib/api/media';
 import { commentsFor } from '../lib/selectors';
 import { ReactionButton } from '../components/feed/Reactions';
 import { RichText } from '../components/feed/RichText';
@@ -36,8 +38,9 @@ export default function Shorts() {
   const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
   const params = useLocalSearchParams<{ id?: string; dramaId?: string }>();
-  const { state } = useApp();
+  const { state, me } = useApp();
   const require = useRequireMember();
+  const isStaff = me.role === 'admin' || me.role === 'moderator';
   const reduce = useReduceMotion(state.prefs.reduceMotion);
   const all = useMemo(() => selectShorts(state), [state]);
   const list = useMemo(() => {
@@ -75,6 +78,10 @@ export default function Shorts() {
           actionLabel="Make a short"
           onAction={() =>
             require('post a Short', async () => {
+              if (isStaff) {
+                router.replace({ pathname: '/create/[type]', params: { type: 'short', ...(params.dramaId ? { dramaId: params.dramaId } : {}) } });
+                return;
+              }
               const access = await fetchVideoAccessStatus().catch(() => null);
               if (access?.allowed) {
                 router.replace({ pathname: '/create/[type]', params: { type: 'short', ...(params.dramaId ? { dramaId: params.dramaId } : {}) } });
@@ -125,6 +132,10 @@ export default function Shorts() {
             tone="onMedia"
             onPress={() =>
               require('post a Short', async () => {
+                if (isStaff) {
+                  router.push('/create/short');
+                  return;
+                }
                 const access = await fetchVideoAccessStatus().catch(() => null);
                 if (access?.allowed) {
                   router.push('/create/short');
@@ -162,6 +173,8 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
   const [shareOpen, setShareOpen] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [failed, setFailed] = useState(false);
+  const [videoUri, setVideoUri] = useState<string | undefined>(() => normalizeMediaUrl(post.video?.url));
+  const [retried, setRetried] = useState(false);
   const [progress, setProgress] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
   const [expanded, setExpanded] = useState(false);
@@ -171,6 +184,12 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
   const lastTap = useRef(0);
   const playing = active && !paused && !veiled;
   const reduce = useReduceMotion(state.prefs.reduceMotion);
+
+  useEffect(() => {
+    setVideoUri(normalizeMediaUrl(post.video?.url));
+    setRetried(false);
+    setFailed(false);
+  }, [post.video?.url]);
 
   // Chrome (rail + caption) fades after 2.5s of watching; any touch brings it back. Caption rises in on arrival.
   const chrome = useRef(new Animated.Value(1)).current;
@@ -224,16 +243,30 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
 
   return (
     <View style={{ height, width, backgroundColor: drama?.tone ?? '#000' }}>
-      {!veiled && post.video && !failed ? (
+      {!veiled && post.video && videoUri && !failed ? (
         <Video
           ref={videoRef}
-          source={{ uri: post.video.url }}
+          source={{ uri: videoUri }}
           style={StyleSheet.absoluteFill}
           resizeMode={ResizeMode.COVER}
           shouldPlay={playing}
           isLooping
           isMuted={muted}
-          onError={() => setFailed(true)}
+          onError={() => {
+            if (!retried) {
+              setRetried(true);
+              void refreshSignedUrl(post.video?.storagePath ?? videoUri).then((fresh) => {
+                if (fresh) {
+                  setVideoUri(fresh);
+                  setFailed(false);
+                } else {
+                  setFailed(true);
+                }
+              });
+              return;
+            }
+            setFailed(true);
+          }}
           onPlaybackStatusUpdate={(s) => {
             if (s.isLoaded && s.durationMillis) {
               setDurationMs(s.durationMillis);
@@ -290,7 +323,7 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
 
       <Animated.View style={[styles.rail, { bottom: bottomPad + 8, opacity: chrome }]} pointerEvents={chromeVisible ? 'auto' : 'none'}>
         <Pressable onPress={() => router.push(`/user/${author?.handle}`)} accessibilityRole="button" accessibilityLabel={`Open ${author?.displayName}`}>
-          <Avatar uri={author?.avatarUrl} name={author?.displayName ?? '?'} size={44} ring />
+          <Avatar uri={author?.avatarUrl} avatarPath={author?.avatarPath} name={author?.displayName ?? '?'} size={44} ring />
         </Pressable>
         <View style={styles.railItem}>
           <ReactionButton targetId={post.id} counts={post.reactions} />

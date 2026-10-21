@@ -117,4 +117,41 @@ assert(
   'Onboarding finale missing Hallyu Premiere Pass card',
 );
 
-console.log('OVERALL STATUS: PASS (All Phases 1–4 stability, backend sync & cinematic onboarding surfaces verified)');
+// 6. Whole-App Media Pipeline, Cross-Device Persistence & Production Crash Guards (Migration 44)
+const mig44 = read('supabase/migrations/20260101124400_44_media_posts_watchlist_and_bootstrap_sync.sql');
+for (const token of [
+  'drop constraint if exists posts_body_length_sane',
+  'create policy posts_update_own',
+  'create or replace function public.upsert_watchlist_item',
+  'create or replace function public.ensure_client_title',
+  'create or replace function public.ensure_client_person',
+  'create or replace function public.get_bootstrap',
+  "'my_posts'",
+]) {
+  assert(mig44.includes(token), `Missing Migration 44 SQL surface: ${token}`);
+}
+
+const mediaSrc = read('lib/api/media.ts');
+assert(mediaSrc.includes('row.signedUrl ?? row.signedURL'), 'lib/api/media.ts must read row.signedUrl (v2 SDK camelCase)');
+assert(mediaSrc.includes('normalizeMediaUrl'), 'lib/api/media.ts must normalize signed URLs to full HTTPS URLs');
+assert(mediaSrc.includes('prepareLocalImage'), 'lib/api/media.ts must normalize images via expo-image-manipulator');
+assert(mediaSrc.includes('refreshSignedUrl'), 'lib/api/media.ts must expose refreshSignedUrl for self-healing media');
+
+const clientSrc = read('lib/api/client.ts');
+assert(clientSrc.includes('export async function ensureBackendSessionToken'), 'lib/api/client.ts must expose ensureBackendSessionToken');
+assert(clientSrc.includes('export function normalizeMediaUrl'), 'lib/api/client.ts must expose normalizeMediaUrl');
+
+assert(read('lib/api/social.ts').includes("rpc('ensure_client_title'"), 'lib/api/social.ts must materialise TMDB titles on demand');
+assert(read('lib/api/social.ts').includes("rpc('ensure_client_person'"), 'lib/api/social.ts must materialise TMDB people on demand');
+assert(read('lib/sync.ts').includes('backendSyncedUserId: boot.profile.id'), 'lib/sync.ts must stamp backendSyncedUserId on bootstrap');
+assert(read('lib/sync.ts').includes('hydrateServerPosts(boot.my_posts ?? [])'), 'lib/sync.ts must hydrate boot.my_posts across devices');
+assert(read('app/index.tsx').includes('state.backendSyncedUserId === auth.user?.id'), 'app/index.tsx must wait for bootstrap before onboarding redirect');
+assert(read('components/profile/ProfileView.tsx').includes('RefreshControl'), 'ProfileView must support pull-to-refresh');
+assert(read('components/ui/CoachMarks.tsx').includes('steps[step] ?? steps[0]'), 'CoachMarks must guard out-of-bounds step indices');
+
+// Preserve E2E emulator test selectors in scripts/ci/auth-flow-check.mjs
+assert(read('app/(auth)/welcome.tsx').includes('I already have an account'), 'Welcome screen must preserve E2E sign-in label');
+assert(read('app/(onboarding)/fandoms.tsx').includes('Pick at least one'), 'Onboarding fandoms screen must preserve E2E button label');
+assert(read('app/(onboarding)/fandoms.tsx').includes('Continue with'), 'Onboarding fandoms screen must preserve E2E continue label');
+
+console.log('OVERALL STATUS: PASS (All Phases 1–5 whole-app media, cross-device sync, creator gate & crash guards verified)');
