@@ -204,16 +204,16 @@ export async function resolveActorClientIds(ids: string[]): Promise<Map<string, 
 export function toPost(row: ServerPost, dramaIds: Map<string, string>): Post {
   return {
     id: row.id,
-    type: row.type,
+    type: row.type ?? 'post',
     authorId: row.author_id,
-    createdAt: row.created_at,
+    createdAt: row.created_at ?? new Date().toISOString(),
     editedAt: row.edited_at ?? undefined,
-    body: row.body,
+    body: typeof row.body === 'string' ? row.body : '',
     title: row.title ?? undefined,
     kind: row.kind ?? undefined,
     rating: row.rating == null ? undefined : Number(row.rating),
     verdict: row.verdict ?? undefined,
-    spoiler: row.spoiler,
+    spoiler: row.spoiler ?? 'none',
     context: {
       dramaId: row.title_id ? dramaIds.get(row.title_id) : undefined,
       secondaryDramaId: row.secondary_title_id ? dramaIds.get(row.secondary_title_id) : undefined,
@@ -221,8 +221,8 @@ export function toPost(row: ServerPost, dramaIds: Map<string, string>): Post {
       season: row.season ?? undefined,
       episode: row.episode ?? undefined,
     },
-    hashtags: row.hashtags ?? [],
-    mentions: row.mentions ?? [],
+    hashtags: Array.isArray(row.hashtags) ? row.hashtags : [],
+    mentions: Array.isArray(row.mentions) ? row.mentions : [],
     reactions: {
       loved: row.loved_count ?? 0,
       cried: row.cried_count ?? 0,
@@ -343,9 +343,9 @@ export function toComment(row: ServerComment): Comment {
     postId: row.post_id,
     authorId: row.author_id,
     parentId: row.parent_id ?? undefined,
-    body: row.body,
-    createdAt: row.created_at,
-    spoiler: row.spoiler,
+    body: typeof row.body === 'string' ? row.body : '',
+    createdAt: row.created_at ?? new Date().toISOString(),
+    spoiler: row.spoiler ?? 'none',
     reactions: {
       loved: row.loved_count ?? 0,
       cried: row.cried_count ?? 0,
@@ -497,24 +497,51 @@ export async function fetchPostThread(postId: string): Promise<{ post: Post | nu
   }
   const raw = data as {
     post: ServerPost | null;
-    comments: ServerComment[];
-    authors: ServerProfileRow[];
-    titles: ServerTitleRow[];
+    author?: ServerProfileRow | null;
+    authors?: ServerProfileRow[];
+    title?: ServerTitleRow | null;
+    secondary_title?: ServerTitleRow | null;
+    titles?: ServerTitleRow[];
+    comments?: (ServerComment | { comment?: ServerComment; author?: ServerProfileRow | null })[];
   };
-  const dramas = (raw.titles ?? []).map(serverTitleToDrama);
+
+  const titleRows: ServerTitleRow[] = [
+    ...(raw.titles ?? []),
+    ...(raw.title ? [raw.title] : []),
+    ...(raw.secondary_title ? [raw.secondary_title] : []),
+  ];
+  const dramas = titleRows.map(serverTitleToDrama);
   const dramaIds = new Map<string, string>();
-  for (const row of raw.titles ?? []) {
+  for (const row of titleRows) {
     dramaIds.set(row.id, row.media_type === 'movie' ? `tmdb-movie-${row.external_id}` : `tmdb-${row.external_id}`);
   }
   if (raw.post?.title_id && !dramaIds.has(raw.post.title_id)) {
     const extra = await resolveDramaClientIds([raw.post.title_id, raw.post.secondary_title_id].filter((x): x is string => Boolean(x)));
     for (const [k, v] of extra) dramaIds.set(k, v);
   }
-  const posts = raw.post ? await attachMedia([toPost(raw.post, dramaIds)]) : [];
-  const { users, dramas: favDramas } = await hydrateServerProfiles(raw.authors ?? []);
+
+  const commentRows: ServerComment[] = [];
+  const commentAuthors: ServerProfileRow[] = [];
+  for (const entry of raw.comments ?? []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const wrapped = entry as { comment?: ServerComment; author?: ServerProfileRow | null };
+    const c = wrapped.comment ?? (entry as ServerComment);
+    if (c && typeof c.id === 'string') commentRows.push(c);
+    if (wrapped.author && typeof wrapped.author.id === 'string') commentAuthors.push(wrapped.author);
+  }
+
+  const allAuthorRows: ServerProfileRow[] = [
+    ...(raw.authors ?? []),
+    ...(raw.author ? [raw.author] : []),
+    ...commentAuthors,
+  ];
+  const uniqueAuthors = [...new Map(allAuthorRows.map((a) => [a.id, a])).values()];
+
+  const posts = raw.post && typeof raw.post.id === 'string' ? await attachMedia([toPost(raw.post, dramaIds)]) : [];
+  const { users, dramas: favDramas } = await hydrateServerProfiles(uniqueAuthors);
   return {
     post: posts[0] ?? null,
-    comments: (raw.comments ?? []).map(toComment),
+    comments: commentRows.map(toComment),
     users,
     dramas: [...dramas, ...favDramas],
   };
@@ -571,7 +598,16 @@ export async function fetchProfileByHandle(
   if (error || !data) return null;
   const raw = data as {
     profile: ServerProfileRow | null;
-    posts?: ServerPost[];
+    favorites?: ServerTitleRow[];
+    watching?: { item?: unknown; title?: ServerTitleRow | null }[];
+    posts?: (
+      | ServerPost
+      | {
+          post?: ServerPost | null;
+          title?: ServerTitleRow | null;
+          secondary_title?: ServerTitleRow | null;
+        }
+    )[];
     collections?: ServerCollectionBundle[];
   };
   if (!raw.profile) return null;
@@ -579,17 +615,46 @@ export async function fetchProfileByHandle(
   const user = users[0];
   if (!user) return null;
 
-  const serverPosts = raw.posts ?? [];
-  const postTitleIds = serverPosts.flatMap((p) => [p.title_id, p.secondary_title_id]).filter((x): x is string => Boolean(x));
+  const serverPosts: ServerPost[] = [];
+  const inlineTitles: ServerTitleRow[] = [...(raw.favorites ?? [])];
+  for (const w of raw.watching ?? []) {
+    if (w?.title && typeof w.title.id === 'string') inlineTitles.push(w.title);
+  }
+  for (const entry of raw.posts ?? []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const wrapped = entry as {
+      post?: ServerPost | null;
+      title?: ServerTitleRow | null;
+      secondary_title?: ServerTitleRow | null;
+    };
+    const p = wrapped.post ?? (entry as ServerPost);
+    if (p && typeof p.id === 'string' && typeof p.author_id === 'string') {
+      serverPosts.push(p);
+    }
+    if (wrapped.title && typeof wrapped.title.id === 'string') inlineTitles.push(wrapped.title);
+    if (wrapped.secondary_title && typeof wrapped.secondary_title.id === 'string') inlineTitles.push(wrapped.secondary_title);
+  }
+
+  const inlineDramas = inlineTitles.map(serverTitleToDrama);
+  const preMap = new Map<string, string>();
+  for (const t of inlineTitles) {
+    preMap.set(t.id, t.media_type === 'movie' ? `tmdb-movie-${t.external_id}` : `tmdb-${t.external_id}`);
+  }
+
+  const postTitleIds = serverPosts
+    .flatMap((p) => [p.title_id, p.secondary_title_id])
+    .filter((x): x is string => typeof x === 'string' && Boolean(x) && !preMap.has(x));
   const { dramas: postDramas, idMap } = await fetchDramasByUuids(postTitleIds);
-  const posts = await attachMedia(serverPosts.map((p) => toPost(p, idMap)));
+  const mergedMap = new Map<string, string>([...preMap, ...idMap]);
+
+  const posts = await attachMedia(serverPosts.map((p) => toPost(p, mergedMap)));
   const colHydrated = await hydrateCollectionBundles(raw.collections ?? []);
 
   return {
     user,
     posts,
     collections: colHydrated.collections,
-    dramas: [...favDramas, ...postDramas, ...colHydrated.dramas],
+    dramas: [...favDramas, ...inlineDramas, ...postDramas, ...colHydrated.dramas],
   };
 }
 

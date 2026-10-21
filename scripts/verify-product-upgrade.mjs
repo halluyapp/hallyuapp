@@ -149,9 +149,41 @@ assert(read('app/index.tsx').includes('state.backendSyncedUserId === auth.user?.
 assert(read('components/profile/ProfileView.tsx').includes('RefreshControl'), 'ProfileView must support pull-to-refresh');
 assert(read('components/ui/CoachMarks.tsx').includes('steps[step] ?? steps[0]'), 'CoachMarks must guard out-of-bounds step indices');
 
+// 7. Profile/Thread RPC Envelope Unwrapping, Self-Healing Store & ErrorBoundary Fix (Migration 45)
+const mig45 = read('supabase/migrations/20260101124500_45_profile_thread_fields.sql');
+for (const token of [
+  'create or replace function public.get_profile_by_handle',
+  'create or replace function public.get_post_thread',
+  'create or replace function public.get_community_pulse',
+  "'banner_url'",
+  "'role'",
+]) {
+  assert(mig45.includes(token), `Missing Migration 45 SQL surface: ${token}`);
+}
+
+const feedSrc = read('lib/api/feed.ts');
+assert(feedSrc.includes('wrapped.post ?? (entry as ServerPost)'), 'fetchProfileByHandle must unwrap { post, media, title } RPC bundles');
+assert(feedSrc.includes('wrapped.comment ?? (entry as ServerComment)'), 'fetchPostThread must unwrap { comment, author } RPC bundles');
+
+const storeSrc = read('lib/store.tsx');
+assert(
+  storeSrc.includes("typeof p.id === 'string' && p.id.length > 0 && typeof p.authorId === 'string'"),
+  'sanitizePersistedState must purge malformed post entries from AsyncStorage',
+);
+
+const richTextSrc = read('components/feed/RichText.tsx');
+assert(richTextSrc.includes("typeof text === 'string' ? text : ''"), 'RichText must guard against non-string text values');
+
+const errorBoundarySrc = read('components/ui/ErrorBoundary.tsx');
+assert(
+  errorBoundarySrc.includes('${e.name}: ${e.message}\\n${(e.stack ?? \'\').slice(0, 1200)}') &&
+    !errorBoundarySrc.includes('\\( {e.message}'),
+  'ErrorBoundary must properly interpolate e.message and e.stack without escaped template syntax',
+);
+
 // Preserve E2E emulator test selectors in scripts/ci/auth-flow-check.mjs
 assert(read('app/(auth)/welcome.tsx').includes('I already have an account'), 'Welcome screen must preserve E2E sign-in label');
 assert(read('app/(onboarding)/fandoms.tsx').includes('Pick at least one'), 'Onboarding fandoms screen must preserve E2E button label');
 assert(read('app/(onboarding)/fandoms.tsx').includes('Continue with'), 'Onboarding fandoms screen must preserve E2E continue label');
 
-console.log('OVERALL STATUS: PASS (All Phases 1–5 whole-app media, cross-device sync, creator gate & crash guards verified)');
+console.log('OVERALL STATUS: PASS (All Phases 1–5 whole-app media, cross-device sync, RPC envelope unwrapping & crash guards verified)');

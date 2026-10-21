@@ -56,7 +56,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
     const e = this.state.error;
     if (!e) return;
     await Share.share({
-      message: `Hallyu error report\n${e.name}: \( {e.message}\n \){(e.stack ?? '').slice(0, 1200)}`,
+      message: `Hallyu error report\n${e.name}: ${e.message}\n${(e.stack ?? '').slice(0, 1200)}`,
     }).catch(() => {});
   };
 
@@ -76,9 +76,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
         </View>
         <Text style={styles.title}>Something went wrong</Text>
         <Text style={styles.body}>{body}</Text>
-        {typeof __DEV__ !== 'undefined' && __DEV__ ? (
+        {this.state.error.message ? (
           <Text style={styles.dev} numberOfLines={4}>
-            {this.state.error.message}
+            {`${this.state.error.name}: ${this.state.error.message}`}
           </Text>
         ) : null}
         <View style={styles.actions}>

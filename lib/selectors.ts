@@ -71,7 +71,7 @@ export function visiblePosts(s: AppState, posts: Post[] = s.posts): Post[] {
       !s.blockedUsers.includes(p.authorId) &&
       !s.mutedUsers.includes(p.authorId) &&
       !(p.context.dramaId && s.mutedDramas.includes(p.context.dramaId)) &&
-      !mutedWords.some((w) => `${p.title ?? ''} ${p.body}`.toLowerCase().includes(w)),
+      !mutedWords.some((w) => `${p.title ?? ''} ${p.body ?? ''}`.toLowerCase().includes(w)),
   );
 }
 
@@ -190,7 +190,7 @@ export function postsForActor(s: AppState, actorId: string): Post[] {
   return visiblePosts(s)
     .filter(
       (p) =>
-        p.context.actorIds?.includes(actorId) || (p.context.dramaId && actor?.knownFor.includes(p.context.dramaId) && p.body.toLowerCase().includes((actor?.name ?? '').toLowerCase().split(' ')[0]!)),
+        p.context.actorIds?.includes(actorId) || (p.context.dramaId && actor?.knownFor.includes(p.context.dramaId) && (p.body ?? '').toLowerCase().includes((actor?.name ?? '').toLowerCase().split(' ')[0]!)),
     )
     .sort((a, b) => hot(b) - hot(a));
 }

@@ -217,7 +217,7 @@ export function ShareCardModal({
                 >
                   <Avatar uri={u.avatarUrl} name={u.displayName} size="md" />
                   <Text variant="caption" numberOfLines={1} style={{ maxWidth: 68, fontFamily: fonts.medium }}>
-                    {u.displayName.split(' ')[0]}
+                    {(u.displayName || u.handle || 'Member').split(' ')[0]}
                   </Text>
                   <View style={styles.sendMini}>
                     <Text variant="caption" style={{ color: colors.onAccent, fontSize: 11, fontFamily: fonts.semibold }}>

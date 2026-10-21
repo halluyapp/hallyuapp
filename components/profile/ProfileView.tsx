@@ -346,7 +346,7 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
           ) : null}
           {watching.length ? (
             <Shelf
-              title={isMe ? 'Currently watching' : `${user.displayName.split(' ')[0]} is watching`}
+              title={isMe ? 'Currently watching' : `${(user.displayName || user.handle || 'Member').split(' ')[0]} is watching`}
               onSeeAll={isMe ? () => router.push({ pathname: '/watchlist', params: { status: 'watching' } }) : undefined}
             >
               <FlatList

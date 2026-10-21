@@ -126,7 +126,7 @@ export default function MessagesInboxScreen() {
                     >
                       <Avatar uri={u.avatarUrl} name={u.displayName} size="md" />
                       <Text variant="caption" numberOfLines={1}>
-                        {u.displayName.split(' ')[0]}
+                        {(u.displayName || u.handle || 'Member').split(' ')[0]}
                       </Text>
                     </Pressable>
                   ))}

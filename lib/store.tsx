@@ -299,25 +299,32 @@ function reducer(s: AppState, a: Action): AppState {
     case 'seen':
       return s.seen[a.id] ? s : { ...s, seen: { ...s.seen, [a.id]: new Date().toISOString() } };
     case 'addPost': {
+      if (!a.post || typeof a.post.id !== 'string' || !a.post.id) return s;
+      const incoming: Post = {
+        ...a.post,
+        body: typeof a.post.body === 'string' ? a.post.body : '',
+        hashtags: Array.isArray(a.post.hashtags) ? a.post.hashtags : [],
+        mentions: Array.isArray(a.post.mentions) ? a.post.mentions : [],
+      };
       // upsert by id so re-dispatching the same local post merges instead of duplicating,
       // while preserving existing hydrated media/poll fields if a partial update arrives first.
-      const exists = s.posts.some((p) => p.id === a.post.id);
+      const exists = s.posts.some((p) => p.id === incoming.id);
       return {
         ...s,
         posts: exists
           ? s.posts.map((p) =>
-              p.id === a.post.id
+              p.id === incoming.id
                 ? {
                     ...p,
-                    ...a.post,
-                    images: a.post.images && a.post.images.length > 0 ? a.post.images : p.images,
-                    imagePaths: a.post.imagePaths && a.post.imagePaths.length > 0 ? a.post.imagePaths : p.imagePaths,
-                    video: a.post.video ?? p.video,
-                    poll: a.post.poll ?? p.poll,
+                    ...incoming,
+                    images: incoming.images && incoming.images.length > 0 ? incoming.images : p.images,
+                    imagePaths: incoming.imagePaths && incoming.imagePaths.length > 0 ? incoming.imagePaths : p.imagePaths,
+                    video: incoming.video ?? p.video,
+                    poll: incoming.poll ?? p.poll,
                   }
                 : p,
             )
-          : [a.post, ...s.posts],
+          : [incoming, ...s.posts],
       };
     }
     case 'editPost':
@@ -325,11 +332,18 @@ function reducer(s: AppState, a: Action): AppState {
     case 'deletePost':
       return { ...s, posts: s.posts.map((p) => (p.id === a.id ? { ...p, state: 'deleted' } : p)) };
     case 'addComment': {
-      const exists = s.comments.some((c) => c.id === a.comment.id);
+      if (!a.comment || typeof a.comment.id !== 'string' || !a.comment.id) return s;
+      const incomingComment: Comment = {
+        ...a.comment,
+        body: typeof a.comment.body === 'string' ? a.comment.body : '',
+      };
+      const exists = s.comments.some((c) => c.id === incomingComment.id);
       return {
         ...s,
-        comments: exists ? s.comments.map((c) => (c.id === a.comment.id ? { ...c, ...a.comment } : c)) : [...s.comments, a.comment],
-        posts: exists ? s.posts : s.posts.map((p) => (p.id === a.comment.postId ? { ...p, commentCount: p.commentCount + 1 } : p)),
+        comments: exists
+          ? s.comments.map((c) => (c.id === incomingComment.id ? { ...c, ...incomingComment } : c))
+          : [...s.comments, incomingComment],
+        posts: exists ? s.posts : s.posts.map((p) => (p.id === incomingComment.postId ? { ...p, commentCount: p.commentCount + 1 } : p)),
       };
     }
     case 'deleteComment': {
@@ -631,17 +645,43 @@ export function sanitizePersistedState(data: Partial<AppState> | null | undefine
     cleaned.users = users;
   }
   if (Array.isArray(cleaned.posts)) {
-    cleaned.posts = cleaned.posts.map((p) => ({
-      ...p,
-      images: p.images?.map((img) => (typeof img === 'string' ? normalizeMediaUrl(img) ?? img : img)),
-      video: p.video
-        ? {
-            ...p.video,
-            url: normalizeMediaUrl(p.video.url) ?? p.video.url,
-            poster: typeof p.video.poster === 'string' ? normalizeMediaUrl(p.video.poster) ?? p.video.poster : p.video.poster,
-          }
-        : undefined,
-    }));
+    cleaned.posts = cleaned.posts
+      .filter((p): p is Post => Boolean(p && typeof p.id === 'string' && p.id.length > 0 && typeof p.authorId === 'string'))
+      .map((p) => ({
+        ...p,
+        body: typeof p.body === 'string' ? p.body : '',
+        createdAt: typeof p.createdAt === 'string' && p.createdAt ? p.createdAt : new Date().toISOString(),
+        spoiler: p.spoiler ?? 'none',
+        hashtags: Array.isArray(p.hashtags) ? p.hashtags : [],
+        mentions: Array.isArray(p.mentions) ? p.mentions : [],
+        context: p.context && typeof p.context === 'object' ? p.context : {},
+        reactions:
+          p.reactions && typeof p.reactions === 'object'
+            ? p.reactions
+            : { loved: 0, cried: 0, screamed: 0, swooned: 0, laughed: 0, furious: 0 },
+        images: p.images?.map((img) => (typeof img === 'string' ? normalizeMediaUrl(img) ?? img : img)),
+        video: p.video
+          ? {
+              ...p.video,
+              url: normalizeMediaUrl(p.video.url) ?? p.video.url,
+              poster: typeof p.video.poster === 'string' ? normalizeMediaUrl(p.video.poster) ?? p.video.poster : p.video.poster,
+            }
+          : undefined,
+      }));
+  }
+  if (Array.isArray(cleaned.comments)) {
+    cleaned.comments = cleaned.comments
+      .filter((c): c is Comment => Boolean(c && typeof c.id === 'string' && c.id.length > 0 && typeof c.postId === 'string'))
+      .map((c) => ({
+        ...c,
+        body: typeof c.body === 'string' ? c.body : '',
+        createdAt: typeof c.createdAt === 'string' && c.createdAt ? c.createdAt : new Date().toISOString(),
+        spoiler: c.spoiler ?? 'none',
+        reactions:
+          c.reactions && typeof c.reactions === 'object'
+            ? c.reactions
+            : { loved: 0, cried: 0, screamed: 0, swooned: 0, laughed: 0, furious: 0 },
+      }));
   }
   return cleaned;
 }
