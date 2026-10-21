@@ -111,15 +111,15 @@ begin
     if not found then
       raise exception 'profile % is not available', p_target_id using errcode = 'no_data_found';
     end if;
-    if p_target_id = actor then
-      raise exception 'cannot follow yourself' using errcode = 'check_violation';
+    if p_on and p_target_id = actor then
+      raise exception 'you cannot follow yourself' using errcode = 'check_violation';
     end if;
     if p_on and exists (
       select 1 from public.blocks b
       where (b.blocker_id = actor and b.blocked_id = p_target_id)
          or (b.blocker_id = p_target_id and b.blocked_id = actor)
     ) then
-      raise exception 'follow blocked' using errcode = 'insufficient_privilege';
+      raise exception 'this member is blocked' using errcode = 'check_violation';
     end if;
   elsif p_kind = 'title' and not exists (select 1 from public.titles where id = p_target_id) then
     raise exception 'title % does not exist', p_target_id using errcode = 'no_data_found';
@@ -131,7 +131,7 @@ begin
 
   if p_kind = 'user' then
     if p_on then
-      if exists (select 1 from public.follows where follower_id = actor and following_id = p_target_id) then
+      if exists (select 1 from public.follows where follower_id = actor and target_id = p_target_id) then
         return true;
       end if;
       if coalesce(target_private, false) then
@@ -155,12 +155,12 @@ begin
         );
         return false;
       end if;
-      insert into public.follows (follower_id, following_id)
+      insert into public.follows (follower_id, target_id)
       values (actor, p_target_id)
       on conflict do nothing;
       delete from public.follow_requests where requester_id = actor and target_id = p_target_id;
     else
-      delete from public.follows where follower_id = actor and following_id = p_target_id;
+      delete from public.follows where follower_id = actor and target_id = p_target_id;
       delete from public.follow_requests where requester_id = actor and target_id = p_target_id;
     end if;
   elsif p_kind = 'title' then
@@ -250,7 +250,7 @@ begin
      and status = 'pending';
 
   if p_accept then
-    insert into public.follows (follower_id, following_id)
+    insert into public.follows (follower_id, target_id)
     values (p_requester_id, actor)
     on conflict do nothing;
 
