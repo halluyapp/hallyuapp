@@ -76,8 +76,8 @@ export default function FandomsStep() {
       skippable={false}
       continueLabel={
         picked.length
-          ? `Next: Swipe your Watch DNA (${picked.length} world${picked.length === 1 ? '' : 's'})`
-          : 'Pick at least 1 world'
+          ? `Continue with ${picked.length} world${picked.length === 1 ? '' : 's'}`
+          : 'Pick at least one'
       }
       continueDisabled={!picked.length}
       helper={

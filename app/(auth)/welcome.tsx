@@ -36,11 +36,16 @@ export default function Welcome() {
   const [spotIdx, setSpotIdx] = useState(0);
 
   useEffect(() => {
+    if (reduce) {
+      rise.setValue(0);
+      fade.setValue(1);
+      return;
+    }
     Animated.parallel([
       Animated.timing(rise, { toValue: 0, duration: motion.slow, useNativeDriver: true }),
       Animated.timing(fade, { toValue: 1, duration: motion.slow, useNativeDriver: true }),
     ]).start();
-  }, [rise, fade]);
+  }, [rise, fade, reduce]);
 
   const importedDramas = useSlice((s) => s.importedDramas);
   const cols = width >= 840 ? 6 : width >= 600 ? 5 : 4;
@@ -48,11 +53,21 @@ export default function Welcome() {
 
   const live = useLoad(
     async (signal) => {
-      const [t, p] = await Promise.all([
-        catalog.trending(signal),
-        catalog.popular(1, signal).catch(() => [] as typeof importedDramas),
+      const [kd, cd, an, hw] = await Promise.all([
+        catalog.byFandom('kdrama', 'trending', 1, signal).catch(() => [] as typeof importedDramas),
+        catalog.byFandom('cdrama', 'trending', 1, signal).catch(() => [] as typeof importedDramas),
+        catalog.byFandom('anime', 'trending', 1, signal).catch(() => [] as typeof importedDramas),
+        catalog.byFandom('hollywood', 'trending', 1, signal).catch(() => [] as typeof importedDramas),
       ]);
-      return adoptDramas([...t, ...p]);
+      const interleaved: typeof importedDramas = [];
+      const maxLen = Math.max(kd.length, cd.length, an.length, hw.length);
+      for (let i = 0; i < maxLen; i++) {
+        if (kd[i]) interleaved.push(kd[i]!);
+        if (cd[i]) interleaved.push(cd[i]!);
+        if (an[i]) interleaved.push(an[i]!);
+        if (hw[i]) interleaved.push(hw[i]!);
+      }
+      return adoptDramas(interleaved);
     },
     [],
     catalog.available,
@@ -189,14 +204,14 @@ export default function Welcome() {
 
         <View style={{ gap: space.x3, marginTop: space.x6 }}>
           <Button
-            label="Get started"
+            label="Create an account"
             icon="sparkles"
             size="lg"
             block
             onPress={() => router.push('/(auth)/sign-up')}
           />
           <Button
-            label="Sign in to my account"
+            label="I already have an account"
             variant="secondary"
             size="lg"
             block
@@ -206,7 +221,7 @@ export default function Welcome() {
 
         <View style={styles.guestRow}>
           <Button
-            label="Browse first as a guest"
+            label="Browse as a guest"
             variant="ghost"
             size="sm"
             iconRight="arrow-forward"
