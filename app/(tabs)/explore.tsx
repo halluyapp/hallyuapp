@@ -220,7 +220,13 @@ export default function Explore() {
         </View>
 
         <View style={styles.section}>
-          <SectionHeader eyebrow="Fandoms" title="Four worlds, one community" subtitle="Hallyu shows you all four at once. Step into one when that is what you want." />
+          <SectionHeader
+            eyebrow="Fandoms"
+            title="Four worlds, one community"
+            subtitle="Hallyu shows you all four at once. Step into one when that is what you want."
+            actionLabel="Fandom rooms"
+            onAction={() => router.push('/communities')}
+          />
           <FlatList
             horizontal
             data={FANDOMS}

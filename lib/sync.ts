@@ -286,6 +286,13 @@ export function mirrorAction(action: Action, prev: AppState, next: AppState): vo
       write(action, prev, 'collectionItem', social.setCollectionItem(action.collectionId, action.dramaId, action.on, item?.note));
       return;
     }
+    case 'joinCommunity': {
+      const on = next.joinedCommunities.includes(action.id);
+      if (on !== prev.joinedCommunities.includes(action.id)) {
+        write(action, prev, 'joinCommunity', social.joinCommunity(action.id, on));
+      }
+      return;
+    }
     default:
       return;
   }
@@ -313,7 +320,17 @@ function mergeCollections(existing: Collection[], incoming: Collection[]): Colle
 function mergeUsers(existing: Record<string, User>, incoming: User[]): Record<string, User> {
   if (!incoming.length) return existing;
   const out = { ...existing };
-  for (const u of incoming) out[u.id] = { ...out[u.id], ...u };
+  for (const u of incoming) {
+    const prev = out[u.id];
+    out[u.id] = {
+      ...prev,
+      ...u,
+      avatarUrl: u.avatarUrl ?? prev?.avatarUrl,
+      avatarPath: u.avatarPath ?? prev?.avatarPath,
+      bannerUrl: u.bannerUrl ?? prev?.bannerUrl,
+      role: u.role ?? prev?.role,
+    };
+  }
   return out;
 }
 
@@ -481,13 +498,16 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     }
 
     const union = <T,>(local: T[], remote: T[]): T[] => [...new Set([...local, ...remote])];
+    const resolvedAvatarUrl =
+      (boot.profile.avatar_path ? avatarMap.get(boot.profile.avatar_path) : undefined) ?? current.profile.avatarUrl;
     const resolvedProfile = serverProfileToUser(boot.profile, {
-      avatarUrl: boot.profile.avatar_path ? avatarMap.get(boot.profile.avatar_path) : current.profile.avatarUrl,
+      avatarUrl: resolvedAvatarUrl,
       favoriteDramaIds: favTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
     });
+    const mergedMe: User = { ...current.profile, ...resolvedProfile };
 
     cb.apply({
-      profile: { ...current.profile, ...resolvedProfile },
+      profile: mergedMe,
       onboarding: {
         ...current.onboarding,
         done: Boolean(boot.profile.onboarding_completed || current.onboarding.done),
@@ -509,6 +529,7 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
         collections: union(current.follows.collections, boot.follows.collections),
       },
       saves: union(current.saves, boot.saved_post_ids),
+      joinedCommunities: union(current.joinedCommunities ?? [], boot.communities ?? []),
       reactions,
       dramaNotify,
       watchlist: { ...current.watchlist, ...watchlist },
@@ -519,7 +540,7 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
         mutedTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
       ),
       collections: mergeCollections(current.collections, colHydrated.collections),
-      users: mergeUsers(current.users, colHydrated.owners),
+      users: mergeUsers(current.users, [mergedMe, ...colHydrated.owners]),
       importedDramas: mergeDramas(current.importedDramas, [...hydratedDramas, ...colHydrated.dramas]),
     });
 
@@ -663,14 +684,30 @@ export async function adoptNotifications(cb: Pick<AdoptionCallbacks, 'getState' 
       notifications,
       users: mergeUsers(current.users, profiles),
     });
+
+    // Surface fresh unread server notifications that arrived while backgrounded or between socket reconnects.
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    for (const n of notifications) {
+      if (n.read) continue;
+      const ts = Date.parse(n.createdAt);
+      if (!Number.isNaN(ts) && ts >= cutoff) {
+        void presentServerNotificationBanner({
+          id: n.id,
+          group: n.group,
+          title: n.title,
+          body: n.body,
+          deepLink: n.postId ? `/post/${n.postId}` : n.dramaId ? `/drama/${n.dramaId}` : '/notifications',
+        });
+      }
+    }
   } catch (e) {
     reportError('sync.adoptNotifications', e);
   }
 }
 
 /**
- * Subscribe to live Postgres Changes on `posts`, `comments`, and `notifications` so multi-user
- * posts, replies, reaction counts, and notifications update live without polling.
+ * Subscribe to live Postgres Changes on `posts`, `post_media`, `comments`, and `notifications` so
+ * multi-user posts, media attachments, replies, reaction counts, and notifications update live.
  */
 export function subscribeBackendRealtime(
   cb: Pick<AdoptionCallbacks, 'getState' | 'apply' | 'addPosts'>,
@@ -699,6 +736,15 @@ export function subscribeBackendRealtime(
             const profiles = await fetchProfiles([authorId]).catch(() => []);
             if (profiles.length) cb.apply({ users: mergeUsers(cb.getState().users, profiles) });
           }
+        })
+        .catch(() => {});
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'post_media' }, (payload) => {
+      const row = payload.new as { post_id?: string } | undefined;
+      if (!row?.post_id) return;
+      void fetchPosts([row.post_id])
+        .then((posts) => {
+          if (posts.length) cb.addPosts(posts);
         })
         .catch(() => {});
     })

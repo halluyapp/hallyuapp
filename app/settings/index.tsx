@@ -9,6 +9,7 @@ import { ScrollScreen, Screen } from '../../components/ui/Screen';
 import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
+import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
 import { space } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
@@ -22,7 +23,9 @@ export default function Settings() {
   const toast = useToast();
   const { state, me } = useApp();
   const [confirmOut, setConfirmOut] = useState(false);
+  const [creatorSheet, setCreatorSheet] = useState(false);
   const signedIn = auth.status === 'signedIn';
+  const isStaff = me.role === 'admin' || me.role === 'moderator';
   const version = Application.nativeApplicationVersion ?? '1.0.0';
   return (
     <Screen header={<TopBar mode="stack" title="Settings" />}>
@@ -45,6 +48,30 @@ export default function Settings() {
             </Text>
           </View>
         )}
+        {signedIn ? (
+          <SettingsGroup title={isStaff ? 'Creator & Staff Studio' : 'Creator Tools'}>
+            {isStaff ? (
+              <SettingsRow
+                icon="shield-half-outline"
+                label="Admin & Creator Studio"
+                detail="Approve video creators, review reports & manage rooms"
+                onPress={() => router.push('/settings/moderation')}
+              />
+            ) : null}
+            <SettingsRow
+              icon="videocam-outline"
+              label="Video Creator Pass"
+              detail={isStaff ? 'Active · 10 GB/mo creator allowance' : 'Upload vertical Shorts & HD post clips'}
+              onPress={() => setCreatorSheet(true)}
+            />
+            <SettingsRow
+              icon="people-circle-outline"
+              label="Fandom Rooms"
+              detail="Browse & join community rooms across all 4 worlds"
+              onPress={() => router.push('/communities')}
+            />
+          </SettingsGroup>
+        ) : null}
         <SettingsGroup title="Account">
           {signedIn ? <SettingsRow icon="person-outline" label="Account" detail="Sign-in method, email, data" onPress={() => router.push('/settings/account')} /> : <SettingsRow icon="log-in-outline" label="Sign in or create account" onPress={() => router.push('/(auth)/welcome')} />}
           <SettingsRow icon="notifications-outline" label="Notifications" detail="Episodes, social, highlights, quiet hours" onPress={() => router.push('/settings/notifications')} />
@@ -72,6 +99,7 @@ export default function Settings() {
           Hallyu {version} · Made for drama people
         </Text>
       </ScrollScreen>
+      <VideoAccessSheet visible={creatorSheet} onClose={() => setCreatorSheet(false)} />
       <Dialog visible={confirmOut} title="Sign out?" body="Your watchlist and posts stay on your account. Guest browsing keeps working." confirmLabel="Sign out" onConfirm={async () => { setConfirmOut(false); await auth.signOut(); toast.show({ message: 'Signed out' }); router.replace('/'); }} onCancel={() => setConfirmOut(false)} />
     </Screen>
   );

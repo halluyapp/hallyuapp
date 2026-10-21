@@ -55,4 +55,66 @@ const shortsSrc = read('app/shorts.tsx');
 assert(shortsSrc.includes('Scrub video timeline'), 'Shorts missing scrubbable progress bar');
 assert(shortsSrc.includes('Comments ·'), 'Shorts missing in-player slide-up comments drawer');
 
-console.log('OVERALL STATUS: PASS (All Phase 1, Phase 2 & Phase 3 surfaces verified)');
+// 5. Core Stability, Backend-to-UI Parity & Cinematic Onboarding surfaces (Migration 43)
+const mig43 = read('supabase/migrations/20260101124300_43_media_rls_follow_requests_and_staff_queues.sql');
+for (const token of [
+  'media_read_attached_or_avatar_public',
+  'create table if not exists public.follow_requests',
+  'create or replace function public.list_follow_requests',
+  'create or replace function public.respond_follow_request',
+  'create or replace function public.my_video_access_status',
+  'create or replace function public.get_staff_overview',
+  'create or replace function public.staff_grant_video_by_handle',
+  'create or replace function public.create_community_room',
+  'create or replace function public.get_community_detail',
+]) {
+  assert(mig43.includes(token), `Missing Migration 43 SQL surface: ${token}`);
+}
+assert(dbTypes.includes('follow_requests:'), 'Missing follow_requests table in database.ts');
+
+assert(
+  read('lib/api/media.ts').includes('else wanted.push(path);'),
+  'lib/api/media.ts must re-sign expired signed URLs instead of dropping them',
+);
+assert(
+  read('lib/sync.ts').includes("table: 'post_media'"),
+  'lib/sync.ts must subscribe to post_media INSERT events',
+);
+assert(
+  read('components/ui/Sheet.tsx').includes("Keyboard.addListener('keyboardDidShow'"),
+  'Sheet must track Android keyboard height inside statusBarTranslucent Modal',
+);
+assert(
+  read('components/video/VideoAccessSheet.tsx').includes('requestVideoCreatorAccess'),
+  'VideoAccessSheet must wire request_video_access RPC',
+);
+assert(
+  read('app/settings/moderation.tsx').includes('fetchStaffOverview'),
+  'Admin & Creator Studio must wire get_staff_overview RPC',
+);
+assert(
+  read('app/communities.tsx').includes('createCommunityRoom'),
+  'Communities directory must wire create_community_room RPC',
+);
+assert(
+  read('app/community/[id].tsx').includes('fetchCommunityDetail'),
+  'Community room screen must wire get_community_detail RPC',
+);
+assert(
+  read('app/(tabs)/activity.tsx').includes('fetchFollowRequests'),
+  'Activity tab must wire incoming follow requests queue',
+);
+assert(
+  read('app/(auth)/welcome.tsx').includes('Every episode night.'),
+  'Welcome screen missing Midnight Premiere hero',
+);
+assert(
+  read('app/(onboarding)/dramas.tsx').includes('PanResponder.create'),
+  'Onboarding dramas screen missing 3D Poster Swipe Deck',
+);
+assert(
+  read('app/(onboarding)/notifications.tsx').includes('HALLYU PREMIERE PASS'),
+  'Onboarding finale missing Hallyu Premiere Pass card',
+);
+
+console.log('OVERALL STATUS: PASS (All Phases 1–4 stability, backend sync & cinematic onboarding surfaces verified)');

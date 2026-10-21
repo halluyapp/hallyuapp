@@ -365,7 +365,7 @@ export async function signedUrls(paths: string[]): Promise<Map<string, string>> 
   for (const path of paths) {
     const hit = signedCache.get(path);
     if (hit && hit.expiresAt > now) out.set(path, hit.url);
-    else if (!hit) wanted.push(path);
+    else wanted.push(path);
   }
   if (wanted.length) {
     const { data, error } = await supabase.storage.from(MEDIA_BUCKET).createSignedUrls(wanted, SIGNED_TTL_SECONDS);

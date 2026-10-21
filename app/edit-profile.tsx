@@ -15,6 +15,7 @@ import { useToast } from '../components/ui/Toast';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, radius, sizes, space } from '../constants/theme';
 import { supabase } from '../lib/api/client';
+import { uploadAvatar } from '../lib/api/media';
 import { hasSession } from '../lib/api/social';
 import { FANDOMS } from '../lib/fandoms';
 import { haptic, useApp } from '../lib/hooks';
@@ -55,6 +56,9 @@ export default function EditProfile() {
     if (!valid) return;
     setSaving(true);
     try {
+      let persistedAvatarUrl = avatarUrl;
+      let persistedAvatarPath = me.avatarPath;
+
       if (handleClean !== me.handle.toLowerCase() && supabase && hasSession()) {
         const { data: available, error } = await supabase.rpc('handle_is_available', { p_handle: handleClean });
         if (!error && available === false) {
@@ -63,7 +67,44 @@ export default function EditProfile() {
           return;
         }
       }
-      dispatch({ type: 'profile', patch: { displayName: displayName.trim(), handle: handleClean, bio: bio.trim() || undefined, avatarUrl, bannerUrl, fandoms, favoriteGenres: genres, favoriteDramaIds: favorites, isPrivate } });
+
+      if (
+        avatarUrl &&
+        /^(blob:|file:|content:|ph:|data:|assets-library:)/i.test(avatarUrl) &&
+        supabase &&
+        hasSession()
+      ) {
+        try {
+          const uploaded = await uploadAvatar(me.id, avatarUrl);
+          persistedAvatarUrl = uploaded.signedUrl;
+          persistedAvatarPath = uploaded.storagePath;
+          setAvatarUrl(uploaded.signedUrl);
+          await supabase.from('profiles').update({ avatar_path: uploaded.storagePath }).eq('id', me.id);
+        } catch (err) {
+          toast.show({
+            message: err instanceof Error ? err.message : 'Could not upload profile photo.',
+            tone: 'danger',
+          });
+          setSaving(false);
+          return;
+        }
+      }
+
+      dispatch({
+        type: 'profile',
+        patch: {
+          displayName: displayName.trim(),
+          handle: handleClean,
+          bio: bio.trim() || undefined,
+          avatarUrl: persistedAvatarUrl,
+          avatarPath: persistedAvatarPath,
+          bannerUrl,
+          fandoms,
+          favoriteGenres: genres,
+          favoriteDramaIds: favorites,
+          isPrivate,
+        },
+      });
       dispatch({ type: 'onboarding', patch: { fandoms } });
       haptic.success();
       toast.show({ message: 'Profile updated', icon: 'checkmark-circle', tone: 'success' });

@@ -27,6 +27,7 @@ import { catalog } from '../../../../lib/catalog';
 import { countdown, dayLabel, runtimeLabel, shortDate, timeOfDay } from '../../../../lib/format';
 import { haptic, useApp, useLayout, useLoad, useReduceMotion, useRequireMember } from '../../../../lib/hooks';
 import { emptyReactions, Episode, Post, ReactionKind, REACTIONS } from '../../../../lib/model';
+import { uid } from '../../../../lib/store';
 import { heroInterpolations, useScrollY, withAlpha } from '../../../../lib/motion';
 import { getEpisode, isPostVeiled, postsForEpisode } from '../../../../lib/selectors';
 import { hasWatched } from '../../../../lib/spoiler';
@@ -248,7 +249,7 @@ export default function EpisodeRoom() {
       haptic.success();
       const body = sceneStamp ? `[${sceneStamp}] ${clean}` : clean;
       const created: Post = {
-        id: `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        id: uid(''),
         authorId: me.id,
         type: 'reaction',
         body,

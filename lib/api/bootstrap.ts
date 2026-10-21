@@ -18,6 +18,7 @@ export interface BootstrapProfile {
   favorite_title_ids?: string[];
   verified: boolean;
   is_private: boolean;
+  role?: 'member' | 'moderator' | 'admin';
   follower_count: number;
   following_count: number;
   onboarding_completed: boolean;
@@ -155,7 +156,8 @@ export function serverProfileToUser(
     id: p.id,
     handle: p.handle,
     displayName: p.display_name,
-    avatarUrl: resolved?.avatarUrl,
+    ...(resolved?.avatarUrl ? { avatarUrl: resolved.avatarUrl } : {}),
+    avatarPath: p.avatar_path ?? undefined,
     bannerUrl: p.banner_url ?? undefined,
     bio: p.bio ?? undefined,
     fandoms: (p.worlds ?? []) as User['fandoms'],
@@ -165,6 +167,7 @@ export function serverProfileToUser(
     following: p.following_count ?? 0,
     verified: p.verified,
     isPrivate: p.is_private,
+    role: p.role ?? 'member',
     joinedAt: p.created_at,
   };
 }

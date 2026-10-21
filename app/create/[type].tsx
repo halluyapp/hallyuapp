@@ -28,6 +28,8 @@ import { InlineNotice } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
+import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
+import { fetchVideoAccessStatus, type VideoAccessStatus } from '../../lib/api/features';
 import { colors, fonts, radius, space } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
 import { extractHashtags, extractMentions, fileSize, uid } from '../../lib/format';
@@ -153,6 +155,25 @@ export default function Composer() {
   const [leaveDialog, setLeaveDialog] = useState(false);
   const [guidelines, setGuidelines] = useState(!state.prefs.guidelinesAccepted);
   const [posting, setPosting] = useState(false);
+  const [videoAccessOpen, setVideoAccessOpen] = useState(false);
+  const [videoAccess, setVideoAccess] = useState<VideoAccessStatus | null>(null);
+
+  useEffect(() => {
+    if (auth.status !== 'signedIn') return;
+    let alive = true;
+    void fetchVideoAccessStatus()
+      .then((s) => {
+        if (!alive) return;
+        setVideoAccess(s);
+        if (type === 'short' && !s.allowed && !editing) {
+          setVideoAccessOpen(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [auth.status, type, editing]);
   /**
    * What the publish is doing right now. A spinner on the Post button was the whole story before:
    * a 45MB clip took minutes and the screen looked frozen. Every entry here is a step that really
@@ -278,6 +299,15 @@ export default function Composer() {
     }
   };
   const pickVideo = async () => {
+    if (auth.status !== 'signedIn') {
+      return router.push({ pathname: '/(auth)/gate', params: { reason: 'publish videos & Shorts' } });
+    }
+    const access = videoAccess ?? (await fetchVideoAccessStatus().catch(() => null));
+    if (access) setVideoAccess(access);
+    if (!access?.allowed) {
+      setVideoAccessOpen(true);
+      return;
+    }
     if (!(await videoUploadsAvailable()))
       return toast.show({ message: 'Video uploads aren’t available right now — the backend has no media bucket.', tone: 'danger' });
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -1066,6 +1096,12 @@ export default function Composer() {
       ) : null}
       <ActorPickerSheet visible={sheet === 'actors'} onClose={() => setSheet(null)} selected={actorIds} onChange={setActorIds} dramaId={dramaId} />
       <SpoilerSheet visible={sheet === 'spoiler'} onClose={() => setSheet(null)} value={spoiler} onChange={setSpoiler} drama={drama} episode={ep?.episode} />
+      <VideoAccessSheet
+        visible={videoAccessOpen}
+        onClose={() => setVideoAccessOpen(false)}
+        initialStatus={videoAccess}
+        onStatusChange={setVideoAccess}
+      />
       <Dialog
         visible={leaveDialog}
         title="Keep this as a draft?"

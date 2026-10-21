@@ -13,10 +13,12 @@ import { Segmented } from '../../components/ui/Segmented';
 import { EmptyState } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
-import { colors, space } from '../../constants/theme';
+import { useToast } from '../../components/ui/Toast';
+import { colors, radius, space } from '../../constants/theme';
+import { fetchFollowRequests, respondFollowRequest, type IncomingFollowRequest } from '../../lib/api/features';
 import { useAuth } from '../../lib/auth';
 import { dayLabel, timeAgo } from '../../lib/format';
-import { useApp } from '../../lib/hooks';
+import { haptic, useApp } from '../../lib/hooks';
 import { Notification, NotificationGroup } from '../../lib/model';
 import { getState } from '../../lib/store';
 import { adoptLocal, adoptNotifications } from '../../lib/sync';
@@ -31,10 +33,19 @@ export default function Activity() {
   const tabBar = useTabBarMotion();
   const refresh = useRefresh('activity');
   const auth = useAuth();
+  const toast = useToast();
   const { state, dispatch, getUser, getDrama, getPost, getCollection } = useApp();
   const [tab, setTab] = useState<Tab>('all');
+  const [followReqs, setFollowReqs] = useState<IncomingFollowRequest[]>([]);
+  const [busyReqId, setBusyReqId] = useState<string | null>(null);
   const padding = useListPadding();
   const guest = auth.status !== 'signedIn';
+
+  const loadFollowReqs = useCallback(async () => {
+    if (guest) return;
+    const res = await fetchFollowRequests().catch(() => null);
+    if (res) setFollowReqs(res.incoming);
+  }, [guest]);
 
   useFocusEffect(
     useCallback(() => {
@@ -43,7 +54,8 @@ export default function Activity() {
         getState,
         apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
       });
-    }, [dispatch]),
+      void loadFollowReqs();
+    }, [dispatch, loadFollowReqs]),
   );
 
   React.useEffect(() => {
@@ -52,7 +64,28 @@ export default function Activity() {
       getState,
       apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
     });
-  }, [refresh.refreshing]);
+    void loadFollowReqs();
+  }, [refresh.refreshing, loadFollowReqs]);
+
+  const handleFollowRequest = async (req: IncomingFollowRequest, accept: boolean) => {
+    setBusyReqId(req.id);
+    try {
+      await respondFollowRequest(req.requesterId, accept);
+      haptic.success();
+      setFollowReqs((prev) => prev.filter((r) => r.id !== req.id));
+      toast.show({
+        message: accept ? `Accepted @${req.handle}'s follow request` : `Declined @${req.handle}`,
+        tone: accept ? 'success' : 'default',
+      });
+    } catch (err) {
+      toast.show({
+        message: err instanceof Error ? err.message : 'Could not update follow request',
+        tone: 'danger',
+      });
+    } finally {
+      setBusyReqId(null);
+    }
+  };
 
   const items = useMemo(() => state.notifications.filter((n) => tab === 'all' || n.group === tab).sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [state.notifications, tab]);
   const sections = useMemo(() => {
@@ -114,8 +147,60 @@ export default function Activity() {
         scrollEventThrottle={16}
         sections={sections}
         keyExtractor={(n) => n.id}
-        contentContainerStyle={[padding, sections.length ? null : { flex: 1 }]}
+        contentContainerStyle={[padding, sections.length || followReqs.length ? null : { flex: 1 }]}
         stickySectionHeadersEnabled={false}
+        ListHeaderComponent={
+          followReqs.length > 0 ? (
+            <View style={{ paddingHorizontal: space.margin, paddingTop: space.x3, gap: space.x2 }}>
+              <Text variant="overline" tone="accent">
+                FOLLOW REQUESTS · {followReqs.length}
+              </Text>
+              {followReqs.map((req) => (
+                <View
+                  key={req.id}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: space.x3,
+                    padding: space.x3,
+                    borderRadius: radius.md,
+                    backgroundColor: colors.surface2,
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: colors.borderStrong,
+                  }}
+                >
+                  <Pressable
+                    onPress={() => router.push(`/user/${req.handle}`)}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: space.x3, flex: 1 }}
+                  >
+                    <Avatar uri={req.avatarUrl} name={req.displayName} size="md" />
+                    <View style={{ flex: 1 }}>
+                      <Text variant="label" numberOfLines={1}>
+                        {req.displayName}
+                      </Text>
+                      <Text variant="caption" tone="secondary" numberOfLines={1}>
+                        @{req.handle} wants to follow you
+                      </Text>
+                    </View>
+                  </Pressable>
+                  <Button
+                    label="Approve"
+                    size="sm"
+                    onPress={() => handleFollowRequest(req, true)}
+                    loading={busyReqId === req.id}
+                  />
+                  <Button
+                    label="Decline"
+                    variant="secondary"
+                    size="sm"
+                    onPress={() => handleFollowRequest(req, false)}
+                    disabled={busyReqId === req.id}
+                  />
+                </View>
+              ))}
+            </View>
+          ) : null
+        }
         renderSectionHeader={({ section }) => (
           <Text variant="overline" style={styles.sectionTitle}>
             {section.title}

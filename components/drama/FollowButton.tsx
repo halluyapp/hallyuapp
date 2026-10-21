@@ -5,6 +5,7 @@ import { useApp, useRequireMember, haptic, useReduceMotion } from '../../lib/hoo
 import { springs } from '../../lib/motion';
 import { useToast } from '../ui/Toast';
 import { AppState } from '../../lib/store';
+import { setFollow } from '../../lib/api/social';
 import { track } from '../../lib/analytics';
 
 interface FollowButtonProps {
@@ -18,12 +19,14 @@ interface FollowButtonProps {
   onFollowed?: () => void;
 }
 
-/** One verb everywhere: Follow / Following. Optimistic, instant, undoable via toast. */
+/** One verb everywhere: Follow / Following / Requested (for private member accounts). */
 export function FollowButton({ kind, id, name, size = 'sm', block, style, onFollowed }: FollowButtonProps) {
-  const { isFollowing, dispatch } = useApp();
+  const { isFollowing, getUser, dispatch } = useApp();
   const require = useRequireMember();
   const toast = useToast();
   const reduce = useReduceMotion();
+  const [requested, setRequested] = React.useState(false);
+  const targetUser = kind === 'users' ? getUser(id) : undefined;
   const on = isFollowing(kind, id);
   const noun = kind === 'users' ? 'person' : kind === 'dramas' ? 'drama' : kind === 'actors' ? 'actor' : 'collection';
   const pulse = useRef(new Animated.Value(1)).current;
@@ -33,29 +36,44 @@ export function FollowButton({ kind, id, name, size = 'sm', block, style, onFoll
     pulse.setValue(0.94);
     Animated.spring(pulse, { toValue: 1, ...springs.bouncy }).start();
   };
+  const label = on ? 'Following' : requested ? 'Requested' : 'Follow';
+  const active = on || requested;
   return (
     <Animated.View style={[block ? { alignSelf: 'stretch' } : null, { transform: [{ scale: pulse }] }]}>
       <Button
-        label={on ? 'Following' : 'Follow'}
-        variant={on ? 'secondary' : 'primary'}
+        label={label}
+        variant={active ? 'secondary' : 'primary'}
         size={size}
         block={block}
         style={style}
-        icon={on ? 'checkmark' : undefined}
-        accessibilityLabel={`${on ? 'Unfollow' : 'Follow'} ${name ?? noun}`}
-        accessibilityState={{ selected: on }}
+        icon={on ? 'checkmark' : requested ? 'time-outline' : undefined}
+        accessibilityLabel={`${active ? 'Unfollow' : 'Follow'} ${name ?? noun}`}
+        accessibilityState={{ selected: active }}
         onPress={() =>
           require(`follow this ${noun}`, () => {
-            if (on) haptic.select();
-            else haptic.success();
-            dispatch({ type: 'follow', kind, id, on: !on });
-            track('follow.set', { kind, on: !on });
-            AccessibilityInfo.announceForAccessibility?.(on ? `Unfollowed ${name ?? noun}` : `Following ${name ?? noun}`);
-            if (!on) {
-              settle();
-              onFollowed?.();
-              toast.show({ message: `Following ${name ?? `this ${noun}`}`, actionLabel: 'Undo', onAction: () => dispatch({ type: 'follow', kind, id, on: false }) });
+            if (active) {
+              haptic.select();
+              setRequested(false);
+              dispatch({ type: 'follow', kind, id, on: false });
+              track('follow.set', { kind, on: false });
+              AccessibilityInfo.announceForAccessibility?.(`Unfollowed ${name ?? noun}`);
+              return;
             }
+            haptic.success();
+            if (targetUser?.isPrivate) {
+              setRequested(true);
+              dispatch({ type: 'follow', kind, id, on: false });
+              void setFollow('user', id, true).catch(() => setRequested(false));
+              settle();
+              toast.show({ message: `Follow request sent to ${name ?? `@${targetUser.handle}`}` });
+              return;
+            }
+            dispatch({ type: 'follow', kind, id, on: true });
+            track('follow.set', { kind, on: true });
+            AccessibilityInfo.announceForAccessibility?.(`Following ${name ?? noun}`);
+            settle();
+            onFollowed?.();
+            toast.show({ message: `Following ${name ?? `this ${noun}`}`, actionLabel: 'Undo', onAction: () => dispatch({ type: 'follow', kind, id, on: false }) });
           })
         }
       />

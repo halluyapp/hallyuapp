@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { allDramas, AppState, getState } from './store';
@@ -15,6 +16,7 @@ const CHANNEL_SOCIAL = 'social';
 const CHANNEL_SYSTEM = 'system';
 const CHANNEL_REMINDERS = 'reminders';
 const HORIZON_MS = 14 * 86_400_000;
+const SHOWN_NOTIFICATIONS_KEY = 'hallyu.shownNotificationIds.v1';
 
 export interface PlannedReminder {
   id: string;
@@ -28,6 +30,29 @@ export interface PlannedReminder {
 let handlerInstalled = false;
 let channelsConfigured = false;
 const shownRemoteNotificationIds = new Set<string>();
+let shownIdsLoaded: Promise<void> | null = null;
+
+function ensureShownIdsLoaded(): Promise<void> {
+  if (!shownIdsLoaded) {
+    shownIdsLoaded = AsyncStorage.getItem(SHOWN_NOTIFICATIONS_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          for (const id of parsed) {
+            if (typeof id === 'string') shownRemoteNotificationIds.add(id);
+          }
+        }
+      })
+      .catch(() => {});
+  }
+  return shownIdsLoaded;
+}
+
+function persistShownIds(): void {
+  const recent = [...shownRemoteNotificationIds].slice(-250);
+  void AsyncStorage.setItem(SHOWN_NOTIFICATIONS_KEY, JSON.stringify(recent)).catch(() => {});
+}
 
 /** Foreground presentation: surface heads-up OS banners with sound across foreground & active states. */
 export function installNotificationHandler() {
@@ -104,8 +129,10 @@ export async function presentServerNotificationBanner(input: {
   deepLink?: string | null;
 }): Promise<boolean> {
   if (!remindersSupported || !input.id) return false;
+  await ensureShownIdsLoaded();
   if (shownRemoteNotificationIds.has(input.id)) return false;
   shownRemoteNotificationIds.add(input.id);
+  persistShownIds();
 
   try {
     const perm = await Notifications.getPermissionsAsync();

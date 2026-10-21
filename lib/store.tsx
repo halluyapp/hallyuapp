@@ -5,7 +5,7 @@ import { useStoreWithEqualityFn } from 'zustand/traditional';
 import { markBoot } from './boot';
 import { mirrorAction, setApplyDispatcher } from './sync';
 import { uid } from './format';
-import { Actor, Collection, Comment, Draft, Drama, FandomId, Notification, NotificationGroup, Post, ReactionCounts, ReactionKind, SpoilerProtection, User, WatchStatus, WatchlistItem } from './model';
+import { Actor, Collection, Comment, Community, Draft, Drama, FandomId, Notification, NotificationGroup, Post, ReactionCounts, ReactionKind, SpoilerProtection, User, WatchStatus, WatchlistItem } from './model';
 
 const STORAGE_KEY = 'hallyu.state.v4';
 
@@ -42,6 +42,8 @@ export interface AppState {
   posts: Post[];
   comments: Comment[];
   collections: Collection[];
+  communities: Community[];
+  joinedCommunities: string[];
   notifications: Notification[];
   /** Public profile cards seen in feeds/threads (id → User). */
   users: Record<string, User>;
@@ -90,6 +92,8 @@ export function initialState(): AppState {
     posts: [],
     comments: [],
     collections: [],
+    communities: [],
+    joinedCommunities: [],
     notifications: [],
     users: {},
     drafts: [],
@@ -165,6 +169,7 @@ export type Action =
   | { type: 'import'; dramas?: Drama[]; actors?: Actor[] }
   | { type: 'votePoll'; postId: string; optionIndex: number; serverPoll?: Post['poll'] }
   | { type: 'rateDrama'; dramaId: string; rating: number }
+  | { type: 'joinCommunity'; id: string; on?: boolean }
   | { type: 'seenActivity' };
 
 function toggle(list: string[], id: string, on?: boolean): string[] {
@@ -202,6 +207,8 @@ function reducer(s: AppState, a: Action): AppState {
       return { ...s, profile: { ...s.profile, ...a.patch } };
     case 'follow':
       return { ...s, follows: { ...s.follows, [a.kind]: toggle(s.follows[a.kind], a.id, a.on) } };
+    case 'joinCommunity':
+      return { ...s, joinedCommunities: toggle(s.joinedCommunities ?? [], a.id, a.on) };
     case 'dramaNotify':
       return { ...s, dramaNotify: { ...s.dramaNotify, [a.id]: a.on } };
     case 'watch': {
@@ -279,9 +286,25 @@ function reducer(s: AppState, a: Action): AppState {
     case 'seen':
       return s.seen[a.id] ? s : { ...s, seen: { ...s.seen, [a.id]: new Date().toISOString() } };
     case 'addPost': {
-      // upsert by id so re-dispatching the same local post merges instead of duplicating
+      // upsert by id so re-dispatching the same local post merges instead of duplicating,
+      // while preserving existing hydrated media/poll fields if a partial update arrives first.
       const exists = s.posts.some((p) => p.id === a.post.id);
-      return { ...s, posts: exists ? s.posts.map((p) => (p.id === a.post.id ? { ...p, ...a.post } : p)) : [a.post, ...s.posts] };
+      return {
+        ...s,
+        posts: exists
+          ? s.posts.map((p) =>
+              p.id === a.post.id
+                ? {
+                    ...p,
+                    ...a.post,
+                    images: a.post.images && a.post.images.length > 0 ? a.post.images : p.images,
+                    video: a.post.video ?? p.video,
+                    poll: a.post.poll ?? p.poll,
+                  }
+                : p,
+            )
+          : [a.post, ...s.posts],
+      };
     }
     case 'editPost':
       return { ...s, posts: s.posts.map((p) => (p.id === a.id ? { ...p, ...a.patch, editedAt: new Date().toISOString() } : p)) };
@@ -698,4 +721,4 @@ export function newPost(authorId: string, partial: Partial<Post> & Pick<Post, 't
   };
 }
 
-export { initialState as emptyInitialState };
+export { initialState as emptyInitialState, uid };

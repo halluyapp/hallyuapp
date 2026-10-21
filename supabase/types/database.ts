@@ -1123,6 +1123,48 @@ export type Database = {
           },
         ];
       };
+      follow_requests: {
+        Row: {
+          created_at: string;
+          decided_at: string | null;
+          id: string;
+          requester_id: string;
+          status: string;
+          target_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          decided_at?: string | null;
+          id?: string;
+          requester_id: string;
+          status?: string;
+          target_id: string;
+        };
+        Update: {
+          created_at?: string;
+          decided_at?: string | null;
+          id?: string;
+          requester_id?: string;
+          status?: string;
+          target_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'follow_requests_requester_id_fkey';
+            columns: ['requester_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'follow_requests_target_id_fkey';
+            columns: ['target_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       post_media: {
         Row: {
           created_at: string;
@@ -2870,6 +2912,39 @@ export type Database = {
       };
       get_bootstrap: {
         Args: Record<never, never>;
+        Returns: Json;
+      };
+      create_community_room: {
+        Args: {
+          p_cover_tone?: string;
+          p_description?: string;
+          p_fandom: string;
+          p_name: string;
+        };
+        Returns: Json;
+      };
+      get_community_detail: {
+        Args: { p_community_id: string };
+        Returns: Json;
+      };
+      get_staff_overview: {
+        Args: Record<never, never>;
+        Returns: Json;
+      };
+      list_follow_requests: {
+        Args: Record<never, never>;
+        Returns: Json;
+      };
+      my_video_access_status: {
+        Args: Record<never, never>;
+        Returns: Json;
+      };
+      respond_follow_request: {
+        Args: { p_accept: boolean; p_requester_id: string };
+        Returns: Json;
+      };
+      staff_grant_video_by_handle: {
+        Args: { p_budget_mb?: number; p_handle: string; p_note?: string };
         Returns: Json;
       };
       get_community_pulse: {

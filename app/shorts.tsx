@@ -6,6 +6,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, FlatList, Pressable, StatusBar, StyleSheet, TextInput, useWindowDimensions, View, ViewToken } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ShareCardModal } from '../components/share/ShareCardModal';
+import { VideoAccessSheet } from '../components/video/VideoAccessSheet';
+import { fetchVideoAccessStatus, type VideoAccessStatus } from '../lib/api/features';
 import { commentsFor } from '../lib/selectors';
 import { ReactionButton } from '../components/feed/Reactions';
 import { RichText } from '../components/feed/RichText';
@@ -21,6 +23,7 @@ import { colors, radius, space } from '../constants/theme';
 import { compact } from '../lib/format';
 import { haptic, useApp, useReduceMotion, useRequireMember } from '../lib/hooks';
 import { emptyReactions, Post } from '../lib/model';
+import { uid } from '../lib/store';
 import { shorts as selectShorts } from '../lib/selectors';
 import { veilCopy } from '../lib/spoiler';
 
@@ -34,6 +37,7 @@ export default function Shorts() {
   const { height, width } = useWindowDimensions();
   const params = useLocalSearchParams<{ id?: string; dramaId?: string }>();
   const { state } = useApp();
+  const require = useRequireMember();
   const reduce = useReduceMotion(state.prefs.reduceMotion);
   const all = useMemo(() => selectShorts(state), [state]);
   const list = useMemo(() => {
@@ -45,6 +49,8 @@ export default function Shorts() {
   const [active, setActive] = useState(0);
   const [muted, setMuted] = useState(false);
   const [paused, setPaused] = useState(reduce || state.prefs.autoplay === 'never');
+  const [accessSheet, setAccessSheet] = useState(false);
+  const [accessStatus, setAccessStatus] = useState<VideoAccessStatus | null>(null);
   const itemH = height;
 
   const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
@@ -62,7 +68,29 @@ export default function Shorts() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.canvas, paddingTop: insets.top }}>
         <IconButton icon="close" label="Close" onPress={closeShorts} style={{ margin: space.x2 }} />
-        <EmptyState icon="videocam-outline" title="No shorts here yet" body={params.dramaId ? 'Nobody has cut a short for this drama. Yours could be the first.' : 'Shorts from people and dramas you follow will show up here.'} actionLabel="Make a short" onAction={() => router.replace({ pathname: '/create/[type]', params: { type: 'short', ...(params.dramaId ? { dramaId: params.dramaId } : {}) } })} />
+        <EmptyState
+          icon="videocam-outline"
+          title="No shorts here yet"
+          body={params.dramaId ? 'Nobody has cut a short for this drama. Yours could be the first.' : 'Shorts from people and dramas you follow will show up here.'}
+          actionLabel="Make a short"
+          onAction={() =>
+            require('post a Short', async () => {
+              const access = await fetchVideoAccessStatus().catch(() => null);
+              if (access?.allowed) {
+                router.replace({ pathname: '/create/[type]', params: { type: 'short', ...(params.dramaId ? { dramaId: params.dramaId } : {}) } });
+              } else {
+                setAccessStatus(access);
+                setAccessSheet(true);
+              }
+            })
+          }
+        />
+        <VideoAccessSheet
+          visible={accessSheet}
+          onClose={() => setAccessSheet(false)}
+          initialStatus={accessStatus}
+          onStatusChange={setAccessStatus}
+        />
       </View>
     );
   }
@@ -90,8 +118,32 @@ export default function Shorts() {
         <Text variant="label" style={{ color: colors.onMedia }}>
           Shorts
         </Text>
-        <IconButton icon={muted ? 'volume-mute' : 'volume-high'} label={muted ? 'Unmute' : 'Mute'} onPress={() => setMuted((m) => !m)} tone="onMedia" />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <IconButton
+            icon="add-circle-outline"
+            label="Post a short"
+            tone="onMedia"
+            onPress={() =>
+              require('post a Short', async () => {
+                const access = await fetchVideoAccessStatus().catch(() => null);
+                if (access?.allowed) {
+                  router.push('/create/short');
+                } else {
+                  setAccessStatus(access);
+                  setAccessSheet(true);
+                }
+              })
+            }
+          />
+          <IconButton icon={muted ? 'volume-mute' : 'volume-high'} label={muted ? 'Unmute' : 'Mute'} onPress={() => setMuted((m) => !m)} tone="onMedia" />
+        </View>
       </View>
+      <VideoAccessSheet
+        visible={accessSheet}
+        onClose={() => setAccessSheet(false)}
+        initialStatus={accessStatus}
+        onStatusChange={setAccessStatus}
+      />
     </View>
   );
 }
@@ -377,7 +429,7 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
                   dispatch({
                     type: 'addComment',
                     comment: {
-                      id: `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                      id: uid(''),
                       postId: post.id,
                       authorId: me.id,
                       body: clean,

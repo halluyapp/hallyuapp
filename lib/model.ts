@@ -42,6 +42,7 @@ export interface User {
   handle: string;
   displayName: string;
   avatarUrl?: string;
+  avatarPath?: string;
   /** Optional custom drama/banner backdrop URL displayed on the member's profile hero. */
   bannerUrl?: string;
   bio?: string;
@@ -54,6 +55,7 @@ export interface User {
   joinedAt: string;
   verified?: boolean;
   isPrivate?: boolean;
+  role?: 'member' | 'moderator' | 'admin';
 }
 
 export interface Episode {
@@ -161,6 +163,7 @@ export interface Community {
   dramaId?: ID;
   memberCount: number;
   postCount: number;
+  isOfficial?: boolean;
   createdAt: string;
 }
 

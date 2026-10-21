@@ -460,3 +460,344 @@ export function connectLiveEpisodeRoom(
     },
   };
 }
+
+// ── 6. Share Analytics, Video Creator Access, Staff Moderation, Follow Requests & Communities ──
+
+export interface VideoAccessStatus {
+  allowed: boolean;
+  role: string;
+  status: 'approved' | 'pending' | 'declined' | 'none' | 'signed_out';
+  requestId?: string | null;
+  requestNote?: string | null;
+  decisionNote?: string | null;
+  monthlyBudget: number;
+  usedThisMonth: number;
+}
+
+export async function recordPostShare(postId: string, channel = 'copy_link'): Promise<void> {
+  if (!supabase || !isUuid(postId)) return;
+  try {
+    await supabase.rpc('record_post_share', { p_post_id: postId, p_channel: channel });
+  } catch {
+    // Non-blocking telemetry
+  }
+}
+
+export async function fetchVideoAccessStatus(): Promise<VideoAccessStatus> {
+  if (!supabase || !getBackendAccessToken()) {
+    return { allowed: false, role: 'guest', status: 'signed_out', monthlyBudget: 0, usedThisMonth: 0 };
+  }
+  const { data, error } = await supabase.rpc('my_video_access_status');
+  if (error || !data) {
+    const fallback = await supabase.rpc('video_access');
+    return {
+      allowed: Boolean(fallback.data),
+      role: 'member',
+      status: fallback.data ? 'approved' : 'none',
+      monthlyBudget: fallback.data ? 1073741824 : 0,
+      usedThisMonth: 0,
+    };
+  }
+  const raw = data as Record<string, unknown>;
+  return {
+    allowed: Boolean(raw.allowed),
+    role: String(raw.role ?? 'member'),
+    status: (raw.status as VideoAccessStatus['status']) ?? 'none',
+    requestId: (raw.request_id as string | null) ?? null,
+    requestNote: (raw.request_note as string | null) ?? null,
+    decisionNote: (raw.decision_note as string | null) ?? null,
+    monthlyBudget: Number(raw.monthly_budget ?? 0),
+    usedThisMonth: Number(raw.used_this_month ?? 0),
+  };
+}
+
+export async function requestVideoCreatorAccess(note?: string): Promise<string> {
+  if (!supabase || !getBackendAccessToken()) throw new Error('Sign in to request creator access');
+  const { data, error } = await supabase.rpc('request_video_access', {
+    p_note: note?.trim() ? note.trim() : undefined,
+  });
+  if (error) throw new Error(error.message);
+  return String(data ?? '');
+}
+
+export interface StaffOverviewPayload {
+  videoRequests: {
+    id: string;
+    userId: string;
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+    status: string;
+    note?: string | null;
+    decisionNote?: string | null;
+    createdAt: string;
+  }[];
+  creators: {
+    userId: string;
+    handle: string;
+    displayName: string;
+    budget: number;
+    usedThisMonth: number;
+    grantedAt: string;
+    revokedAt?: string | null;
+  }[];
+  reports: {
+    id: string;
+    targetType: string;
+    targetId: string;
+    reason: string;
+    detail?: string | null;
+    status: string;
+    createdAt: string;
+    reporterHandle?: string | null;
+    postBody?: string | null;
+  }[];
+  communities: {
+    id: string;
+    name: string;
+    fandom: FandomId;
+    description: string;
+    memberCount: number;
+    postCount: number;
+    joinPolicy: string;
+    isLocked: boolean;
+  }[];
+}
+
+export async function fetchStaffOverview(): Promise<StaffOverviewPayload> {
+  if (!supabase || !getBackendAccessToken()) throw new Error('Staff authentication required');
+  const { data, error } = await supabase.rpc('get_staff_overview');
+  if (error) throw new Error(error.message);
+  const raw = (data ?? {}) as Record<string, unknown>;
+  const rawReqs = Array.isArray(raw.video_requests) ? (raw.video_requests as Record<string, unknown>[]) : [];
+  const avatarPaths = rawReqs
+    .map((r) => r.avatar_path)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0);
+  const avatars = avatarPaths.length ? await signedUrls(avatarPaths).catch(() => new Map<string, string>()) : new Map<string, string>();
+
+  return {
+    videoRequests: rawReqs.map((r) => ({
+      id: String(r.id),
+      userId: String(r.user_id),
+      handle: String(r.handle ?? ''),
+      displayName: String(r.display_name ?? r.handle ?? 'Member'),
+      avatarUrl: typeof r.avatar_path === 'string' ? avatars.get(r.avatar_path) : undefined,
+      status: String(r.status ?? 'pending'),
+      note: (r.note as string | null) ?? null,
+      decisionNote: (r.decision_note as string | null) ?? null,
+      createdAt: String(r.created_at ?? new Date().toISOString()),
+    })),
+    creators: (Array.isArray(raw.creators) ? (raw.creators as Record<string, unknown>[]) : []).map((c) => ({
+      userId: String(c.user_id),
+      handle: String(c.handle ?? ''),
+      displayName: String(c.display_name ?? c.handle ?? 'Creator'),
+      budget: Number(c.budget ?? 0),
+      usedThisMonth: Number(c.used_this_month ?? 0),
+      grantedAt: String(c.granted_at ?? new Date().toISOString()),
+      revokedAt: (c.revoked_at as string | null) ?? null,
+    })),
+    reports: (Array.isArray(raw.reports) ? (raw.reports as Record<string, unknown>[]) : []).map((rep) => ({
+      id: String(rep.id),
+      targetType: String(rep.target_type ?? 'post'),
+      targetId: String(rep.target_id ?? ''),
+      reason: String(rep.reason ?? 'other'),
+      detail: (rep.detail as string | null) ?? null,
+      status: String(rep.status ?? 'open'),
+      createdAt: String(rep.created_at ?? new Date().toISOString()),
+      reporterHandle: (rep.reporter_handle as string | null) ?? null,
+      postBody: (rep.post_body as string | null) ?? null,
+    })),
+    communities: (Array.isArray(raw.communities) ? (raw.communities as Record<string, unknown>[]) : []).map((c) => ({
+      id: String(c.id),
+      name: String(c.name ?? ''),
+      fandom: ((c.fandom as FandomId) ?? 'kdrama'),
+      description: String(c.description ?? ''),
+      memberCount: Number(c.member_count ?? 0),
+      postCount: Number(c.post_count ?? 0),
+      joinPolicy: String(c.join_policy ?? 'open'),
+      isLocked: Boolean(c.is_locked),
+    })),
+  };
+}
+
+export async function reviewVideoAccessRequest(
+  requestId: string,
+  approve: boolean,
+  budgetMb = 2048,
+  note?: string,
+): Promise<void> {
+  if (!supabase) throw new Error('Backend unavailable');
+  const { error } = await supabase.rpc('review_video_access_request', {
+    p_request_id: requestId,
+    p_approve: approve,
+    p_monthly_byte_budget: approve ? budgetMb * 1048576 : undefined,
+    p_note: note?.trim() ? note.trim() : undefined,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function grantVideoAccessByHandle(handle: string, budgetMb = 2048, note?: string): Promise<void> {
+  if (!supabase) throw new Error('Backend unavailable');
+  const { error } = await supabase.rpc('staff_grant_video_by_handle', {
+    p_handle: handle.trim().replace(/^@/, ''),
+    p_budget_mb: budgetMb,
+    p_note: note?.trim() ? note.trim() : undefined,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function reviewModerationReport(
+  reportId: string,
+  decision: 'resolved' | 'dismissed' | 'escalated',
+  reason?: string,
+): Promise<void> {
+  if (!supabase) throw new Error('Backend unavailable');
+  const { error } = await supabase.rpc('review_report', {
+    p_report_id: reportId,
+    p_decision: decision as never,
+    p_reason: reason ?? undefined,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function moderatePostState(postId: string, state: 'active' | 'hidden', reason?: string): Promise<void> {
+  if (!supabase) throw new Error('Backend unavailable');
+  const { error } = await supabase.rpc('set_post_state', {
+    p_post_id: postId,
+    p_state: state,
+    p_reason: reason ?? 'Staff moderation update',
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function toggleCommunityLock(communityId: string, lock: boolean): Promise<void> {
+  if (!supabase) throw new Error('Backend unavailable');
+  const { error } = await supabase.rpc('lock_community', {
+    p_community_id: communityId,
+    p_lock: lock,
+    p_reason: lock ? 'Locked by community staff' : 'Unlocked by community staff',
+  });
+  if (error) throw new Error(error.message);
+}
+
+export interface IncomingFollowRequest {
+  id: string;
+  requesterId: string;
+  handle: string;
+  displayName: string;
+  avatarUrl?: string;
+  verified: boolean;
+  bio?: string | null;
+  createdAt: string;
+}
+
+export async function fetchFollowRequests(): Promise<{
+  incoming: IncomingFollowRequest[];
+  outgoingIds: string[];
+}> {
+  if (!supabase || !getBackendAccessToken()) return { incoming: [], outgoingIds: [] };
+  const { data, error } = await supabase.rpc('list_follow_requests');
+  if (error || !data) return { incoming: [], outgoingIds: [] };
+  const raw = data as { incoming?: Record<string, unknown>[]; outgoing_ids?: string[] };
+  const incomingRaw = Array.isArray(raw.incoming) ? raw.incoming : [];
+  const paths = incomingRaw
+    .map((r) => r.avatar_path)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0);
+  const signed = paths.length ? await signedUrls(paths).catch(() => new Map<string, string>()) : new Map<string, string>();
+  return {
+    incoming: incomingRaw.map((r) => ({
+      id: String(r.id),
+      requesterId: String(r.requester_id),
+      handle: String(r.handle ?? ''),
+      displayName: String(r.display_name ?? r.handle ?? 'Member'),
+      avatarUrl: typeof r.avatar_path === 'string' ? signed.get(r.avatar_path) : undefined,
+      verified: Boolean(r.verified),
+      bio: (r.bio as string | null) ?? null,
+      createdAt: String(r.created_at ?? new Date().toISOString()),
+    })),
+    outgoingIds: Array.isArray(raw.outgoing_ids) ? raw.outgoing_ids.map(String) : [],
+  };
+}
+
+export async function respondFollowRequest(requesterId: string, accept: boolean): Promise<void> {
+  if (!supabase || !getBackendAccessToken()) throw new Error('Sign in required');
+  const { error } = await supabase.rpc('respond_follow_request', {
+    p_requester_id: requesterId,
+    p_accept: accept,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export interface LiveCommunityDetail {
+  id: string;
+  name: string;
+  fandom: FandomId;
+  description: string;
+  coverTone: string;
+  coverUrl?: string;
+  dramaId?: string;
+  memberCount: number;
+  postCount: number;
+  joinPolicy: string;
+  isLocked: boolean;
+  isMember: boolean;
+  myRole?: string | null;
+}
+
+export async function createCommunityRoom(input: {
+  name: string;
+  fandom: FandomId;
+  description?: string;
+  coverTone?: string;
+}): Promise<LiveCommunityDetail> {
+  if (!supabase || !getBackendAccessToken()) throw new Error('Sign in to create a community');
+  const { data, error } = await supabase.rpc('create_community_room', {
+    p_name: input.name.trim(),
+    p_fandom: input.fandom,
+    p_description: input.description?.trim() ?? '',
+    p_cover_tone: input.coverTone ?? '#E11D48',
+  });
+  if (error) throw new Error(error.message);
+  const raw = (data ?? {}) as Record<string, unknown>;
+  return {
+    id: String(raw.id),
+    name: String(raw.name ?? input.name),
+    fandom: (raw.fandom as FandomId) ?? input.fandom,
+    description: String(raw.description ?? input.description ?? ''),
+    coverTone: String(raw.cover_tone ?? input.coverTone ?? '#E11D48'),
+    memberCount: Number(raw.member_count ?? 1),
+    postCount: Number(raw.post_count ?? 0),
+    joinPolicy: 'open',
+    isLocked: false,
+    isMember: true,
+    myRole: 'moderator',
+  };
+}
+
+export async function fetchCommunityDetail(communityId: string): Promise<LiveCommunityDetail | null> {
+  if (!supabase || !isUuid(communityId)) return null;
+  const { data, error } = await supabase.rpc('get_community_detail', { p_community_id: communityId });
+  if (error || !data) return null;
+  const raw = data as {
+    community?: Record<string, unknown>;
+    is_member?: boolean;
+    my_role?: string | null;
+  };
+  const c = raw.community;
+  if (!c) return null;
+  return {
+    id: String(c.id),
+    name: String(c.name ?? 'Community'),
+    fandom: (c.fandom as FandomId) ?? 'kdrama',
+    description: String(c.description ?? ''),
+    coverTone: String(c.cover_tone ?? '#E11D48'),
+    coverUrl: (c.cover_url as string | null) ?? undefined,
+    dramaId: (c.drama_id as string | null) ?? undefined,
+    memberCount: Number(c.member_count ?? 0),
+    postCount: Number(c.post_count ?? 0),
+    joinPolicy: String(c.join_policy ?? 'open'),
+    isLocked: Boolean(c.is_locked),
+    isMember: Boolean(raw.is_member),
+    myRole: raw.my_role ?? null,
+  };
+}

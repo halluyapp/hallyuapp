@@ -29,6 +29,7 @@ import { freshMemberState, getState, GUEST_ID, guestState, StoreProvider, useHal
 import {
   adoptBackendState,
   adoptLocal,
+  adoptNotifications,
   adoptPublicState,
   getSyncFailures,
   subscribeBackendRealtime,
@@ -127,6 +128,9 @@ export default function RootLayout() {
                 <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="messages/index" />
                 <Stack.Screen name="messages/[handle]" />
+                <Stack.Screen name="communities" />
+                <Stack.Screen name="community/[id]" />
+                <Stack.Screen name="settings/moderation" />
                 <Stack.Screen
                   name="create/[type]"
                   options={{
@@ -317,6 +321,8 @@ function AccountSync() {
     })();
   }, [auth.status, auth.user, state.hydrated, state.profile.id, reset, state.prefs.reduceMotion, state.prefs.trueBlack, dispatch]);
 
+  const [realtimeEpoch, setRealtimeEpoch] = React.useState(0);
+
   useEffect(() => {
     if (!state.hydrated) return;
     return subscribeBackendRealtime(
@@ -329,13 +335,28 @@ function AccountSync() {
       },
       auth.status === 'signedIn' ? auth.user?.id : null,
     );
-  }, [state.hydrated, auth.status, auth.user?.id]);
+  }, [state.hydrated, auth.status, auth.user?.id, realtimeEpoch]);
 
   useEffect(() => {
-    if (auth.status !== 'signedIn' || !auth.user) return;
-    const detachRotation = installPushTokenRotationListener();
+    const detachRotation = auth.status === 'signedIn' && auth.user ? installPushTokenRotationListener() : () => {};
+    let backgroundedAt = 0;
     const fg = RNAppState.addEventListener('change', (st) => {
-      if (st === 'active') void registerDevicePushToken();
+      if (st === 'background' || st === 'inactive') {
+        backgroundedAt = Date.now();
+        return;
+      }
+      if (st === 'active') {
+        if (backgroundedAt && Date.now() - backgroundedAt > 15_000) {
+          setRealtimeEpoch((n) => n + 1);
+        }
+        if (auth.status === 'signedIn' && auth.user) {
+          void registerDevicePushToken();
+          void adoptNotifications({
+            getState,
+            apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+          });
+        }
+      }
     });
     return () => {
       detachRotation();

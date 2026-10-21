@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { colors, fonts, radius, space } from '../../constants/theme';
-import { sendDirectMessage } from '../../lib/api/features';
+import { recordPostShare, sendDirectMessage } from '../../lib/api/features';
 import { dramaFandom } from '../../lib/fandoms';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
 import type { Drama, Post, User } from '../../lib/model';
@@ -85,6 +85,7 @@ export function ShareCardModal({
 
   const handleCopy = async () => {
     await Clipboard.setStringAsync(shareText);
+    if (post?.id) void recordPostShare(post.id, 'copy_link');
     haptic.light();
     toast.show({ message: 'Copied share card link', icon: 'checkmark-circle', tone: 'success' });
     onClose();
@@ -92,6 +93,7 @@ export function ShareCardModal({
 
   const handleSystemShare = async () => {
     haptic.light();
+    if (post?.id) void recordPostShare(post.id, 'system_share');
     await Share.share({ message: shareText });
   };
 
