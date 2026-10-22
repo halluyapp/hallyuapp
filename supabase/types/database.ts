@@ -16,6 +16,207 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type Database = {
   public: {
     Tables: {
+      app_releases: {
+        Row: {
+          apk_url: string;
+          file_size_bytes: number | null;
+          git_commit: string | null;
+          id: string;
+          is_mandatory: boolean;
+          min_supported_version: number;
+          published_at: string;
+          release_notes: string;
+          sha256: string | null;
+          universal_apk_url: string | null;
+          version_code: number;
+          version_name: string;
+        };
+        Insert: {
+          apk_url: string;
+          file_size_bytes?: number | null;
+          git_commit?: string | null;
+          id?: string;
+          is_mandatory?: boolean;
+          min_supported_version?: number;
+          published_at?: string;
+          release_notes?: string;
+          sha256?: string | null;
+          universal_apk_url?: string | null;
+          version_code: number;
+          version_name: string;
+        };
+        Update: {
+          apk_url?: string;
+          file_size_bytes?: number | null;
+          git_commit?: string | null;
+          id?: string;
+          is_mandatory?: boolean;
+          min_supported_version?: number;
+          published_at?: string;
+          release_notes?: string;
+          sha256?: string | null;
+          universal_apk_url?: string | null;
+          version_code?: number;
+          version_name?: string;
+        };
+        Relationships: [];
+      };
+      ci_build_vault: {
+        Row: {
+          key: string;
+          updated_at: string;
+          value: string;
+        };
+        Insert: {
+          key: string;
+          updated_at?: string;
+          value: string;
+        };
+        Update: {
+          key?: string;
+          updated_at?: string;
+          value?: string;
+        };
+        Relationships: [];
+      };
+      hallyu_event_rsvps: {
+        Row: {
+          created_at: string;
+          event_id: string;
+          prediction_choice: number | null;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          event_id: string;
+          prediction_choice?: number | null;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          event_id?: string;
+          prediction_choice?: number | null;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      hallyu_events: {
+        Row: {
+          cover_url: string | null;
+          created_at: string;
+          description: string;
+          ends_at: string;
+          episode: number | null;
+          event_kind: string;
+          host_id: string | null;
+          id: string;
+          is_featured: boolean;
+          prediction_options: Json;
+          prediction_question: string | null;
+          rsvp_count: number;
+          season: number | null;
+          starts_at: string;
+          subtitle: string | null;
+          title: string;
+          title_id: string | null;
+          world: string;
+        };
+        Insert: {
+          cover_url?: string | null;
+          created_at?: string;
+          description?: string;
+          ends_at: string;
+          episode?: number | null;
+          event_kind?: string;
+          host_id?: string | null;
+          id?: string;
+          is_featured?: boolean;
+          prediction_options?: Json;
+          prediction_question?: string | null;
+          rsvp_count?: number;
+          season?: number | null;
+          starts_at: string;
+          subtitle?: string | null;
+          title: string;
+          title_id?: string | null;
+          world?: string;
+        };
+        Update: {
+          cover_url?: string | null;
+          created_at?: string;
+          description?: string;
+          ends_at?: string;
+          episode?: number | null;
+          event_kind?: string;
+          host_id?: string | null;
+          id?: string;
+          is_featured?: boolean;
+          prediction_options?: Json;
+          prediction_question?: string | null;
+          rsvp_count?: number;
+          season?: number | null;
+          starts_at?: string;
+          subtitle?: string | null;
+          title?: string;
+          title_id?: string | null;
+          world?: string;
+        };
+        Relationships: [];
+      };
+      support_tickets: {
+        Row: {
+          app_version: string | null;
+          category: string;
+          created_at: string;
+          description: string;
+          diagnostics: Json;
+          id: string;
+          platform: string | null;
+          reporter_email: string | null;
+          reporter_id: string | null;
+          route_name: string | null;
+          screenshot_url: string | null;
+          staff_note: string | null;
+          status: string;
+          subject: string;
+          updated_at: string;
+        };
+        Insert: {
+          app_version?: string | null;
+          category?: string;
+          created_at?: string;
+          description: string;
+          diagnostics?: Json;
+          id?: string;
+          platform?: string | null;
+          reporter_email?: string | null;
+          reporter_id?: string | null;
+          route_name?: string | null;
+          screenshot_url?: string | null;
+          staff_note?: string | null;
+          status?: string;
+          subject: string;
+          updated_at?: string;
+        };
+        Update: {
+          app_version?: string | null;
+          category?: string;
+          created_at?: string;
+          description?: string;
+          diagnostics?: Json;
+          id?: string;
+          platform?: string | null;
+          reporter_email?: string | null;
+          reporter_id?: string | null;
+          route_name?: string | null;
+          screenshot_url?: string | null;
+          staff_note?: string | null;
+          status?: string;
+          subject?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       catalog_provider_state: {
         Row: {
           consecutive_failures: number;

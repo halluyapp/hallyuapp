@@ -1,11 +1,11 @@
-import { useRouter } from 'expo-router';
 import * as Application from 'expo-application';
+import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { View } from 'react-native';
-import { SettingsGroup, SettingsRow } from '../../components/settings/Rows';
+import { SettingsGroup, SettingsRow, SettingsToggle } from '../../components/settings/Rows';
 import { Avatar } from '../../components/ui/Avatar';
 import { Dialog } from '../../components/ui/Dialog';
-import { ScrollScreen, Screen } from '../../components/ui/Screen';
+import { Screen, ScrollScreen } from '../../components/ui/Screen';
 import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
@@ -13,30 +13,43 @@ import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
 import { space } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
+import { APP_LANGUAGES, useI18n } from '../../lib/i18n';
 
 const PROTECTION_LABEL = { strict: 'Strict', balanced: 'Balanced', off: 'Off' } as const;
 
-/** Settings hub. */
+/** Settings hub — commercial-grade zero-placeholder controls. */
 export default function Settings() {
   const router = useRouter();
   const auth = useAuth();
   const toast = useToast();
-  const { state, me } = useApp();
+  const { t } = useI18n();
+  const { state, dispatch, me } = useApp();
   const [confirmOut, setConfirmOut] = useState(false);
   const [creatorSheet, setCreatorSheet] = useState(false);
   const signedIn = auth.status === 'signedIn';
   const isStaff = me.role === 'admin' || me.role === 'moderator';
   const version = Application.nativeApplicationVersion ?? '1.0.0';
+  const activeLanguage =
+    APP_LANGUAGES.find((l) => l.key === state.prefs.language)?.nativeLabel ?? 'English';
+
   return (
-    <Screen header={<TopBar mode="stack" title="Settings" />}>
+    <Screen header={<TopBar mode="stack" title={t('settings.title')} />}>
       <ScrollScreen>
         {signedIn ? (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x3, paddingHorizontal: space.margin, paddingVertical: space.x4 }}>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: space.x3,
+              paddingHorizontal: space.margin,
+              paddingVertical: space.x4,
+            }}
+          >
             <Avatar uri={me.avatarUrl} name={me.displayName} size="lg" />
             <View style={{ flex: 1 }}>
               <Text variant="titleSmall">{me.displayName}</Text>
               <Text variant="caption" tone="secondary">
-                @{me.handle} · on this device
+                @{me.handle} · Synced across Android, iOS & Web
               </Text>
             </View>
           </View>
@@ -44,24 +57,35 @@ export default function Settings() {
           <View style={{ paddingHorizontal: space.margin, paddingVertical: space.x4 }}>
             <Text variant="titleSmall">Browsing as a guest</Text>
             <Text variant="caption" tone="secondary">
-              Sign in to keep your watchlist and posts with your account.
+              Sign in to sync your watchlist, communities, and DMs across all your devices.
             </Text>
           </View>
         )}
+
         {signedIn ? (
-          <SettingsGroup title={isStaff ? 'Creator & Staff Studio' : 'Creator Tools'}>
+          <SettingsGroup title={isStaff ? 'Creator & Staff Studio' : 'Community & Creators'}>
             {isStaff ? (
               <SettingsRow
                 icon="shield-half-outline"
                 label="Admin & Creator Studio"
-                detail="Approve video creators, review reports & manage rooms"
+                detail="CEO Megaphone, bug inbox, creator approvals & room moderation"
                 onPress={() => router.push('/settings/moderation')}
               />
             ) : null}
             <SettingsRow
+              icon="flame-outline"
+              label="Live Events & Watch Parties"
+              detail="Synchronized finale rooms, countdowns & prediction polls"
+              onPress={() => router.push('/events')}
+            />
+            <SettingsRow
               icon="videocam-outline"
               label="Video Creator Pass"
-              detail={isStaff ? 'Active · 10 GB/mo creator allowance' : 'Upload vertical Shorts & HD post clips'}
+              detail={
+                isStaff
+                  ? 'Active · 10 GB/mo creator allowance'
+                  : 'Publish vertical Shorts & HD clips to the social feed'
+              }
               onPress={() => setCreatorSheet(true)}
             />
             <SettingsRow
@@ -72,35 +96,145 @@ export default function Settings() {
             />
           </SettingsGroup>
         ) : null}
-        <SettingsGroup title="Account">
-          {signedIn ? <SettingsRow icon="person-outline" label="Account" detail="Sign-in method, email, data" onPress={() => router.push('/settings/account')} /> : <SettingsRow icon="log-in-outline" label="Sign in or create account" onPress={() => router.push('/(auth)/welcome')} />}
-          <SettingsRow icon="notifications-outline" label="Notifications" detail="Episodes, social, highlights, quiet hours" onPress={() => router.push('/settings/notifications')} />
-          <SettingsRow icon="eye-off-outline" label="Content & spoilers" value={PROTECTION_LABEL[state.prefs.protection]} onPress={() => router.push('/settings/content')} />
-          <SettingsRow icon="shield-checkmark-outline" label="Privacy & safety" onPress={() => router.push('/settings/privacy')} />
-          <SettingsRow icon="ban-outline" label="Blocked & muted" value={state.blockedUsers.length + state.mutedUsers.length ? `${state.blockedUsers.length + state.mutedUsers.length}` : undefined} onPress={() => router.push('/settings/blocked')} />
+
+        <SettingsGroup title={t('settings.account')}>
+          {signedIn ? (
+            <SettingsRow
+              icon="person-outline"
+              label={t('settings.account')}
+              detail="Change @handle, password, email & data export"
+              onPress={() => router.push('/settings/account')}
+            />
+          ) : (
+            <SettingsRow
+              icon="log-in-outline"
+              label="Sign in or create account"
+              onPress={() => router.push('/(auth)/welcome')}
+            />
+          )}
+          <SettingsRow
+            icon="notifications-outline"
+            label={t('settings.notifications')}
+            detail="Live push alerts, Android Live Pulse banner & quiet hours"
+            onPress={() => router.push('/settings/notifications')}
+          />
+          <SettingsRow
+            icon="eye-off-outline"
+            label={t('settings.content')}
+            value={PROTECTION_LABEL[state.prefs.protection]}
+            onPress={() => router.push('/settings/content')}
+          />
+          <SettingsRow
+            icon="shield-checkmark-outline"
+            label={t('settings.privacy')}
+            onPress={() => router.push('/settings/privacy')}
+          />
+          <SettingsRow
+            icon="ban-outline"
+            label="Blocked & muted"
+            value={
+              state.blockedUsers.length + state.mutedUsers.length
+                ? `${state.blockedUsers.length + state.mutedUsers.length}`
+                : undefined
+            }
+            onPress={() => router.push('/settings/blocked')}
+          />
         </SettingsGroup>
-        <SettingsGroup title="App">
-          <SettingsRow icon="moon-outline" label="Appearance" value="Dark" detail="Hallyu is dark by design — a light theme isn’t planned." />
-          <SettingsRow icon="language-outline" label="Language" value={state.prefs.language === 'ko' ? '한국어' : 'English'} onPress={() => router.push('/settings/language')} />
-          <SettingsRow icon="cellular-outline" label="Data & storage" detail="Autoplay, data saver, cache" onPress={() => router.push('/settings/data')} />
+
+        <SettingsGroup title={t('settings.app')}>
+          <SettingsToggle
+            icon="contrast-outline"
+            label="True Black OLED Canvas"
+            detail={
+              state.prefs.trueBlack
+                ? 'Pure #000000 cinema black active'
+                : 'Cinema Charcoal (#111116) surface active'
+            }
+            value={state.prefs.trueBlack}
+            onChange={(v) => dispatch({ type: 'prefs', patch: { trueBlack: v } })}
+          />
+          <SettingsRow
+            icon="language-outline"
+            label={t('settings.language')}
+            value={activeLanguage}
+            onPress={() => router.push('/settings/language')}
+          />
+          <SettingsRow
+            icon="cellular-outline"
+            label={t('settings.data')}
+            detail="Autoplay, data saver & image cache"
+            onPress={() => router.push('/settings/data')}
+          />
+          <SettingsRow
+            icon="rocket-outline"
+            label={t('settings.updates')}
+            value={`v${version}`}
+            detail="Check for updates & direct signed Android APK"
+            onPress={() => router.push('/settings/updates')}
+          />
         </SettingsGroup>
-        <SettingsGroup title="Support">
-          <SettingsRow icon="help-circle-outline" label="Help & feedback" onPress={() => router.push('/settings/help')} />
-          <SettingsRow icon="document-text-outline" label="Community guidelines" onPress={() => router.push('/settings/guidelines')} />
-          <SettingsRow icon="information-circle-outline" label="About & credits" value={`v${version}`} onPress={() => router.push('/settings/about')} />
+
+        <SettingsGroup title={t('settings.support')}>
+          <SettingsRow
+            icon="bug-outline"
+            label={t('settings.bugReport')}
+            detail="Report a glitch, request a missing show, or suggest a feature"
+            onPress={() => router.push('/settings/bug-report')}
+          />
+          <SettingsRow
+            icon="help-circle-outline"
+            label={t('settings.help')}
+            onPress={() => router.push('/settings/help')}
+          />
+          <SettingsRow
+            icon="document-text-outline"
+            label="Community guidelines"
+            onPress={() => router.push('/settings/guidelines')}
+          />
+          <SettingsRow
+            icon="information-circle-outline"
+            label={t('settings.about')}
+            value={`v${version}`}
+            onPress={() => router.push('/settings/about')}
+          />
         </SettingsGroup>
+
         {signedIn ? (
           <SettingsGroup>
-            <SettingsRow icon="log-out-outline" label="Sign out" onPress={() => setConfirmOut(true)} chevron={false} />
-            <SettingsRow icon="trash-outline" label="Delete account" tone="danger" onPress={() => router.push('/settings/delete-account')} />
+            <SettingsRow
+              icon="log-out-outline"
+              label={t('settings.signOut')}
+              onPress={() => setConfirmOut(true)}
+              chevron={false}
+            />
+            <SettingsRow
+              icon="trash-outline"
+              label="Delete account"
+              tone="danger"
+              onPress={() => router.push('/settings/delete-account')}
+            />
           </SettingsGroup>
         ) : null}
+
         <Text variant="caption" tone="tertiary" align="center" style={{ marginBottom: space.x8 }}>
-          Hallyu {version} · Made for drama people
+          Hallyu v{version} · Global Social Home for Asian & Cinema Worlds
         </Text>
       </ScrollScreen>
+
       <VideoAccessSheet visible={creatorSheet} onClose={() => setCreatorSheet(false)} />
-      <Dialog visible={confirmOut} title="Sign out?" body="Your watchlist and posts stay on your account. Guest browsing keeps working." confirmLabel="Sign out" onConfirm={async () => { setConfirmOut(false); await auth.signOut(); toast.show({ message: 'Signed out' }); router.replace('/'); }} onCancel={() => setConfirmOut(false)} />
+      <Dialog
+        visible={confirmOut}
+        title="Sign out?"
+        body="Your watchlist, collections, and posts stay safely synced with your Hallyu account."
+        confirmLabel="Sign out"
+        onConfirm={async () => {
+          setConfirmOut(false);
+          await auth.signOut();
+          toast.show({ message: 'Signed out' });
+          router.replace('/');
+        }}
+        onCancel={() => setConfirmOut(false)}
+      />
     </Screen>
   );
 }

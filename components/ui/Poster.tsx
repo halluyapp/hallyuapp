@@ -4,7 +4,13 @@ import React, { useEffect, useState } from 'react';
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import { aspect, colors, fonts, radius } from '../../constants/theme';
 import { Drama } from '../../lib/model';
+import { useSlice } from '../../lib/store';
 import { Text } from './Text';
+
+function applyDataSaverUrl(url: string | undefined, targetWidth: 'w300' | 'w500'): string | undefined {
+  if (!url) return url;
+  return url.replace(/\/t\/p\/(original|w1280|w780|w500)\//, `/t/p/${targetWidth}/`);
+}
 
 interface PosterProps {
   drama: Pick<Drama, 'title' | 'posterUrl' | 'posterLocal' | 'tone' | 'year' | 'originalTitle'>;
@@ -20,9 +26,11 @@ interface PosterProps {
  */
 export function Poster({ drama, width, style, rounded = radius.sm, children }: PosterProps) {
   const height = Math.round(width / aspect.poster);
+  const dataSaver = useSlice((s) => s.prefs.dataSaver);
   const [failed, setFailed] = useState(false);
-  const source = drama.posterUrl ? { uri: drama.posterUrl } : (drama.posterLocal ?? null);
-  useEffect(() => setFailed(false), [drama.posterUrl]);
+  const resolvedPosterUrl = dataSaver ? applyDataSaverUrl(drama.posterUrl, 'w300') : drama.posterUrl;
+  const source = resolvedPosterUrl ? { uri: resolvedPosterUrl } : (drama.posterLocal ?? null);
+  useEffect(() => setFailed(false), [resolvedPosterUrl]);
   const titleSize = Math.max(11, Math.min(18, width / 7));
   return (
     <View
@@ -87,8 +95,11 @@ export function Backdrop({
   accentGlow?: string;
 }) {
   const [failed, setFailed] = useState(false);
-  const source = typeof uri === 'number' ? uri : uri ? { uri } : null;
-  useEffect(() => setFailed(false), [uri]);
+  const dataSaver = useSlice((s) => s.prefs.dataSaver);
+  const resolvedUri =
+    typeof uri === 'string' && dataSaver ? applyDataSaverUrl(uri, 'w500') : uri;
+  const source = typeof resolvedUri === 'number' ? resolvedUri : resolvedUri ? { uri: resolvedUri } : null;
+  useEffect(() => setFailed(false), [resolvedUri]);
   return (
     <View style={[{ width, height, backgroundColor: fallbackColor, overflow: 'hidden' }, style]} accessibilityLabel={label}>
       {source && !failed ? (

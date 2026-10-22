@@ -15,6 +15,8 @@ const CHANNEL_EPISODES = 'episodes';
 const CHANNEL_SOCIAL = 'social';
 const CHANNEL_SYSTEM = 'system';
 const CHANNEL_REMINDERS = 'reminders';
+const CHANNEL_LIVE_PULSE = 'live_pulse';
+export const LIVE_PULSE_NOTIFICATION_ID = 'hallyu-live-pulse-banner';
 const HORIZON_MS = 14 * 86_400_000;
 const SHOWN_NOTIFICATIONS_KEY = 'hallyu.shownNotificationIds.v1';
 
@@ -103,6 +105,14 @@ export async function ensureAndroidNotificationChannels(): Promise<void> {
         name: 'Scheduled reminders',
         description: 'On-device countdown reminders for upcoming broadcasts.',
         ...shared,
+      }),
+      Notifications.setNotificationChannelAsync(CHANNEL_LIVE_PULSE, {
+        name: 'Live Pulse Shade Banner',
+        description: 'Silent ongoing lock-screen & shade pulse for active watch parties and premieres.',
+        importance: Notifications.AndroidImportance.LOW,
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        enableVibrate: false,
+        sound: null,
       }),
     ]);
     channelsConfigured = true;
@@ -280,4 +290,55 @@ export function parseNotificationDeepLink(data: Record<string, unknown> | null |
 export function reminderUrl(response: Notifications.NotificationResponse | null | undefined): string | undefined {
   const data = response?.notification.request.content.data as Record<string, unknown> | undefined;
   return parseNotificationDeepLink(data);
+}
+
+/**
+ * Syncs the opt-in silent Android Notification-Shade / Lock-Screen "Hallyu Live Pulse" banner.
+ * Keeps Hallyu alive in the notification drawer with active watch rooms, tonight's airing shows,
+ * and unread counts without buzzing or interrupting the user.
+ */
+export async function syncLivePulseBanner(s: AppState): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    if (!s.prefs.livePulseBanner) {
+      await Notifications.dismissNotificationAsync(LIVE_PULSE_NOTIFICATION_ID).catch(() => {});
+      await Notifications.cancelScheduledNotificationAsync(LIVE_PULSE_NOTIFICATION_ID).catch(() => {});
+      return;
+    }
+
+    const perm = await Notifications.getPermissionsAsync();
+    if (!perm.granted) return;
+    await ensureAndroidNotificationChannels();
+
+    const airingNow = allDramas(s).filter((d) => d.status === 'airing');
+    const unreadCount = s.notifications.filter((n) => !n.read).length;
+    const leadTitle = airingNow[0]?.title;
+    const title = leadTitle
+      ? `Hallyu Live · ${leadTitle} & Tonight's Watch Rooms`
+      : 'Hallyu Live Pulse · Watch Rooms Active';
+    const body =
+      unreadCount > 0
+        ? `${unreadCount} unread update${unreadCount === 1 ? '' : 's'} · Tap to jump into tonight's live feed & events`
+        : `${Math.max(airingNow.length, 4)} live rooms & premiere countdowns open now · Tap to join`;
+
+    await Notifications.scheduleNotificationAsync({
+      identifier: LIVE_PULSE_NOTIFICATION_ID,
+      content: {
+        title,
+        body,
+        sound: false,
+        sticky: true,
+        priority: Notifications.AndroidNotificationPriority.LOW,
+        data: {
+          url: '/events',
+          deep_link: '/events',
+          source: 'live_pulse_banner',
+        },
+        ...(Platform.OS === 'android' ? { channelId: CHANNEL_LIVE_PULSE } : {}),
+      },
+      trigger: null,
+    });
+  } catch {
+    // Non-fatal
+  }
 }

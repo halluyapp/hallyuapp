@@ -21,7 +21,9 @@ export interface Prefs {
   personalization: boolean;
   reduceMotion: boolean;
   notifications: { episodes: boolean; social: boolean; highlights: boolean; system: boolean; quietHours: boolean };
-  language: 'en' | 'ko';
+  /** Opt-in silent live status banner in Android notification shade & lock screen. */
+  livePulseBanner: boolean;
+  language: 'en' | 'ko' | 'ja' | 'zh' | 'fr';
   guidelinesAccepted: boolean;
   dataSaver: boolean;
   /** Version of the Terms/Guidelines the member accepted (Play UGC policy); 0 = not yet. */
@@ -69,10 +71,11 @@ const defaultPrefs: Prefs = {
   autoplay: 'wifi',
   oneTapReactions: true,
   mutedWords: [],
-  trueBlack: false,
+  trueBlack: true,
   personalization: true,
   reduceMotion: false,
   notifications: { episodes: true, social: true, highlights: true, system: true, quietHours: false },
+  livePulseBanner: false,
   guidelinesAccepted: false,
   dataSaver: false,
   language: 'en',

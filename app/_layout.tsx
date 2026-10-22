@@ -24,7 +24,7 @@ import { registerCatalogLookup } from '../lib/api/social';
 import { installPushTokenRotationListener, registerDevicePushToken } from '../lib/api/pushToken';
 import { AuthProvider, useAuth } from '../lib/auth';
 import { markBoot } from '../lib/boot';
-import { ensureAndroidNotificationChannels, installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders } from '../lib/reminders';
+import { ensureAndroidNotificationChannels, installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders, syncLivePulseBanner } from '../lib/reminders';
 import { setDownloadScope } from '../lib/media';
 import { freshMemberState, getState, GUEST_ID, guestState, sanitizePersistedState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
 import {
@@ -135,7 +135,10 @@ export default function RootLayout() {
                 <Stack.Screen name="messages/[handle]" />
                 <Stack.Screen name="communities" />
                 <Stack.Screen name="community/[id]" />
+                <Stack.Screen name="events" />
                 <Stack.Screen name="settings/moderation" />
+                <Stack.Screen name="settings/bug-report" />
+                <Stack.Screen name="settings/updates" />
                 <Stack.Screen
                   name="create/[type]"
                   options={{
@@ -441,12 +444,23 @@ function ReminderSync() {
     const schedule = (delay = 1500) => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        void syncEpisodeReminders(getState()).catch((e) => reportError('ReminderSync.schedule', e));
+        const cur = getState();
+        void syncEpisodeReminders(cur).catch((e) => reportError('ReminderSync.schedule', e));
+        void syncLivePulseBanner(cur).catch(() => {});
       }, delay);
     };
     schedule(2500);
     const unsub = useHallyu.subscribe((s, prev) => {
-      if (s.follows.dramas !== prev.follows.dramas || s.dramaNotify !== prev.dramaNotify || s.prefs.notifications !== prev.prefs.notifications || s.importedDramas !== prev.importedDramas) schedule();
+      if (
+        s.follows.dramas !== prev.follows.dramas ||
+        s.dramaNotify !== prev.dramaNotify ||
+        s.prefs.notifications !== prev.prefs.notifications ||
+        s.prefs.livePulseBanner !== prev.prefs.livePulseBanner ||
+        s.importedDramas !== prev.importedDramas ||
+        s.notifications.length !== prev.notifications.length
+      ) {
+        schedule(600);
+      }
     });
     const fg = RNAppState.addEventListener('change', (st) => st === 'active' && schedule(800));
     const openResponse = (r: Notifications.NotificationResponse | null | undefined) => {

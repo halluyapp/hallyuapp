@@ -442,7 +442,13 @@ export function normalizeTitle(
   const title = (raw.name ?? raw.title ?? '').trim();
   const original = (raw.original_name ?? raw.original_title ?? '').trim();
   const firstAir = (raw.first_air_date ?? raw.release_date ?? '') || null;
+  const lastAir = (raw.last_air_date || raw.last_episode_to_air?.air_date || null);
   const year = firstAir ? Number.parseInt(firstAir.slice(0, 4), 10) : null;
+  const computedStatus = statusFor(raw, mediaType);
+  const endYearParsed =
+    computedStatus === 'completed' && mediaType === 'tv' && lastAir
+      ? Number.parseInt(lastAir.slice(0, 4), 10)
+      : null;
   const runtime =
     mediaType === 'movie'
       ? (raw.runtime ?? null)
@@ -458,7 +464,8 @@ export function normalizeTitle(
     title,
     original_title: original && original !== title ? original : null,
     year: Number.isFinite(year) ? year : null,
-    status: statusFor(raw, mediaType),
+    end_year: endYearParsed && Number.isFinite(endYearParsed) ? endYearParsed : null,
+    status: computedStatus,
     synopsis: raw.overview?.trim() || null,
     poster_url: image(raw.poster_path, 'w500'),
     backdrop_url: image(raw.backdrop_path, 'w780'),
@@ -469,7 +476,7 @@ export function normalizeTitle(
     episode_count: mediaType === 'tv' ? (raw.number_of_episodes ?? 0) : 0,
     season_count: mediaType === 'tv' ? Math.max(1, raw.number_of_seasons ?? 1) : 1,
     first_air_date: firstAir,
-    last_air_date: (raw.last_air_date || raw.last_episode_to_air?.air_date || null),
+    last_air_date: lastAir,
     next_episode_at: raw.next_episode_to_air?.air_date
       ? `${raw.next_episode_to_air.air_date}T00:00:00Z`
       : null,

@@ -75,44 +75,46 @@ function feedsForWorld(
   const today = isoOffsetDays(0);
   const tomorrow = isoOffsetDays(1);
   const upcomingHorizon = isoOffsetDays(270);
+  const scriptedTvFilter = '10763,10764,10767,10766';
+  const liveActionTvFilter = '16,10763,10764,10767,10766';
 
   switch (world) {
     case 'kdrama':
       return [
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'vote_average.desc', 'vote_count.gte': 100 } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', without_genres: liveActionTvFilter, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', without_genres: liveActionTvFilter, 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', without_genres: liveActionTvFilter, 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'KR', with_original_language: 'ko', without_genres: liveActionTvFilter, sort_by: 'vote_average.desc', 'vote_count.gte': 100 } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'KR', with_original_language: 'ko', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'KR', with_original_language: 'ko', sort_by: 'vote_average.desc', 'vote_count.gte': 150 } },
       ];
     case 'cdrama':
       return [
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', sort_by: 'vote_average.desc', 'vote_count.gte': 50 } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', without_genres: liveActionTvFilter, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', without_genres: liveActionTvFilter, 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', without_genres: liveActionTvFilter, 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'CN|TW|HK', with_original_language: 'zh', without_genres: liveActionTvFilter, sort_by: 'vote_average.desc', 'vote_count.gte': 50 } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'CN|HK|TW', sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'CN|HK|TW', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'CN|HK|TW', sort_by: 'vote_average.desc', 'vote_count.gte': 100 } },
       ];
     case 'anime':
       return [
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'vote_average.desc', 'vote_count.gte': 150 } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', without_genres: scriptedTvFilter, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', without_genres: scriptedTvFilter, 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', without_genres: scriptedTvFilter, 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'JP', with_genres: '16', without_genres: scriptedTvFilter, sort_by: 'vote_average.desc', 'vote_count.gte': 150 } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'JP', with_genres: '16', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'JP', with_genres: '16', sort_by: 'vote_average.desc', 'vote_count.gte': 200 } },
       ];
     case 'hollywood':
       return [
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
-        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'vote_average.desc', 'vote_count.gte': 300 } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', without_genres: liveActionTvFilter, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', without_genres: liveActionTvFilter, 'air_date.gte': airingStart, 'air_date.lte': airingEnd, 'first_air_date.lte': today, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', without_genres: liveActionTvFilter, 'first_air_date.gte': tomorrow, 'first_air_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
+        { path: 'discover/tv', mediaType: 'tv', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', without_genres: liveActionTvFilter, sort_by: 'vote_average.desc', 'vote_count.gte': 300 } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', 'primary_release_date.gte': tomorrow, 'primary_release_date.lte': upcomingHorizon, sort_by: 'popularity.desc' } },
         { path: 'discover/movie', mediaType: 'movie', query: { with_origin_country: 'US|GB|CA|AU', with_original_language: 'en', sort_by: 'vote_average.desc', 'vote_count.gte': 500 } },

@@ -15,23 +15,35 @@ import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import {
   fetchStaffOverview,
+  fetchSupportTickets,
   grantVideoAccessByHandle,
   moderatePostState,
+  resolveSupportTicket,
   reviewModerationReport,
   reviewVideoAccessRequest,
-  toggleCommunityLock,
+  sendCeoBroadcast,
   type StaffOverviewPayload,
+  type SupportTicketRecord,
+  toggleCommunityLock,
 } from '../../lib/api/features';
 import { timeAgo } from '../../lib/format';
 import { haptic, useApp } from '../../lib/hooks';
 
-type StudioTab = 'creators' | 'reports' | 'communities';
+type StudioTab = 'broadcast' | 'support' | 'creators' | 'reports' | 'communities';
 
 const QUOTA_PRESETS = [
   { label: '1 GB / mo', mb: 1024 },
   { label: '2 GB / mo', mb: 2048 },
   { label: '5 GB / mo', mb: 5120 },
   { label: '10 GB / mo', mb: 10240 },
+];
+
+const BROADCAST_DESTINATIONS = [
+  { label: 'Live Events Hub', path: '/events' },
+  { label: 'Social Feed', path: '/' },
+  { label: 'Explore Shows', path: '/(tabs)/explore' },
+  { label: 'Communities', path: '/communities' },
+  { label: 'App Updates', path: '/settings/updates' },
 ];
 
 function formatMb(bytes: number): string {
@@ -44,22 +56,33 @@ export default function ModerationStudioScreen() {
   const router = useRouter();
   const toast = useToast();
   const { me } = useApp();
-  const [tab, setTab] = useState<StudioTab>('creators');
+  const [tab, setTab] = useState<StudioTab>('broadcast');
   const [data, setData] = useState<StaffOverviewPayload | null>(null);
+  const [tickets, setTickets] = useState<SupportTicketRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [grantHandle, setGrantHandle] = useState('');
   const [quotaMb, setQuotaMb] = useState(2048);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // CEO Megaphone state
+  const [bcTitle, setBcTitle] = useState('');
+  const [bcBody, setBcBody] = useState('');
+  const [bcPath, setBcPath] = useState('/events');
+  const [sendingBc, setSendingBc] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const next = await fetchStaffOverview();
+      const [next, nextTickets] = await Promise.all([
+        fetchStaffOverview(),
+        fetchSupportTickets('all').catch(() => []),
+      ]);
       setData(next);
+      setTickets(nextTickets);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load Staff Studio');
+      setError(err instanceof Error ? err.message : 'Unable to load Admin Studio');
     } finally {
       setLoading(false);
     }
@@ -68,6 +91,56 @@ export default function ModerationStudioScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const handleBroadcast = async () => {
+    if (!bcTitle.trim() || !bcBody.trim() || sendingBc) return;
+    setSendingBc(true);
+    try {
+      const notifiedMembers = await sendCeoBroadcast({
+        title: bcTitle.trim(),
+        body: bcBody.trim(),
+        deepLink: bcPath,
+      });
+      haptic.success();
+      setBcTitle('');
+      setBcBody('');
+      toast.show({
+        message: `Megaphone sent to ${notifiedMembers} member(s) + push queue!`,
+        tone: 'success',
+      });
+    } catch (err) {
+      toast.show({
+        message: err instanceof Error ? err.message : 'Broadcast failed',
+        tone: 'danger',
+      });
+    } finally {
+      setSendingBc(false);
+    }
+  };
+
+  const handleResolveTicket = async (id: string, status: 'resolved' | 'investigating') => {
+    setBusyId(id);
+    try {
+      await resolveSupportTicket(
+        id,
+        status,
+        status === 'resolved' ? `Resolved by @${me.handle}` : `In review by @${me.handle}`,
+      );
+      haptic.success();
+      toast.show({
+        message: status === 'resolved' ? 'Ticket marked resolved & reporter notified!' : 'Marked in progress',
+        tone: 'success',
+      });
+      await load();
+    } catch (err) {
+      toast.show({
+        message: err instanceof Error ? err.message : 'Could not update ticket',
+        tone: 'danger',
+      });
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const handleGrantByHandle = async () => {
     const clean = grantHandle.trim().replace(/^@/, '');
@@ -170,11 +243,18 @@ export default function ModerationStudioScreen() {
   };
 
   const pendingRequests = (data?.videoRequests ?? []).filter((r) => r.status === 'pending');
+  const openTickets = tickets.filter((t) => t.status !== 'resolved');
 
   return (
-    <Screen header={<TopBar mode="stack" title="Admin & Creator Studio" />}>
+    <Screen header={<TopBar mode="stack" title="Admin & CEO Studio" />}>
       <Segmented
         items={[
+          { key: 'broadcast', label: 'Megaphone' },
+          {
+            key: 'support',
+            label: openTickets.length ? `Bugs (${openTickets.length})` : 'Bugs',
+            dot: openTickets.length > 0,
+          },
           {
             key: 'creators',
             label: pendingRequests.length ? `Creators (${pendingRequests.length})` : 'Creators',
@@ -198,7 +278,128 @@ export default function ModerationStudioScreen() {
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.accent} />}
           contentContainerStyle={styles.content}
         >
-          {tab === 'creators' ? (
+          {tab === 'broadcast' ? (
+            <>
+              <View style={styles.card}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="megaphone" size={20} color={colors.accent} />
+                  <Text variant="titleSmall">CEO Global Push Megaphone</Text>
+                </View>
+                <Text variant="caption" tone="secondary">
+                  Sends an instant real-time notification + Android FCM & iPhone Web Push lock-screen
+                  alert to every Hallyu member worldwide.
+                </Text>
+                <TextField
+                  label="Push Headline"
+                  placeholder="e.g. 🔴 LIVE NOW: Doctor X Finale Watch Party!"
+                  value={bcTitle}
+                  onChangeText={setBcTitle}
+                />
+                <TextField
+                  label="Message Body"
+                  placeholder="Jump into the synchronized room now & vote before the twist drops..."
+                  multiline
+                  value={bcBody}
+                  onChangeText={setBcBody}
+                />
+                <Text variant="overline" tone="secondary">
+                  OPENS WHEN TAPPED
+                </Text>
+                <ChipRow>
+                  {BROADCAST_DESTINATIONS.map((d) => (
+                    <Chip
+                      key={d.path}
+                      label={d.label}
+                      size="sm"
+                      selected={bcPath === d.path}
+                      onPress={() => setBcPath(d.path)}
+                    />
+                  ))}
+                </ChipRow>
+                <Button
+                  label="Send Global Push Alert"
+                  icon="paper-plane"
+                  loading={sendingBc}
+                  disabled={!bcTitle.trim() || !bcBody.trim()}
+                  onPress={() => void handleBroadcast()}
+                  block
+                />
+              </View>
+
+              <View style={styles.card}>
+                <Text variant="titleSmall">Host a Scheduled Watch Party</Text>
+                <Text variant="caption" tone="secondary">
+                  Create countdown Watch Parties & Episode Prediction Polls on the Live Events Hub.
+                </Text>
+                <Button
+                  label="Open Live Events Hub"
+                  variant="secondary"
+                  icon="flame-outline"
+                  onPress={() => router.push('/events')}
+                  block
+                />
+              </View>
+            </>
+          ) : tab === 'support' ? (
+            tickets.length === 0 ? (
+              <EmptyState
+                icon="checkmark-done-circle-outline"
+                title="Zero open bug reports"
+                body="In-app bug reports, crash traces, and missing show requests appear right here."
+              />
+            ) : (
+              tickets.map((t) => (
+                <View key={t.id} style={styles.card}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text
+                      variant="overline"
+                      style={{
+                        color:
+                          t.category === 'crash'
+                            ? colors.danger
+                            : t.status === 'resolved'
+                              ? colors.success
+                              : colors.accent,
+                      }}
+                    >
+                      {t.category.toUpperCase()} · {t.status.toUpperCase()}
+                    </Text>
+                    <Text variant="caption" tone="tertiary">
+                      {timeAgo(t.createdAt)}
+                    </Text>
+                  </View>
+                  <Text variant="titleSmall">{t.subject}</Text>
+                  <Text variant="bodySmall" tone="secondary">
+                    {t.description}
+                  </Text>
+                  <Text variant="caption" tone="tertiary">
+                    {t.reporter?.handle ? `@${t.reporter.handle}` : 'Guest'} · {t.platform} {t.appVersion}
+                    {t.reporterEmail ? ` · ${t.reporterEmail}` : ''}
+                  </Text>
+                  {t.status !== 'resolved' ? (
+                    <View style={{ flexDirection: 'row', gap: space.x2 }}>
+                      <Button
+                        label="Mark Resolved"
+                        size="sm"
+                        icon="checkmark-circle-outline"
+                        loading={busyId === t.id}
+                        onPress={() => void handleResolveTicket(t.id, 'resolved')}
+                        style={{ flex: 1 }}
+                      />
+                      <Button
+                        label="In Progress"
+                        variant="secondary"
+                        size="sm"
+                        onPress={() => void handleResolveTicket(t.id, 'investigating')}
+                        disabled={busyId === t.id}
+                        style={{ flex: 1 }}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              ))
+            )
+          ) : tab === 'creators' ? (
             <>
               <View style={styles.card}>
                 <Text variant="titleSmall">Grant Creator Access by Handle</Text>
@@ -297,7 +498,10 @@ export default function ModerationStudioScreen() {
                 >
                   <View style={{ flex: 1 }}>
                     <Text variant="label">
-                      {creator.displayName} <Text variant="caption" tone="secondary">@{creator.handle}</Text>
+                      {creator.displayName}{' '}
+                      <Text variant="caption" tone="secondary">
+                        @{creator.handle}
+                      </Text>
                     </Text>
                     <Text variant="caption" tone="tertiary">
                       {formatMb(creator.usedThisMonth)} used of {formatMb(creator.budget)} monthly quota
@@ -362,7 +566,8 @@ export default function ModerationStudioScreen() {
                 <Pressable onPress={() => router.push(`/community/${comm.id}`)}>
                   <Text variant="titleSmall">{comm.name}</Text>
                   <Text variant="caption" tone="secondary" style={{ marginTop: 2 }}>
-                    {comm.fandom.toUpperCase()} · {comm.memberCount} members · {comm.postCount} posts · {comm.joinPolicy}
+                    {comm.fandom.toUpperCase()} · {comm.memberCount} members · {comm.postCount} posts ·{' '}
+                    {comm.joinPolicy}
                   </Text>
                 </Pressable>
                 <View style={{ flexDirection: 'row', gap: space.x2 }}>

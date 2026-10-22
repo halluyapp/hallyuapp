@@ -2,11 +2,12 @@ import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, Platform } from 'react-native';
 import { SettingsGroup, SettingsRow, SettingsToggle } from '../../components/settings/Rows';
-import { ScrollScreen, Screen } from '../../components/ui/Screen';
+import { Screen, ScrollScreen } from '../../components/ui/Screen';
 import { toast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import {
   getPushRegistrationState,
+  isStandaloneWebApp,
   registerDevicePushToken,
   sendServerTestNotification,
   subscribePushRegistrationState,
@@ -14,157 +15,275 @@ import {
 } from '../../lib/api/pushToken';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
-import { ensureNotificationPermission, notificationPermission, PermissionState, plannedReminders, remindersSupported } from '../../lib/reminders';
+import {
+  ensureNotificationPermission,
+  notificationPermission,
+  PermissionState,
+  plannedReminders,
+  remindersSupported,
+  syncLivePulseBanner,
+} from '../../lib/reminders';
 
-/** Notification categories, remote push token registration diagnostics, self-test, and quiet hours. */
+/** Notification controls — Android FCM HTTP v1, iOS/Web VAPID Push, Live Pulse Shade Banner & Test Push. */
 export default function NotificationSettings() {
   const auth = useAuth();
   const { state, dispatch } = useApp();
   const n = state.prefs.notifications;
-  const set = (patch: Partial<typeof n>) => dispatch({ type: 'prefs', patch: { notifications: { ...n, ...patch } } });
-  const [perm, setPerm] = useState<PermissionState>(remindersSupported ? 'undetermined' : 'unsupported');
+  const set = (patch: Partial<typeof n>) =>
+    dispatch({ type: 'prefs', patch: { notifications: { ...n, ...patch } } });
+  const [perm, setPerm] = useState<PermissionState>(
+    remindersSupported || Platform.OS === 'web' ? 'undetermined' : 'unsupported',
+  );
   const [pushReg, setPushReg] = useState<PushRegistrationState>(getPushRegistrationState());
   const [sendingTest, setSendingTest] = useState(false);
+
+  const refreshPermission = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      if (typeof Notification === 'undefined') {
+        setPerm('unsupported');
+        return 'unsupported' as PermissionState;
+      }
+      const mapped: PermissionState =
+        Notification.permission === 'granted'
+          ? 'granted'
+          : Notification.permission === 'denied'
+            ? 'denied'
+            : 'undetermined';
+      setPerm(mapped);
+      return mapped;
+    }
+    const nativePerm = await notificationPermission();
+    setPerm(nativePerm);
+    return nativePerm;
+  }, []);
 
   useEffect(() => subscribePushRegistrationState(setPushReg), []);
 
   useFocusEffect(
     useCallback(() => {
       let alive = true;
-      notificationPermission().then((p) => {
+      refreshPermission().then((p) => {
         if (!alive) return;
-        setPerm(p);
         if (p === 'granted' && auth.status === 'signedIn') {
-          void registerDevicePushToken();
+          void registerDevicePushToken(false);
         }
       });
       return () => {
         alive = false;
       };
-    }, [auth.status]),
+    }, [auth.status, refreshPermission]),
   );
 
   const planned = plannedReminders(state);
   const next = planned[0];
-  const permValue = perm === 'granted' ? 'Allowed' : perm === 'denied' ? 'Blocked' : perm === 'unsupported' ? 'Not on web' : 'Not asked yet';
+  const permValue =
+    perm === 'granted'
+      ? 'Allowed'
+      : perm === 'denied'
+        ? 'Blocked'
+        : perm === 'unsupported'
+          ? 'Add to Home Screen'
+          : 'Tap to enable';
+
   const permDetail =
     perm === 'granted'
       ? next
-        ? `${planned.length} local episode ${planned.length === 1 ? 'reminder' : 'reminders'} scheduled · next: ${next.title.replace(' is airing', '')}`
-        : 'System permission active · high-priority OS banners enabled'
+        ? `${planned.length} upcoming episode ${planned.length === 1 ? 'alert' : 'alerts'} ready · next: ${next.title.replace(' is airing', '')}`
+        : Platform.OS === 'web'
+          ? `Browser / Home-Screen Web Push active${isStandaloneWebApp() ? ' (Full-Screen App)' : ''}`
+          : 'High-priority OS banners & lock-screen delivery enabled'
       : perm === 'denied'
-        ? 'Hallyu can’t show notifications until you allow notifications in system settings'
+        ? 'Allow notifications in your device or browser settings to receive live alerts'
         : perm === 'unsupported'
-          ? 'Native OS notifications run on Android and iOS devices'
-          : 'Tap to enable system notifications for episodes, replies, and activity';
+          ? 'On iPhone/iPad, tap Share → Add to Home Screen in Safari to unlock Apple lock-screen push alerts'
+          : 'Tap to enable instant episode drops, replies, DMs & creator clips';
 
   const remoteValue =
     pushReg.status === 'registered'
-      ? `Active (${pushReg.tokenType?.toUpperCase() ?? 'PUSH'})`
+      ? `Active (${pushReg.tokenType === 'webpush' ? 'WEB PUSH' : 'FCM'})`
       : pushReg.status === 'registering'
-        ? 'Syncing…'
-        : pushReg.status === 'missing_native_push_credentials'
-          ? 'Live while open'
-          : pushReg.status === 'permission_denied'
-            ? 'Needs permission'
-            : pushReg.status === 'unsupported'
-              ? 'Mobile only'
-              : 'Ready';
+        ? 'Connecting…'
+        : pushReg.status === 'permission_denied'
+          ? 'Permission needed'
+          : 'Tap to sync';
 
   const remoteDetail =
     pushReg.status === 'registered'
-      ? `Registered device token (${pushReg.tokenPreview ?? 'verified'}) for background & killed-app push delivery`
-      : pushReg.status === 'missing_native_push_credentials'
-        ? 'Server alerts deliver instant OS banners while Hallyu is open; background FCM wakes activate once Firebase credentials are bundled'
-        : pushReg.lastError
-          ? `Tap to retry push registration (${pushReg.lastError.slice(0, 72)})`
-          : 'Registers this device with Hallyu so server notifications fan out automatically';
+      ? `Connected (${pushReg.tokenPreview ?? 'verified'}) — delivers alerts even when Hallyu is closed`
+      : pushReg.lastError
+        ? `${pushReg.lastError}`
+        : 'Syncs this device for instant background & lock-screen delivery';
 
   const handleRequestPermission = async () => {
+    if (Platform.OS === 'web') {
+      const ok = await registerDevicePushToken(true);
+      await refreshPermission();
+      if (ok) {
+        toast.show({ message: 'Web Push lock-screen notifications active!', tone: 'success' });
+      }
+      return;
+    }
     const nextPerm = await ensureNotificationPermission();
     setPerm(nextPerm);
     if (nextPerm === 'granted' && auth.status === 'signedIn') {
-      await registerDevicePushToken();
+      await registerDevicePushToken(true);
     }
   };
 
   const handleSendTest = async () => {
     if (sendingTest) return;
     if (auth.status !== 'signedIn') {
-      toast.show({ message: 'Sign in first to verify remote server notifications.', tone: 'danger', icon: 'alert-circle' });
+      toast.show({
+        message: 'Sign in first to test live server push delivery.',
+        tone: 'danger',
+      });
       return;
     }
     setSendingTest(true);
     try {
-      const currentPerm = await ensureNotificationPermission();
-      setPerm(currentPerm);
-      if (currentPerm === 'granted') await registerDevicePushToken();
+      await registerDevicePushToken(true);
+      await refreshPermission();
       const res = await sendServerTestNotification();
       toast.show({
         message:
           res.queued_deliveries > 0
-            ? `Test alert queued to ${res.queued_deliveries} device token(s)`
-            : 'Server notification created and delivered live to your inbox & OS banner',
-        icon: 'checkmark-circle',
+            ? `Live push dispatched to ${res.queued_deliveries} registered device(s)!`
+            : 'Live server notification delivered to your inbox & banner!',
+        tone: 'success',
       });
     } catch (e) {
       toast.show({
-        message: e instanceof Error ? e.message : 'Could not send test notification',
+        message: e instanceof Error ? e.message : 'Could not send test push',
         tone: 'danger',
-        icon: 'alert-circle',
       });
     } finally {
       setSendingTest(false);
     }
   };
 
+  const handleToggleLivePulse = async (enabled: boolean) => {
+    if (enabled && Platform.OS === 'android') {
+      const p = await ensureNotificationPermission();
+      setPerm(p);
+      if (p !== 'granted') {
+        toast.show({ message: 'Allow notifications first to pin the Live Pulse banner.' });
+        return;
+      }
+    }
+    dispatch({ type: 'prefs', patch: { livePulseBanner: enabled } });
+    await syncLivePulseBanner({
+      ...state,
+      prefs: { ...state.prefs, livePulseBanner: enabled },
+    });
+    toast.show({
+      message: enabled
+        ? 'Hallyu Live Pulse pinned cleanly to your notification shade!'
+        : 'Live Pulse shade banner hidden',
+      tone: 'success',
+    });
+  };
+
   return (
     <Screen header={<TopBar mode="stack" title="Notifications" />}>
       <ScrollScreen>
         <SettingsGroup
-          title="This device"
-          footer={
-            Platform.OS === 'android'
-              ? 'Alerts use high-priority Android channels (Episode nights, Social activity, Account & system notices, Scheduled reminders).'
-              : undefined
-          }
+          title="Live Delivery Status"
+          footer="Hallyu delivers real background push alerts on Android (Firebase FCM) and iPhone / Desktop (Apple & Web Push)."
         >
           <SettingsRow
             icon={perm === 'granted' ? 'notifications-outline' : 'notifications-off-outline'}
-            label="System permission"
+            label="System notifications"
             detail={permDetail}
             value={permValue}
-            chevron={perm !== 'granted' && perm !== 'unsupported'}
-            onPress={perm === 'denied' ? () => Linking.openSettings().catch(() => {}) : perm === 'undetermined' ? handleRequestPermission : undefined}
+            chevron={perm !== 'granted'}
+            onPress={
+              perm === 'denied' && Platform.OS !== 'web'
+                ? () => Linking.openSettings().catch(() => {})
+                : perm !== 'granted'
+                  ? () => void handleRequestPermission()
+                  : undefined
+            }
           />
           {auth.status === 'signedIn' ? (
             <>
               <SettingsRow
                 icon="cloud-done-outline"
-                label="Remote delivery"
+                label="Background push sync"
                 detail={remoteDetail}
                 value={remoteValue}
-                chevron={pushReg.status !== 'registered' && pushReg.status !== 'unsupported'}
-                onPress={pushReg.status !== 'unsupported' ? () => void registerDevicePushToken() : undefined}
+                chevron
+                onPress={() => void registerDevicePushToken(true)}
               />
               <SettingsRow
                 icon="paper-plane-outline"
-                label={sendingTest ? 'Sending test alert…' : 'Send test notification'}
-                detail="Creates a real server notification, fans out device deliveries, and triggers an OS banner"
+                label={sendingTest ? 'Dispatching live push…' : 'Send live test push'}
+                detail="Sends a real server push alert straight to your phone & lock screen"
                 chevron
-                onPress={handleSendTest}
+                onPress={() => void handleSendTest()}
               />
             </>
           ) : null}
         </SettingsGroup>
-        <SettingsGroup title="Categories" footer="Per-drama episode alerts are set with the bell on each drama you follow.">
-          <SettingsToggle icon="radio-outline" label="Episodes" detail="When a drama you follow airs or a room goes live" value={n.episodes} onChange={(v) => set({ episodes: v })} />
-          <SettingsToggle icon="heart-outline" label="Social" detail="Reactions, comments, replies, new followers" value={n.social} onChange={(v) => set({ social: v })} />
-          <SettingsToggle icon="sparkles-outline" label="Highlights" detail="Trending in your fandoms — at most one a day" value={n.highlights} onChange={(v) => set({ highlights: v })} />
-          <SettingsToggle icon="information-circle-outline" label="System" detail="Security, policy and account notices (recommended)" value={n.system} onChange={(v) => set({ system: v })} />
+
+        {Platform.OS === 'android' ? (
+          <SettingsGroup
+            title="Hallyu Live Pulse Banner"
+            footer="Silent, zero-buzz status strip in your Android notification drawer & lock screen showing tonight's live shows and 1-tap Watch Party access."
+          >
+            <SettingsToggle
+              icon="pulse-outline"
+              label="Pin Live Pulse to Notification Shade"
+              detail="Silent companion banner · instant jump into tonight's rooms"
+              value={!!state.prefs.livePulseBanner}
+              onChange={(v) => void handleToggleLivePulse(v)}
+            />
+          </SettingsGroup>
+        ) : null}
+
+        <SettingsGroup
+          title="Alert Categories"
+          footer="Tap the bell on any show page to customize individual premiere & finale alerts."
+        >
+          <SettingsToggle
+            icon="radio-outline"
+            label="Episodes & Watch Parties"
+            detail="Premieres, live watch rooms & episode airings"
+            value={n.episodes}
+            onChange={(v) => set({ episodes: v })}
+          />
+          <SettingsToggle
+            icon="chatbubbles-outline"
+            label="Social, Mentions & DMs"
+            detail="Direct messages, replies, mentions, reactions & new followers"
+            value={n.social}
+            onChange={(v) => set({ social: v })}
+          />
+          <SettingsToggle
+            icon="videocam-outline"
+            label="Creator Clips & Highlights"
+            detail="New Shorts from creators you follow & major community moments"
+            value={n.highlights}
+            onChange={(v) => set({ highlights: v })}
+          />
+          <SettingsToggle
+            icon="shield-checkmark-outline"
+            label="Account & Official Announcements"
+            detail="Security alerts, Creator Pass updates & major Hallyu events"
+            value={n.system}
+            onChange={(v) => set({ system: v })}
+          />
         </SettingsGroup>
-        <SettingsGroup title="Quiet hours" footer="22:00 – 08:00 local time. Episode-live alerts still arrive if you turned them on for that drama.">
-          <SettingsToggle icon="moon-outline" label="Quiet hours" value={n.quietHours} onChange={(v) => set({ quietHours: v })} />
+
+        <SettingsGroup
+          title="Quiet Hours"
+          footer="22:00 – 08:00 local time. Live Watch Party reminders you explicitly RSVP to still come through."
+        >
+          <SettingsToggle
+            icon="moon-outline"
+            label="Quiet hours"
+            value={n.quietHours}
+            onChange={(v) => set({ quietHours: v })}
+          />
         </SettingsGroup>
       </ScrollScreen>
     </Screen>

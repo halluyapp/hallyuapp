@@ -375,6 +375,7 @@ function adoptPrefs(server: ServerPrefs | null, current: Prefs): Prefs {
     oneTapReactions: server.one_tap_reactions ?? current.oneTapReactions,
     mutedWords: server.muted_words ?? current.mutedWords,
     trueBlack: server.true_black ?? current.trueBlack,
+    livePulseBanner: current.livePulseBanner,
     personalization: server.personalization ?? current.personalization,
     reduceMotion: server.reduce_motion ?? current.reduceMotion,
     notifications: {

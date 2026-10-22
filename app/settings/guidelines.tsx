@@ -1,26 +1,49 @@
 import React from 'react';
 import { View } from 'react-native';
-import { ScrollScreen, Screen } from '../../components/ui/Screen';
+import { Screen, ScrollScreen } from '../../components/ui/Screen';
 import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { space } from '../../constants/theme';
+import { SUPPORT_EMAIL } from '../../lib/links';
 
 const RULES: { title: string; body: string }[] = [
-  { title: 'Tag your spoilers', body: 'Anything past the premiere needs a spoiler level. Episode, season or ending — pick the one that matches. Untagged spoilers get removed and repeat offenders lose posting for a week.' },
-  { title: 'Argue about the drama, not the person', body: 'Disagree with a take, not a human. Harassment, slurs, threats, and dogpiling get accounts removed.' },
-  { title: 'Respect actors as people', body: 'Critique performances freely. Rumours about private lives, appearance shaming and dating speculation aren’t what Hallyu is for.' },
-  { title: 'No piracy', body: 'Links to unlicensed streams or downloads are removed. Say where you watched instead.' },
-  { title: 'Keep it safe for a mixed audience', body: 'No sexual or graphic content, even from the shows. Reference the scene; don’t reproduce it.' },
-  { title: 'Be a real person', body: 'One account, your own words, no bots. Impersonating actors, writers or other members is grounds for removal.' },
-  { title: 'Reports are reviewed by people', body: 'Usually within 24 hours. Reports are anonymous, retaliation isn’t tolerated, and false reports may limit your account.' },
+  {
+    title: 'Tag your spoilers',
+    body: 'Anything past the premiere needs a spoiler level — episode, season, or ending. Untagged spoilers are veiled or removed so every member can watch at their own pace.',
+  },
+  {
+    title: 'Debate the story, respect the person',
+    body: 'Critique plots and hot takes passionately, never people. Harassment, hate speech, threats, and targeted pile-ons result in immediate account removal.',
+  },
+  {
+    title: 'Respect cast & creators as human beings',
+    body: 'Celebrate and critique performances freely. Defamation, invasive private-life rumors, and appearance harassment have no place on Hallyu.',
+  },
+  {
+    title: 'No piracy links',
+    body: 'Do not post links to unlicensed streams or downloads. Share official platforms and synchronized Episode Watch Rooms instead.',
+  },
+  {
+    title: 'Keep Hallyu welcoming across every fandom world',
+    body: 'K-Drama, C-Drama, Anime, and Cinema fans share one roof here. Fan-war spam and explicit/graphic imagery are removed.',
+  },
+  {
+    title: 'Authentic accounts only',
+    body: 'Impersonating actors, studios, creators, or Hallyu staff is prohibited.',
+  },
+  {
+    title: 'Fast human moderation',
+    body: `Community reports are anonymous and reviewed promptly by Hallyu staff (${SUPPORT_EMAIL}).`,
+  },
 ];
 
 export default function Guidelines() {
   return (
-    <Screen header={<TopBar mode="stack" title="Community guidelines" />}>
+    <Screen header={<TopBar mode="stack" title="Community Guidelines" />}>
       <ScrollScreen column padded>
         <Text variant="body" tone="secondary" style={{ marginTop: space.x2, marginBottom: space.x6 }}>
-          Hallyu is for people who love Korean dramas enough to talk about them properly. Seven rules keep the rooms good.
+          Hallyu brings K-Drama, C-Drama, Anime, and global cinema fans together every episode
+          night. Seven simple rules keep every room electric and spoiler-safe.
         </Text>
         {RULES.map((r, i) => (
           <View key={r.title} style={{ marginBottom: space.x5 }}>
@@ -33,7 +56,7 @@ export default function Guidelines() {
           </View>
         ))}
         <Text variant="caption" tone="tertiary" style={{ marginBottom: space.x8 }}>
-          Last updated September 2026. Posting on Hallyu means you accept these guidelines and the Terms of Service.
+          Effective October 2026 · Hallyu Community Platform
         </Text>
       </ScrollScreen>
     </Screen>

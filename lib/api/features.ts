@@ -397,7 +397,15 @@ export function connectLiveEpisodeRoom(
     };
   }
 
-  const channel: RealtimeChannel = supabase.channel(`episode-watch-room:${roomKey}`, {
+  const topic = `episode-watch-room:${roomKey}`;
+  for (const existing of supabase.getChannels()) {
+    if (existing.topic === topic || existing.topic === `realtime:${topic}`) {
+      void supabase.removeChannel(existing).catch(() => {});
+    }
+  }
+
+  let closed = false;
+  const channel: RealtimeChannel = supabase.channel(topic, {
     config: {
       presence: { key: viewer.id },
       broadcast: { self: false },
@@ -405,6 +413,7 @@ export function connectLiveEpisodeRoom(
   });
 
   const syncPresence = () => {
+    if (closed) return;
     const state = channel.presenceState<LiveRoomViewer>();
     const map = new Map<string, LiveRoomViewer>();
     for (const entries of Object.values(state)) {
@@ -424,42 +433,63 @@ export function connectLiveEpisodeRoom(
     handlers.onViewersChange([...map.values()]);
   };
 
-  channel
-    .on('presence', { event: 'sync' }, syncPresence)
-    .on('presence', { event: 'join' }, syncPresence)
-    .on('presence', { event: 'leave' }, syncPresence)
-    .on('broadcast', { event: 'live_reaction' }, ({ payload }) => {
-      if (payload?.kind) {
-        handlers.onReactionBurst(payload as LiveReactionBurst);
-      }
-    })
-    .subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        await channel.track({
-          userId: viewer.id,
-          handle: viewer.handle,
-          displayName: viewer.displayName,
-          avatarUrl: viewer.avatarUrl,
-          joinedAt: new Date().toISOString(),
-        });
-      }
-    });
+  try {
+    channel
+      .on('presence', { event: 'sync' }, syncPresence)
+      .on('presence', { event: 'join' }, syncPresence)
+      .on('presence', { event: 'leave' }, syncPresence)
+      .on('broadcast', { event: 'live_reaction' }, ({ payload }) => {
+        if (!closed && payload?.kind) {
+          handlers.onReactionBurst(payload as LiveReactionBurst);
+        }
+      })
+      .subscribe(async (status) => {
+        if (closed) return;
+        if (status === 'SUBSCRIBED') {
+          try {
+            await channel.track({
+              userId: viewer.id,
+              handle: viewer.handle,
+              displayName: viewer.displayName,
+              avatarUrl: viewer.avatarUrl,
+              joinedAt: new Date().toISOString(),
+            });
+          } catch {
+            // Ignore race if channel closed mid-handshake
+          }
+        }
+      });
+  } catch {
+    handlers.onViewersChange([
+      {
+        userId: viewer.id,
+        handle: viewer.handle,
+        displayName: viewer.displayName,
+        avatarUrl: viewer.avatarUrl,
+        joinedAt: new Date().toISOString(),
+      },
+    ]);
+  }
 
   return {
     sendReaction: (kind: ReactionKind, timestampTag?: string) => {
-      void channel.send({
-        type: 'broadcast',
-        event: 'live_reaction',
-        payload: {
-          kind,
-          senderHandle: viewer.handle,
-          timestampTag,
-          sentAt: new Date().toISOString(),
-        },
-      });
+      if (closed) return;
+      void channel
+        .send({
+          type: 'broadcast',
+          event: 'live_reaction',
+          payload: {
+            kind,
+            senderHandle: viewer.handle,
+            timestampTag,
+            sentAt: new Date().toISOString(),
+          },
+        })
+        .catch(() => {});
     },
     leave: () => {
-      void supabase?.removeChannel(channel);
+      closed = true;
+      void supabase?.removeChannel(channel).catch(() => {});
     },
   };
 }
@@ -805,4 +835,275 @@ export async function fetchCommunityDetail(communityId: string): Promise<LiveCom
     isMember: Boolean(raw.is_member),
     myRole: raw.my_role ?? null,
   };
+}
+
+// ── 7. Flagship Hallyu Live Events, Support Tickets, CEO Megaphone & Account Handle ────────────
+
+export interface HallyuLiveEvent {
+  id: string;
+  title: string;
+  subtitle?: string;
+  description: string;
+  world: FandomId;
+  eventKind: 'watch_party' | 'premiere' | 'prediction' | 'showdown' | 'community_live';
+  titleId?: string;
+  season?: number;
+  episode?: number;
+  startsAt: string;
+  endsAt: string;
+  coverUrl?: string;
+  predictionQuestion?: string;
+  predictionOptions: string[];
+  isFeatured: boolean;
+  rsvpCount: number;
+  viewerGoing: boolean;
+  viewerPrediction: number | null;
+  predictionCounts: Record<string, number>;
+  host?: {
+    id: string;
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+    verified?: boolean;
+  } | null;
+  linkedDrama?: Drama | null;
+}
+
+export async function fetchHallyuEvents(world?: FandomId | 'all'): Promise<HallyuLiveEvent[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase.rpc('list_hallyu_events', {
+    p_world: world && world !== 'all' ? world : null,
+    p_limit: 24,
+  });
+  if (error || !Array.isArray(data)) return [];
+  return (data as Record<string, unknown>[]).map((bundle) => {
+    const ev = (bundle.event ?? {}) as Record<string, unknown>;
+    const host = (bundle.host ?? null) as Record<string, unknown> | null;
+    const titleRow = (bundle.title ?? null) as ServerTitleRow | null;
+    const rawOpts = Array.isArray(ev.prediction_options) ? ev.prediction_options : [];
+    const rawCounts = (bundle.prediction_counts ?? {}) as Record<string, unknown>;
+    const counts: Record<string, number> = {};
+    for (const [k, v] of Object.entries(rawCounts)) counts[k] = Number(v ?? 0);
+
+    return {
+      id: String(ev.id),
+      title: String(ev.title ?? 'Live Watch Party'),
+      subtitle: ev.subtitle ? String(ev.subtitle) : undefined,
+      description: String(ev.description ?? ''),
+      world: ((ev.world as FandomId) || 'kdrama'),
+      eventKind: (ev.event_kind as HallyuLiveEvent['eventKind']) || 'watch_party',
+      titleId: ev.title_id ? String(ev.title_id) : undefined,
+      season: typeof ev.season === 'number' ? ev.season : undefined,
+      episode: typeof ev.episode === 'number' ? ev.episode : undefined,
+      startsAt: String(ev.starts_at ?? new Date().toISOString()),
+      endsAt: String(ev.ends_at ?? new Date(Date.now() + 3600_000).toISOString()),
+      coverUrl: ev.cover_url
+        ? String(ev.cover_url)
+        : titleRow?.backdrop_url ?? titleRow?.poster_url ?? undefined,
+      predictionQuestion: ev.prediction_question ? String(ev.prediction_question) : undefined,
+      predictionOptions: rawOpts.map((o) => String(o)),
+      isFeatured: Boolean(ev.is_featured),
+      rsvpCount: Number(ev.rsvp_count ?? 0),
+      viewerGoing: Boolean(bundle.viewer_going),
+      viewerPrediction:
+        typeof bundle.viewer_prediction === 'number' ? bundle.viewer_prediction : null,
+      predictionCounts: counts,
+      host: host
+        ? {
+            id: String(host.id),
+            handle: String(host.handle ?? 'hallyu'),
+            displayName: String(host.display_name ?? host.handle ?? 'Hallyu Host'),
+            verified: Boolean(host.verified),
+          }
+        : null,
+      linkedDrama: titleRow ? serverTitleToDrama(titleRow) : null,
+    };
+  });
+}
+
+export async function toggleEventRsvp(
+  eventId: string,
+  going?: boolean,
+  predictionChoice?: number,
+): Promise<{ going: boolean; rsvpCount: number; predictionChoice: number | null }> {
+  if (!supabase || !(await ensureBackendSessionToken())) {
+    throw new Error('Sign in to RSVP or lock in your prediction');
+  }
+  const { data, error } = await supabase.rpc('toggle_event_rsvp', {
+    p_event_id: eventId,
+    p_going: going ?? null,
+    p_prediction: predictionChoice ?? null,
+  });
+  if (error) throw new Error(error.message);
+  const raw = (data ?? {}) as Record<string, unknown>;
+  return {
+    going: Boolean(raw.going),
+    rsvpCount: Number(raw.rsvp_count ?? 0),
+    predictionChoice: typeof raw.prediction_choice === 'number' ? raw.prediction_choice : null,
+  };
+}
+
+export async function createHallyuEvent(input: {
+  title: string;
+  world: FandomId;
+  eventKind?: HallyuLiveEvent['eventKind'];
+  subtitle?: string;
+  description?: string;
+  startsInMinutes?: number;
+  durationMinutes?: number;
+  predictionQuestion?: string;
+  predictionOptions?: string[];
+}): Promise<string> {
+  if (!supabase || !(await ensureBackendSessionToken())) {
+    throw new Error('Staff session required');
+  }
+  const startsAt = new Date(
+    Date.now() + (input.startsInMinutes ?? 15) * 60_000,
+  ).toISOString();
+  const { data, error } = await supabase.rpc('create_hallyu_event', {
+    p_title: input.title.trim(),
+    p_world: input.world,
+    p_event_kind: input.eventKind ?? 'watch_party',
+    p_subtitle: input.subtitle?.trim() || null,
+    p_description: input.description?.trim() ?? '',
+    p_title_id: null,
+    p_season: null,
+    p_episode: null,
+    p_starts_at: startsAt,
+    p_duration_minutes: input.durationMinutes ?? 90,
+    p_prediction_question: input.predictionQuestion?.trim() || null,
+    p_prediction_options: (input.predictionOptions ?? []).filter((s) => s.trim().length > 0),
+    p_is_featured: true,
+  });
+  if (error) throw new Error(error.message);
+  return String(data);
+}
+
+export type SupportTicketCategory =
+  | 'bug'
+  | 'crash'
+  | 'missing_title'
+  | 'upload'
+  | 'account'
+  | 'feature';
+
+export interface SupportTicketRecord {
+  id: string;
+  category: SupportTicketCategory;
+  subject: string;
+  description: string;
+  reporterEmail?: string;
+  appVersion?: string;
+  platform?: string;
+  routeName?: string;
+  status: 'open' | 'investigating' | 'resolved' | 'closed';
+  staffNote?: string;
+  createdAt: string;
+  reporter?: {
+    id: string;
+    handle: string;
+    displayName: string;
+  } | null;
+}
+
+export async function submitSupportTicket(input: {
+  category: SupportTicketCategory;
+  subject: string;
+  description: string;
+  reporterEmail?: string;
+  screenshotUrl?: string;
+  appVersion?: string;
+  platform?: string;
+  routeName?: string;
+  diagnostics?: Record<string, unknown>;
+}): Promise<string> {
+  if (!supabase) throw new Error('Unable to reach Hallyu support server');
+  const { data, error } = await supabase.rpc('submit_support_ticket', {
+    p_category: input.category,
+    p_subject: input.subject.trim(),
+    p_description: input.description.trim(),
+    p_reporter_email: input.reporterEmail?.trim() || null,
+    p_screenshot_url: input.screenshotUrl || null,
+    p_app_version: input.appVersion || null,
+    p_platform: input.platform || null,
+    p_route_name: input.routeName || null,
+    p_diagnostics: (input.diagnostics ?? {}) as never,
+  });
+  if (error) throw new Error(error.message);
+  return String(data);
+}
+
+export async function fetchSupportTickets(status?: string): Promise<SupportTicketRecord[]> {
+  if (!supabase || !(await ensureBackendSessionToken())) return [];
+  const { data, error } = await supabase.rpc('list_support_tickets', {
+    p_status: status || null,
+    p_limit: 50,
+  });
+  if (error || !Array.isArray(data)) return [];
+  return (data as Record<string, unknown>[]).map((bundle) => {
+    const t = (bundle.ticket ?? {}) as Record<string, unknown>;
+    const rep = (bundle.reporter ?? null) as Record<string, unknown> | null;
+    return {
+      id: String(t.id),
+      category: (t.category as SupportTicketCategory) || 'bug',
+      subject: String(t.subject ?? 'Report'),
+      description: String(t.description ?? ''),
+      reporterEmail: t.reporter_email ? String(t.reporter_email) : undefined,
+      appVersion: t.app_version ? String(t.app_version) : undefined,
+      platform: t.platform ? String(t.platform) : undefined,
+      routeName: t.route_name ? String(t.route_name) : undefined,
+      status: (t.status as SupportTicketRecord['status']) || 'open',
+      staffNote: t.staff_note ? String(t.staff_note) : undefined,
+      createdAt: String(t.created_at ?? new Date().toISOString()),
+      reporter: rep
+        ? {
+            id: String(rep.id),
+            handle: String(rep.handle ?? 'member'),
+            displayName: String(rep.display_name ?? rep.handle ?? 'Member'),
+          }
+        : null,
+    };
+  });
+}
+
+export async function resolveSupportTicket(
+  ticketId: string,
+  status: SupportTicketRecord['status'],
+  staffNote?: string,
+): Promise<boolean> {
+  if (!supabase || !(await ensureBackendSessionToken())) throw new Error('Staff session required');
+  const { data, error } = await supabase.rpc('resolve_support_ticket', {
+    p_ticket_id: ticketId,
+    p_status: status,
+    p_staff_note: staffNote?.trim() || null,
+  });
+  if (error) throw new Error(error.message);
+  return Boolean(data);
+}
+
+export async function sendCeoBroadcast(input: {
+  title: string;
+  body: string;
+  deepLink?: string;
+  world?: FandomId | 'all';
+}): Promise<number> {
+  if (!supabase || !(await ensureBackendSessionToken())) throw new Error('Staff session required');
+  const { data, error } = await supabase.rpc('send_ceo_broadcast', {
+    p_title: input.title.trim(),
+    p_body: input.body.trim(),
+    p_deep_link: input.deepLink?.trim() || '/',
+    p_world: input.world && input.world !== 'all' ? input.world : null,
+  });
+  if (error) throw new Error(error.message);
+  const raw = (data ?? {}) as Record<string, unknown>;
+  return Number(raw.recipients_count ?? 0);
+}
+
+export async function changeMyHandle(newHandle: string): Promise<string> {
+  if (!supabase || !(await ensureBackendSessionToken())) throw new Error('Sign in required');
+  const { data, error } = await supabase.rpc('change_my_handle', {
+    p_new_handle: newHandle.trim().toLowerCase().replace(/^@+/, ''),
+  });
+  if (error) throw new Error(error.message);
+  return String(data);
 }

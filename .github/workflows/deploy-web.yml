@@ -1,0 +1,85 @@
+name: Deploy Hallyu Web & PWA (GitHub Pages)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "arena/**"
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy Hallyu Web App + Landing Page + iOS PWA
+    runs-on: ubuntu-22.04
+
+    env:
+      EXPO_NO_TELEMETRY: "1"
+      CI: "1"
+      EXPO_PUBLIC_BASE_PATH: "/${{ github.event.repository.name }}"
+      EXPO_PUBLIC_TMDB_ACCESS_TOKEN: ${{ secrets.EXPO_PUBLIC_TMDB_ACCESS_TOKEN }}
+      EXPO_PUBLIC_TMDB_API_KEY: ${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}
+      EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      EXPO_PUBLIC_RORK_APP_KEY: ${{ secrets.EXPO_PUBLIC_RORK_APP_KEY }}
+      EXPO_PUBLIC_MEDIA_BUCKET: ${{ secrets.EXPO_PUBLIC_MEDIA_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          if [ -d node_modules/schema-utils/node_modules/ajv ] && [ ! -e node_modules/ajv-keywords/node_modules/ajv ]; then
+            mkdir -p node_modules/ajv-keywords/node_modules
+            ln -s ../../schema-utils/node_modules/ajv node_modules/ajv-keywords/node_modules/ajv
+          fi
+
+      - name: Export Expo Web SPA + iOS Home-Screen PWA
+        run: |
+          set -euo pipefail
+          npx expo export --platform web --clear
+          node scripts/ci/enhance-web-html.mjs dist
+
+          # Verify critical web artifacts exist
+          test -f dist/index.html
+          test -f dist/404.html
+          test -f dist/.nojekyll
+          test -f dist/manifest.json
+          test -f dist/sw.js
+          test -f dist/.well-known/assetlinks.json
+          grep -q "apple-mobile-web-app-capable" dist/index.html
+          ls -lh dist/
+
+      - name: Publish production bundle to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: gh-pages
+          force_orphan: true
+
+      - name: Upload Pages artifact (when Actions Pages mode is enabled)
+        continue-on-error: true
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist

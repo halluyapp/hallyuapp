@@ -186,4 +186,43 @@ assert(read('app/(auth)/welcome.tsx').includes('I already have an account'), 'We
 assert(read('app/(onboarding)/fandoms.tsx').includes('Pick at least one'), 'Onboarding fandoms screen must preserve E2E button label');
 assert(read('app/(onboarding)/fandoms.tsx').includes('Continue with'), 'Onboarding fandoms screen must preserve E2E continue label');
 
-console.log('OVERALL STATUS: PASS (All Phases 1–5 whole-app media, cross-device sync, RPC envelope unwrapping & crash guards verified)');
+// 8. Production Launch Platform (Migration 46 + All 7 Commercial Pillars)
+const mig46 = read('supabase/migrations/20260101124600_46_production_launch_platform.sql');
+for (const token of [
+  'create table if not exists public.hallyu_events',
+  'create table if not exists public.hallyu_event_rsvps',
+  'create table if not exists public.support_tickets',
+  'create or replace function public.list_hallyu_events',
+  'create or replace function public.toggle_event_rsvp',
+  'create or replace function public.create_hallyu_event',
+  'create or replace function public.submit_support_ticket',
+  'create or replace function public.send_ceo_broadcast',
+  'create or replace function public.change_my_handle',
+  'create or replace function public.is_non_scripted_noise',
+  'create or replace function public.catalog_relevance_score',
+]) {
+  assert(mig46.includes(token), `Missing Migration 46 SQL surface: ${token}`);
+}
+for (const table of ['hallyu_events:', 'hallyu_event_rsvps:', 'support_tickets:']) {
+  assert(dbTypes.includes(table), `Missing Migration 46 typed table in database.ts: ${table}`);
+}
+
+const homeSrc = read('app/(tabs)/index.tsx');
+assert(!homeSrc.includes('Your next obsession'), 'Home feed must remain social-first without Your next obsession deck');
+assert(homeSrc.includes('WebAppInstallBanner'), 'Home feed must surface WebAppInstallBanner on web browsers');
+
+const welcomeSrc = read('app/(auth)/welcome.tsx');
+assert(welcomeSrc.includes('INSIDE HALLYU · APP SCREENSHOTS PREVIEW'), 'Web Landing page must render interactive App Screenshots Showcase');
+assert(welcomeSrc.includes('Install on iPhone / iPad'), 'Web Landing page must offer 2-tap iPhone Home-Screen installer');
+
+assert(read('app/events.tsx').includes('toggleEventRsvp'), 'Live Events Hub must wire toggleEventRsvp');
+assert(read('app/settings/bug-report.tsx').includes('submitSupportTicket'), 'Bug Report screen must wire submitSupportTicket');
+assert(read('app/settings/updates.tsx').includes('downloadAndInstallApk'), 'App Updates screen must wire Play-Store-free updater');
+assert(read('app/settings/moderation.tsx').includes('sendCeoBroadcast'), 'Admin Studio must wire CEO Broadcast Megaphone');
+assert(read('lib/links.ts').includes('fixhallyu@gmail.com'), 'Official support email fixhallyu@gmail.com must be configured');
+assert(read('lib/links.ts').includes('jgdevv10@gmail.com'), 'Official admin email jgdevv10@gmail.com must be configured');
+assert(fs.existsSync(path.join(root, 'public/manifest.json')), 'Missing PWA manifest.json');
+assert(fs.existsSync(path.join(root, 'public/sw.js')), 'Missing Web Push service worker sw.js');
+assert(fs.existsSync(path.join(root, 'public/.well-known/assetlinks.json')), 'Missing Android Digital Asset Links assetlinks.json');
+
+console.log('OVERALL STATUS: PASS (All Phases 1–8 Production Launch Platform verified)');

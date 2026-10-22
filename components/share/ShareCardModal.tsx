@@ -8,6 +8,7 @@ import { colors, fonts, radius, space } from '../../constants/theme';
 import { recordPostShare, sendDirectMessage } from '../../lib/api/features';
 import { dramaFandom } from '../../lib/fandoms';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
+import { shareDramaUrl, sharePostUrl, shareUserUrl } from '../../lib/links';
 import type { Drama, Post, User } from '../../lib/model';
 import { Avatar } from '../ui/Avatar';
 import { Button } from '../ui/Button';
@@ -70,17 +71,17 @@ export function ShareCardModal({
 
   const shareText = useMemo(() => {
     if (profileUser) {
-      return `${profileUser.displayName} (@${profileUser.handle}) on Hallyu — check out my Top 4 & Watch DNA! https://hallyu.app/u/${profileUser.handle}`;
+      return `${profileUser.displayName} (@${profileUser.handle}) on Hallyu — check out my Top 4 & Watch DNA!\n${shareUserUrl(profileUser.handle)}`;
     }
     if (post) {
       const label = drama ? `${drama.title}${post.rating ? ` ★ ${post.rating.toFixed(1)}/10` : ''}` : 'Hallyu';
       const quote = post.verdict || post.title || post.body.slice(0, 160);
-      return `${label}\n"${quote}" — @${author?.handle ?? me.handle} on Hallyu\nhttps://hallyu.app/post/${post.id}`;
+      return `${label}\n"${quote}" — @${author?.handle ?? me.handle} on Hallyu\n${sharePostUrl(post.id)}`;
     }
     if (drama) {
-      return `${drama.title} (${drama.year})${drama.rating ? ` · ★ ${drama.rating.toFixed(1)}` : ''} on Hallyu\nhttps://hallyu.app/drama/${drama.id}`;
+      return `${drama.title} (${drama.year})${drama.rating ? ` · ★ ${drama.rating.toFixed(1)}` : ''} on Hallyu\n${shareDramaUrl(drama.id)}`;
     }
-    return 'Hallyu — Where fandoms watch together';
+    return `Hallyu — Where fandoms watch together\n${shareDramaUrl('')}`;
   }, [profileUser, post, drama, author, me.handle]);
 
   const handleCopy = async () => {
