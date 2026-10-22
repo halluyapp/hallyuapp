@@ -190,7 +190,7 @@ export default function Explore() {
             data={[
               { key: 'filter', label: 'Filter Catalog', icon: 'options-outline', onPress: () => router.push('/search') },
               { key: 'surprise', label: spinningPick ? 'Picking…' : 'Surprise Me Tonight', icon: 'sparkles-outline', onPress: () => void surpriseTonight() },
-              { key: 'communities', label: 'Communities', icon: 'people-circle-outline', onPress: () => router.push('/world/kdrama') },
+              { key: 'communities', label: 'Communities', icon: 'people-circle-outline', onPress: () => router.push('/communities') },
             ]}
             keyExtractor={(x) => x.key}
             showsHorizontalScrollIndicator={false}

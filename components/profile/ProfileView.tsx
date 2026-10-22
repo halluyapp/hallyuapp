@@ -128,10 +128,10 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
       hoursWatched: Math.round(minutesWatched / 60),
       completedCount: isMe
         ? items.filter((w) => w.status === 'completed').length
-        : Math.round(user.followers / 40) + user.favoriteDramaIds.length,
+        : user.favoriteDramaIds.length,
       segments,
     };
-  }, [isMe, state.watchlist, getDrama, favorites, myWorlds, user.followers, user.favoriteDramaIds.length]);
+  }, [isMe, state.watchlist, getDrama, favorites, myWorlds, user.favoriteDramaIds.length]);
 
   const share = () => setShareOpen(true);
 
@@ -176,7 +176,7 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
             />
             <Stat
               n={watchDna.completedCount}
-              label="completed"
+              label={isMe ? 'completed' : 'favorites'}
               onPress={() => (isMe ? router.push({ pathname: '/watchlist', params: { status: 'completed' } }) : undefined)}
             />
           </View>

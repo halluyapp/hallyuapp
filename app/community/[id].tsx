@@ -17,6 +17,7 @@ import { fandomById } from '../../lib/fandoms';
 import { compact } from '../../lib/format';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
 import { withAlpha } from '../../lib/motion';
+import { getState } from '../../lib/store';
 import { adoptLocal } from '../../lib/sync';
 
 export default function CommunityRoomScreen() {
@@ -47,7 +48,7 @@ export default function CommunityRoomScreen() {
         const authorIds = [...new Set(bundle.items.map((p) => p.authorId))];
         const profiles = await fetchProfiles(authorIds).catch(() => []);
         if (profiles.length) {
-          const users = { ...state.users };
+          const users = { ...getState().users };
           for (const u of profiles) users[u.id] = { ...users[u.id], ...u };
           adoptLocal({ type: 'hydrate', state: { users } });
         }
@@ -55,7 +56,7 @@ export default function CommunityRoomScreen() {
     } finally {
       setLoading(false);
     }
-  }, [id, state.users]);
+  }, [id]);
 
   useEffect(() => {
     void load();

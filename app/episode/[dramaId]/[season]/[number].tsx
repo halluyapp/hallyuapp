@@ -23,7 +23,10 @@ import { useToast } from '../../../../components/ui/Toast';
 import { TopBar } from '../../../../components/ui/TopBar';
 import { colors, fonts, radius, space } from '../../../../constants/theme';
 import { connectLiveEpisodeRoom, type LiveRoomConnection, type LiveRoomViewer } from '../../../../lib/api/features';
+import { fetchDramasByUuids } from '../../../../lib/api/feed';
+import { isUuid } from '../../../../lib/api/social';
 import { catalog } from '../../../../lib/catalog';
+import { adoptDramas } from '../../../../lib/catalogSync';
 import { countdown, dayLabel, runtimeLabel, shortDate, timeOfDay } from '../../../../lib/format';
 import { haptic, useApp, useLayout, useLoad, useReduceMotion, useRequireMember } from '../../../../lib/hooks';
 import { emptyReactions, Episode, Post, ReactionKind, REACTIONS } from '../../../../lib/model';
@@ -108,20 +111,49 @@ export default function EpisodeRoom() {
 
   useEffect(() => {
     if (!dramaId) return;
-    const room = connectLiveEpisodeRoom(`${dramaId}-s${season}e${number}`, me, {
-      onViewersChange: (list) => setViewers(list),
-      onReactionBurst: (evt) => {
-        setBurst({ seq: ++burstSeq.current, kind: evt.kind });
+    const room = connectLiveEpisodeRoom(
+      `${dramaId}-s${season}e${number}`,
+      {
+        id: me.id,
+        handle: me.handle,
+        displayName: me.displayName,
+        avatarUrl: me.avatarUrl,
       },
-    });
+      {
+        onViewersChange: (list) => setViewers(list),
+        onReactionBurst: (evt) => {
+          setBurst({ seq: ++burstSeq.current, kind: evt.kind });
+        },
+      },
+    );
     roomRef.current = room;
     return () => {
       room.leave();
       roomRef.current = null;
     };
-  }, [dramaId, season, number, me]);
+  }, [dramaId, season, number, me.id, me.handle, me.displayName, me.avatarUrl]);
 
   const drama = getDrama(dramaId);
+  const [resolvingUuid, setResolvingUuid] = useState(false);
+
+  useEffect(() => {
+    if (drama || !dramaId || !isUuid(dramaId)) return;
+    let alive = true;
+    setResolvingUuid(true);
+    fetchDramasByUuids([dramaId])
+      .then(({ dramas }) => {
+        if (!alive || !dramas[0]) return;
+        const [adopted] = adoptDramas(dramas);
+        const target = adopted ?? dramas[0];
+        router.replace(`/episode/${target.id}/${season}/${number}`);
+      })
+      .finally(() => {
+        if (alive) setResolvingUuid(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [drama, dramaId, season, number, router]);
   const hasSeasonEpisodes = useMemo(
     () => !!drama?.episodes.some((e) => e.season === season),
     [drama?.episodes, season],
@@ -190,12 +222,20 @@ export default function EpisodeRoom() {
   if (!drama || !episode) {
     return (
       <Screen header={<TopBar mode="stack" title="Episode" />}>
-        <ErrorState
-          kind="notFound"
-          title="Episode not found"
-          body="This episode isn’t in the schedule yet, or the link is wrong."
-          onRetry={() => (drama ? router.replace(`/drama/${drama.id}`) : router.back())}
-        />
+        {resolvingUuid ? (
+          <View style={{ padding: space.x8, alignItems: 'center' }}>
+            <Text variant="bodySmall" tone="secondary">
+              Opening watch room…
+            </Text>
+          </View>
+        ) : (
+          <ErrorState
+            kind="notFound"
+            title="Episode not found"
+            body="This episode isn’t in the schedule yet, or the link is wrong."
+            onRetry={() => (drama ? router.replace(`/drama/${drama.id}`) : router.back())}
+          />
+        )}
       </Screen>
     );
   }

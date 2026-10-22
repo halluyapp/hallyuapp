@@ -1,5 +1,4 @@
 import { Ionicons } from '@expo/vector-icons';
-import * as Application from 'expo-application';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { Linking, Platform, StyleSheet, View } from 'react-native';
@@ -12,6 +11,7 @@ import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import { submitSupportTicket } from '../../lib/api/features';
+import { getInstalledBuildCode, getInstalledVersionLabel } from '../../lib/appUpdater';
 import { useAuth } from '../../lib/auth';
 import { haptic, useApp } from '../../lib/hooks';
 import { ADMIN_CONTACT_EMAIL, SUPPORT_EMAIL } from '../../lib/links';
@@ -66,8 +66,8 @@ export default function BugReportScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   const activeMeta = CATEGORIES.find((c) => c.id === category) ?? CATEGORIES[0]!;
-  const version = Application.nativeApplicationVersion ?? '1.0.0';
-  const build = Application.nativeBuildVersion ?? 'web';
+  const version = getInstalledVersionLabel();
+  const build = Platform.OS === 'web' ? 'web' : String(getInstalledBuildCode());
   const deviceSummary = `${Platform.OS} ${String(Platform.Version ?? '')} · v${version} (${build}) · @${me.handle}`;
 
   const handleSubmit = async () => {

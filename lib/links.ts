@@ -27,9 +27,17 @@ export const VAPID_PUBLIC_KEY =
 export const ANDROID_RELEASE_SHA256 =
   '64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA';
 
-/** Direct public CDN URL to the latest slim arm64-v8a Android APK (works even when source repo is private). */
+/**
+ * Direct public Supabase Storage CDN URLs to every CPU split (< 35 MB each — 100% public 200 OK
+ * worldwide with zero private-repo 404s):
+ *   - `hallyu-arm64.apk`: modern 64-bit Android phones (Snapdragon / Tensor / Dimensity / Exynos)
+ *   - `hallyu-armeabi-v7a.apk`: older 32-bit Android phones
+ *   - `hallyu-x86_64.apk`: Chromebooks & desktop Android emulators
+ */
 export const LATEST_SLIM_APK_CDN_URL = `${SUPABASE_PUBLIC_STORAGE_BASE}/latest/hallyu-arm64.apk`;
-export const LATEST_UNIVERSAL_APK_CDN_URL = `${SUPABASE_PUBLIC_STORAGE_BASE}/latest/hallyu-universal.apk`;
+export const LATEST_ARM32_APK_CDN_URL = `${SUPABASE_PUBLIC_STORAGE_BASE}/latest/hallyu-armeabi-v7a.apk`;
+export const LATEST_X86_64_APK_CDN_URL = `${SUPABASE_PUBLIC_STORAGE_BASE}/latest/hallyu-x86_64.apk`;
+export const LATEST_UNIVERSAL_APK_CDN_URL = LATEST_ARM32_APK_CDN_URL;
 
 /**
  * Resolves the live base URL dynamically from `window.location.origin` + optional configured

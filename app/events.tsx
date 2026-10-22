@@ -22,10 +22,11 @@ import {
   type HallyuLiveEvent,
   toggleEventRsvp,
 } from '../lib/api/features';
+import { adoptDramas } from '../lib/catalogSync';
 import { FANDOMS } from '../lib/fandoms';
 import { haptic, useApp, useRequireMember } from '../lib/hooks';
 import { shareEventsUrl } from '../lib/links';
-import type { FandomId } from '../lib/model';
+import type { Drama, FandomId } from '../lib/model';
 
 function formatCountdown(startsAt: string, endsAt: string, nowMs: number): {
   isLive: boolean;
@@ -83,6 +84,12 @@ export default function EventsScreen() {
     setLoading(true);
     try {
       const list = await fetchHallyuEvents(world);
+      const linked = list
+        .map((ev) => ev.linkedDrama)
+        .filter((d): d is Drama => Boolean(d));
+      if (linked.length) {
+        adoptDramas(linked);
+      }
       setEvents(list);
     } finally {
       setLoading(false);
@@ -402,7 +409,7 @@ export default function EventsScreen() {
                         onPress={() => void handleRsvp(ev)}
                       />
 
-                      {ev.titleId ? (
+                      {ev.linkedDrama || ev.titleId ? (
                         <Button
                           label={
                             ev.season && ev.episode
@@ -413,10 +420,14 @@ export default function EventsScreen() {
                           size="sm"
                           icon="chatbubbles-outline"
                           onPress={() => {
+                            if (ev.linkedDrama) {
+                              adoptDramas([ev.linkedDrama]);
+                            }
+                            const targetId = ev.linkedDrama?.id ?? ev.titleId!;
                             if (ev.season && ev.episode) {
-                              router.push(`/episode/${ev.titleId}/${ev.season}/${ev.episode}`);
+                              router.push(`/episode/${targetId}/${ev.season}/${ev.episode}`);
                             } else {
-                              router.push(`/drama/${ev.titleId}`);
+                              router.push(`/drama/${targetId}`);
                             }
                           }}
                         />

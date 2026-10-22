@@ -398,7 +398,7 @@ export default function Welcome() {
               </Text>
               <Pressable onPress={() => void Linking.openURL(LATEST_UNIVERSAL_APK_CDN_URL)}>
                 <Text variant="caption" tone="secondary" style={{ textDecorationLine: 'underline' }}>
-                  Universal Android APK (All CPUs)
+                  32-bit Legacy Android APK
                 </Text>
               </Pressable>
             </View>

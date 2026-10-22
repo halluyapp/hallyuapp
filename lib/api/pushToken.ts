@@ -127,10 +127,14 @@ async function resolveWebPushToken(requestPermissionIfNeeded = false): Promise<{
     throw err;
   }
 
-  const basePath =
-    window.location.origin.includes('github.io') && window.location.pathname.split('/').filter(Boolean)[0]
-      ? `/${window.location.pathname.split('/').filter(Boolean)[0]}/sw.js`
-      : '/sw.js';
+  const configuredBase = (process.env.EXPO_PUBLIC_BASE_PATH ?? '').trim().replace(/\/$/, '');
+  const detectedPrefix =
+    configuredBase ||
+    (window.location.origin.includes('github.io') &&
+    window.location.pathname.startsWith('/Grok-hallyu')
+      ? '/Grok-hallyu'
+      : '');
+  const basePath = `${detectedPrefix}/sw.js`;
 
   const registration = await navigator.serviceWorker.register(basePath).catch(() =>
     navigator.serviceWorker.ready,

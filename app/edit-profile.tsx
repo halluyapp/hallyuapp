@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
@@ -15,6 +16,7 @@ import { useToast } from '../components/ui/Toast';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, radius, sizes, space } from '../constants/theme';
 import { ensureBackendSessionToken, supabase } from '../lib/api/client';
+import { changeMyHandle } from '../lib/api/features';
 import { uploadAvatar } from '../lib/api/media';
 import { FANDOMS } from '../lib/fandoms';
 import { haptic, useApp } from '../lib/hooks';
@@ -61,9 +63,13 @@ export default function EditProfile() {
       const token = supabase ? await ensureBackendSessionToken() : null;
 
       if (handleClean !== me.handle.toLowerCase() && supabase && token) {
-        const { data: available, error } = await supabase.rpc('handle_is_available', { p_handle: handleClean });
-        if (!error && available === false) {
-          toast.show({ message: `@${handleClean} is already taken.`, tone: 'danger' });
+        try {
+          await changeMyHandle(handleClean);
+        } catch (err) {
+          toast.show({
+            message: err instanceof Error ? err.message : `@${handleClean} is already taken.`,
+            tone: 'danger',
+          });
           setSaving(false);
           return;
         }
@@ -140,11 +146,17 @@ export default function EditProfile() {
           accessibilityRole="button"
           accessibilityLabel="Choose profile cover backdrop drama"
         >
+          {bannerUrl ? (
+            <>
+              <Image source={{ uri: bannerUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.52)' }]} />
+            </>
+          ) : null}
           <Ionicons name="sparkles-outline" size={20} color={colors.accent} />
           <Text variant="label" tone="accent" style={{ marginTop: 4 }}>
             {bannerUrl ? 'Change drama cover backdrop' : 'Pick a drama cover backdrop'}
           </Text>
-          <Text variant="caption" tone="tertiary">
+          <Text variant="caption" tone={bannerUrl ? 'secondary' : 'tertiary'}>
             Lights up the top of your profile
           </Text>
         </Pressable>

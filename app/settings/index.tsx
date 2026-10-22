@@ -1,4 +1,3 @@
-import * as Application from 'expo-application';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { View } from 'react-native';
@@ -11,6 +10,7 @@ import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
 import { space } from '../../constants/theme';
+import { getInstalledVersionLabel } from '../../lib/appUpdater';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
 import { APP_LANGUAGES, useI18n } from '../../lib/i18n';
@@ -28,7 +28,7 @@ export default function Settings() {
   const [creatorSheet, setCreatorSheet] = useState(false);
   const signedIn = auth.status === 'signedIn';
   const isStaff = me.role === 'admin' || me.role === 'moderator';
-  const version = Application.nativeApplicationVersion ?? '1.0.0';
+  const version = getInstalledVersionLabel();
   const activeLanguage =
     APP_LANGUAGES.find((l) => l.key === state.prefs.language)?.nativeLabel ?? 'English';
 

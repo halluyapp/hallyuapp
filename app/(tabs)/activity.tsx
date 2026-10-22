@@ -113,8 +113,30 @@ export default function Activity() {
         return { text: `${names} commented on your ${post?.type ?? 'post'}`, sub: snippet, icon: 'chatbubble-outline', go: () => post && router.push(`/post/${post.id}`) };
       case 'reply':
         return { text: `${names} replied to you`, sub: snippet, icon: 'arrow-undo-outline', go: () => post && router.push({ pathname: '/post/[id]', params: { id: post.id, commentId: n.commentId ?? '' } }) };
-      case 'mention':
-        return { text: `${names} mentioned you`, sub: snippet, icon: 'at-outline', go: () => post && router.push(`/post/${post.id}`) };
+      case 'mention': {
+        const isDm = Boolean(n.deepLink?.startsWith('/messages'));
+        if (n.title) {
+          return {
+            text: n.title,
+            sub: n.body ?? snippet,
+            icon: isDm ? 'chatbubble-ellipses-outline' : 'sparkles-outline',
+            go: () => {
+              if (n.deepLink) router.push(n.deepLink as never);
+              else if (post) router.push(`/post/${post.id}`);
+              else if (actors[0]) router.push(`/user/${actors[0]!.handle}`);
+            },
+          };
+        }
+        return {
+          text: `${names} mentioned you`,
+          sub: snippet ?? n.body,
+          icon: 'at-outline',
+          go: () => {
+            if (post) router.push(`/post/${post.id}`);
+            else if (n.deepLink) router.push(n.deepLink as never);
+          },
+        };
+      }
       case 'follow':
         return { text: `${names} started following you`, icon: 'person-add-outline', go: () => actors[0] && router.push(`/user/${actors[0]!.handle}`) };
       case 'episode_live':
@@ -126,7 +148,15 @@ export default function Activity() {
       case 'collection_saved':
         return { text: `${names} followed your collection “${col?.title ?? ''}”`, icon: 'albums-outline', go: () => col && router.push(`/collection/${col.id}`) };
       default:
-        return { text: n.title ?? 'Hallyu', sub: n.body, icon: 'information-circle-outline', go: () => n.title?.includes('Spoiler') && router.push('/settings/content') };
+        return {
+          text: n.title ?? 'Hallyu',
+          sub: n.body,
+          icon: n.deepLink === '/events' ? 'flame-outline' : 'information-circle-outline',
+          go: () => {
+            if (n.deepLink) router.push(n.deepLink as never);
+            else if (n.title?.includes('Spoiler')) router.push('/settings/content');
+          },
+        };
     }
   };
 

@@ -19,6 +19,7 @@ module.exports = ({ config }) => {
     process.env.EXPO_PUBLIC_BUILD_NUMBER || process.env.ANDROID_VERSION_CODE || '100',
     10,
   );
+  const appVersion = (process.env.EXPO_PUBLIC_APP_VERSION || config.version || '1.0.0').trim();
   const basePath = (process.env.EXPO_PUBLIC_BASE_PATH || '').trim();
 
   const existingPermissions = Array.isArray(config.android?.permissions)
@@ -40,6 +41,7 @@ module.exports = ({ config }) => {
 
   return {
     ...config,
+    version: appVersion,
     ios: {
       ...config.ios,
       associatedDomains: ['applinks:hallyuapp.github.io'],

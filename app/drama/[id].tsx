@@ -5,6 +5,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Animated, FlatList, Linking, Pressable, StyleSheet, View } from 'react-native';
 import { ShareCardModal } from '../../components/share/ShareCardModal';
 import { fetchTitleRatingSummary, rateTitleOnServer } from '../../lib/api/features';
+import { fetchDramasByUuids } from '../../lib/api/feed';
+import { isUuid } from '../../lib/api/social';
 import { setActiveComposerContext } from '../../lib/tabEvents';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AddToCollectionSheet } from '../../components/collections/AddToCollectionSheet';
@@ -115,6 +117,18 @@ export default function DramaHub() {
 
   // Thin (search-imported) or un-hydrated records get enriched from the catalog provider.
   const parsedTmdb = !drama && params.id ? /^tmdb-(?:(movie)-)?(\d+)$/.exec(params.id) : null;
+  useEffect(() => {
+    if (drama || !params.id || !isUuid(params.id)) return;
+    let alive = true;
+    void fetchDramasByUuids([params.id]).then(({ dramas }) => {
+      if (!alive || !dramas[0]) return;
+      const [adopted] = adoptDramas(dramas);
+      router.replace(`/drama/${(adopted ?? dramas[0]).id}`);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [drama, params.id, router]);
   const thin =
     (!!drama?.provider && (!drama.posterUrl || !drama.backdropUrl || !drama.trailerUrl || drama.cast.length < 4 || (!film && drama.episodes.length === 0))) ||
     !!parsedTmdb;

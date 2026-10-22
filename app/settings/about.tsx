@@ -1,4 +1,3 @@
-import * as Application from 'expo-application';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import React from 'react';
@@ -9,6 +8,7 @@ import { Text } from '../../components/ui/Text';
 import { TopBar, Wordmark } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import { probeBackend } from '../../lib/api/client';
+import { getInstalledBuildCode, getInstalledVersionLabel } from '../../lib/appUpdater';
 import { ATTRIBUTION, catalog } from '../../lib/catalog';
 import { useBackendHealth, useCatalogHealth } from '../../lib/hooks';
 import { ADMIN_CONTACT_EMAIL, getWebAppBaseUrl, SUPPORT_EMAIL } from '../../lib/links';
@@ -16,8 +16,8 @@ import { ADMIN_CONTACT_EMAIL, getWebAppBaseUrl, SUPPORT_EMAIL } from '../../lib/
 /** About & credits — commercial release info, live service health & required TMDB attribution. */
 export default function About() {
   const router = useRouter();
-  const version = Application.nativeApplicationVersion ?? '1.0.0';
-  const build = Application.nativeBuildVersion ?? '1';
+  const version = getInstalledVersionLabel();
+  const build = String(getInstalledBuildCode());
   const health = useCatalogHealth();
   const backend = useBackendHealth();
   const connected = backend.status === 'connected';

@@ -747,6 +747,7 @@ export async function fetchNotifications(limit = 50): Promise<Notification[]> {
     episode: number | null;
     title: string | null;
     body: string | null;
+    deep_link: string | null;
     read_at: string | null;
     created_at: string;
   }[];
@@ -764,6 +765,7 @@ export async function fetchNotifications(limit = 50): Promise<Notification[]> {
     episode: r.episode ?? undefined,
     title: r.title ?? undefined,
     body: r.body ?? undefined,
+    deepLink: r.deep_link ?? undefined,
     createdAt: r.created_at,
     read: Boolean(r.read_at),
   }));

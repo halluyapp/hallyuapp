@@ -294,6 +294,7 @@ export interface Notification {
   collectionId?: ID;
   title?: string;
   body?: string;
+  deepLink?: string;
   createdAt: string;
   read: boolean;
 }
