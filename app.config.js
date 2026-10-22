@@ -10,8 +10,8 @@ const path = require('node:path');
  *      build workspace at CI build time and wired dynamically when present.
  *   2. Assigns monotonically increasing `versionCode` across CI builds so Android upgrades cleanly
  *      in-place using Hallyu's permanent 4096-bit release keystore — never requiring uninstall.
- *   3. Configures `experiments.baseUrl` dynamically when deploying to GitHub Pages subpaths
- *      (e.g. `/Grok-hallyu`), while remaining zero-config for root custom domains (`/`).
+ *   3. Configures root Android App Links & iOS Associated Domains for `https://hallyuapp.github.io`
+ *      while remaining dynamically compatible with optional subpath previews (`EXPO_PUBLIC_BASE_PATH`).
  */
 module.exports = ({ config }) => {
   const hasGoogleServices = fs.existsSync(path.join(__dirname, 'google-services.json'));
@@ -40,6 +40,10 @@ module.exports = ({ config }) => {
 
   return {
     ...config,
+    ios: {
+      ...config.ios,
+      associatedDomains: ['applinks:hallyuapp.github.io'],
+    },
     android: {
       ...config.android,
       versionCode: Number.isFinite(buildCode) && buildCode > 0 ? buildCode : 100,
@@ -51,6 +55,10 @@ module.exports = ({ config }) => {
           action: 'VIEW',
           autoVerify: true,
           data: [
+            {
+              scheme: 'https',
+              host: 'hallyuapp.github.io',
+            },
             {
               scheme: 'https',
               host: 'macaulay-spec.github.io',

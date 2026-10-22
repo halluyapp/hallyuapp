@@ -1,4 +1,4 @@
-name: Deploy Hallyu Web & PWA (GitHub Pages)
+name: Deploy Hallyu Web & PWA (hallyuapp.github.io)
 
 on:
   workflow_dispatch:
@@ -18,13 +18,12 @@ permissions:
 
 jobs:
   build-and-deploy:
-    name: Build & Deploy Hallyu Web App + Landing Page + iOS PWA
+    name: Build & Deploy Hallyu Web App + PWA (https://hallyuapp.github.io)
     runs-on: ubuntu-22.04
 
     env:
       EXPO_NO_TELEMETRY: "1"
       CI: "1"
-      EXPO_PUBLIC_BASE_PATH: "/${{ github.event.repository.name }}"
       EXPO_PUBLIC_TMDB_ACCESS_TOKEN: ${{ secrets.EXPO_PUBLIC_TMDB_ACCESS_TOKEN }}
       EXPO_PUBLIC_TMDB_API_KEY: ${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}
       EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
@@ -54,13 +53,14 @@ jobs:
             ln -s ../../schema-utils/node_modules/ajv node_modules/ajv-keywords/node_modules/ajv
           fi
 
-      - name: Export Expo Web SPA + iOS Home-Screen PWA
+      - name: Export Root Bundle for https://hallyuapp.github.io (EXPO_PUBLIC_BASE_PATH="")
+        env:
+          EXPO_PUBLIC_BASE_PATH: ""
         run: |
           set -euo pipefail
-          npx expo export --platform web --clear
+          npx expo export --platform web --output-dir dist --clear
           node scripts/ci/enhance-web-html.mjs dist
 
-          # Verify critical web artifacts exist
           test -f dist/index.html
           test -f dist/404.html
           test -f dist/.nojekyll
@@ -68,18 +68,80 @@ jobs:
           test -f dist/sw.js
           test -f dist/.well-known/assetlinks.json
           grep -q "apple-mobile-web-app-capable" dist/index.html
+          grep -q "https://hallyuapp.github.io/" dist/index.html
           ls -lh dist/
 
-      - name: Publish production bundle to gh-pages branch
+      - name: Upload https://hallyuapp.github.io static bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hallyuapp-github-io-site
+          path: ./dist
+          include-hidden-files: true
+          retention-days: 30
+
+      - name: Resolve optional cross-org deploy token (HALLYU_PAGES_TOKEN or ci_build_vault)
+        id: pages_auth
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HALLYU_PAGES_TOKEN: ${{ secrets.HALLYU_PAGES_TOKEN }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            (async () => {
+              let token = (process.env.HALLYU_PAGES_TOKEN || "").trim();
+              const url = (process.env.SUPABASE_URL || "").trim().replace(/\/$/, "");
+              const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+              if (!token && url && key) {
+                const r = await fetch(`${url}/rest/v1/ci_build_vault?select=value&key=eq.github_pages_pat`, {
+                  headers: { apikey: key, Authorization: `Bearer ${key}` }
+                });
+                if (r.ok) {
+                  const rows = await r.json();
+                  if (rows[0]?.value) token = rows[0].value.trim();
+                }
+              }
+              if (token) {
+                console.log(`::add-mask::${token}`);
+                const check = await fetch("https://api.github.com/repos/hallyuapp/hallyuapp.github.io", {
+                  headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }
+                });
+                if (check.ok) {
+                  fs.appendFileSync(process.env.GITHUB_OUTPUT, `has_token=true\ntoken=${token}\n`);
+                  console.log("Verified hallyuapp/hallyuapp.github.io target repository is ready — deploying live!");
+                  return;
+                }
+                console.log(`hallyuapp/hallyuapp.github.io status ${check.status} — awaiting org/repo creation.`);
+              } else {
+                console.log("No cross-org token configured yet — artifact uploaded & fallback gh-pages branch active.");
+              }
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, "has_token=false\n");
+            })();
+          '
+
+      - name: Auto-deploy root site to https://hallyuapp.github.io (hallyuapp/hallyuapp.github.io)
+        if: steps.pages_auth.outputs.has_token == 'true'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ steps.pages_auth.outputs.token }}
+          external_repository: hallyuapp/hallyuapp.github.io
+          publish_dir: ./dist
+          publish_branch: main
+          force_orphan: true
+          commit_message: "deploy: Hallyu production web & iOS PWA (${{ github.sha }})"
+
+      - name: Export & publish mirror bundle to local gh-pages branch
+        env:
+          EXPO_PUBLIC_BASE_PATH: "/${{ github.event.repository.name }}"
+        run: |
+          set -euo pipefail
+          npx expo export --platform web --output-dir dist-mirror --clear
+          node scripts/ci/enhance-web-html.mjs dist-mirror
+
+      - name: Publish mirror bundle to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
+          publish_dir: ./dist-mirror
           publish_branch: gh-pages
           force_orphan: true
-
-      - name: Upload Pages artifact (when Actions Pages mode is enabled)
-        continue-on-error: true
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./dist

@@ -8,14 +8,14 @@
 
 | Platform / Surface | Live URL | Details |
 |---|---|---|
-| **Web App & Premiere Landing Page** | **[https://macaulay-spec.github.io/Grok-hallyu/](https://macaulay-spec.github.io/Grok-hallyu/)** | Full browser app, interactive screen previews, smart deep links & iOS installer (`gh-pages` branch auto-deployed by CI) |
+| **Web App & Premiere Landing Page** | **[https://hallyuapp.github.io](https://hallyuapp.github.io)** | Clean root domain web app, interactive screen previews, smart deep links & iOS installer |
 | **Android Phone APK — Slim (`arm64-v8a`, Recommended)** | **[Direct Download (`hallyu-arm64.apk` · ~32.7 MB)](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/hallyu-arm64.apk)** | Hosted on public Supabase Global CDN (`app-releases`), signed with Hallyu's permanent 4096-bit RSA release certificate |
-| **Android Universal APK (`arm64-v8a` + `armeabi-v7a` + `x86_64`)** | **[Latest Signed GitHub Release (`hallyu.apk`)](https://github.com/macaulay-spec/Grok-hallyu/releases/latest)** | Multi-architecture build for all Android devices, tablets, Chromebooks & emulators |
+| **Android Universal APK (`arm64-v8a` + `armeabi-v7a` + `x86_64`)** | **[Latest Signed Release (`hallyu.apk`)](https://github.com/hallyuapp/hallyuapp.github.io/releases/latest)** | Multi-architecture build for all Android devices, tablets, Chromebooks & emulators |
 | **Self-Updater Release Manifest** | **[latest/manifest.json](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/manifest.json)** | Live SHA-256 checksums, `versionCode`, release notes & binary URLs consumed by the in-app updater |
-| **iPhone / iPad (iOS 16.4+)** | Open **[https://macaulay-spec.github.io/Grok-hallyu/](https://macaulay-spec.github.io/Grok-hallyu/)** in **Safari** → tap **Share** → **Add to Home Screen** | Full-screen standalone black status-bar launch + native Apple Web Push notifications (`VAPID`) |
+| **iPhone / iPad (iOS 16.4+)** | Open **[https://hallyuapp.github.io](https://hallyuapp.github.io)** in **Safari** → tap **Share** → **Add to Home Screen** | Full-screen standalone black status-bar launch + native Apple Web Push notifications (`VAPID`) |
 | **Official Support & Inquiries** | **`fixhallyu@gmail.com`** | In-app bug reports & show requests route directly to the `@ceohallyu` Admin Studio |
 
-> **Enabling GitHub Pages on first setup:** In repository **Settings → Pages → Build and deployment**, set **Source** to **Deploy from a branch** and select **`gh-pages` / `/ (root)`**. Every commit cleanly updates `gh-pages` via `.github/workflows/deploy-web.yml`, including SPA `404.html` deep-link routing, `manifest.json`, `sw.js`, and Android App Links verification (`.well-known/assetlinks.json`).
+> **Architecture note (Private Codebase + Public `hallyuapp.github.io`):** `.github/workflows/deploy-web.yml` compiles the clean root-path production web & PWA bundle (`EXPO_PUBLIC_BASE_PATH=""`) and deploys only the compiled static output directly to **`hallyuapp/hallyuapp.github.io`** (plus mirrors `hallyu-slim.apk` & `hallyu.apk` releases there and on public Supabase Storage `app-releases`), allowing the source repository (`macaulay-spec/Grok-hallyu`) to be set to **Private** at any time without breaking the website, share links, or self-updates.
 
 ---
 

@@ -250,24 +250,58 @@ jobs:
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/arena/')
         env:
           GH_TOKEN: ${{ github.token }}
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HALLYU_PAGES_TOKEN: ${{ secrets.HALLYU_PAGES_TOKEN }}
         run: |
           set -euo pipefail
           TAG="apk-${{ github.run_number }}"
+          NOTES="Permanent-Key Signed Hallyu Release (#${{ github.run_number }}).
 
-          gh release create "$TAG" hallyu-slim.apk hallyu.apk \
-            --title "Hallyu Signed Release #${{ github.run_number }}" \
-            --notes "Permanent-Key Signed Hallyu Release (#${{ github.run_number }}).
-
+          • **Web App & iOS PWA**: https://hallyuapp.github.io
           • **Fast Phone Download (Recommended — ARM64)**: \`hallyu-slim.apk\` (${SLIM_SIZE})
           • **Universal Build (All CPUs / Chromebooks)**: \`hallyu.apk\` (${APK_SIZE})
           • **In-Place Upgrade Ready**: Signed with Hallyu's permanent 4096-bit RSA key (\`64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA\`), versionCode \`${HALLYU_SLIM_VERSION_CODE}\`. Installs seamlessly right on top of previous releases without uninstalling.
           • **Commit**: \`${SOURCE_COMMIT}\` (\`${SOURCE_REF}\`)."
+
+          gh release create "$TAG" hallyu-slim.apk hallyu.apk \
+            --title "Hallyu Signed Release #${{ github.run_number }}" \
+            --notes "$NOTES"
+
+          # When public distribution repo hallyuapp/hallyuapp.github.io is configured, mirror the public release there too
+          PUB_TOKEN=$(node -e '
+            (async () => {
+              let t = (process.env.HALLYU_PAGES_TOKEN || "").trim();
+              const u = (process.env.SUPABASE_URL || "").trim().replace(/\/$/, "");
+              const k = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+              if (!t && u && k) {
+                const r = await fetch(`${u}/rest/v1/ci_build_vault?select=value&key=eq.github_pages_pat`, {
+                  headers: { apikey: k, Authorization: `Bearer ${k}` }
+                });
+                if (r.ok) { const d = await r.json(); if (d[0]?.value) t = d[0].value.trim(); }
+              }
+              if (t) {
+                const c = await fetch("https://api.github.com/repos/hallyuapp/hallyuapp.github.io", {
+                  headers: { Authorization: `Bearer ${t}`, Accept: "application/vnd.github+json" }
+                });
+                if (c.ok) process.stdout.write(t);
+              }
+            })();
+          ')
+          if [ -n "$PUB_TOKEN" ]; then
+            echo "::add-mask::$PUB_TOKEN"
+            GH_TOKEN="$PUB_TOKEN" gh release create "$TAG" hallyu-slim.apk hallyu.apk \
+              --repo hallyuapp/hallyuapp.github.io \
+              --title "Hallyu Signed Release #${{ github.run_number }}" \
+              --notes "$NOTES" || true
+            echo "PUBLIC_RELEASE_REPO=hallyuapp/hallyuapp.github.io" >> "$GITHUB_ENV"
+          fi
 
       - name: Publish Slim & Universal APKs + latest.json to Supabase App-Releases CDN
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
-          GITHUB_REPO_SLUG: ${{ github.repository }}
+          GITHUB_REPO_SLUG: ${{ env.PUBLIC_RELEASE_REPO || github.repository }}
           GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
         run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu.apk
