@@ -15,7 +15,7 @@ import { Platform } from 'react-native';
 export const SUPPORT_EMAIL = 'fixhallyu@gmail.com';
 export const ADMIN_CONTACT_EMAIL = 'jgdevv10@gmail.com';
 
-export const DEFAULT_WEB_BASE_URL = 'https://macaulay-spec.github.io/Grok-hallyu';
+export const DEFAULT_WEB_BASE_URL = 'https://hallyuapp.github.io';
 export const SUPABASE_PUBLIC_STORAGE_BASE =
   'https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases';
 

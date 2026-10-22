@@ -65,6 +65,12 @@ fs.writeFileSync(indexPath, html, 'utf8');
 fs.copyFileSync(indexPath, path.join(distDir, '404.html'));
 fs.writeFileSync(path.join(distDir, '.nojekyll'), '', 'utf8');
 
+// Copy hidden `public/.well-known` directory (skipped by Metro static asset copier due to leading dot)
+const publicWellKnown = path.resolve('public/.well-known');
+if (fs.existsSync(publicWellKnown)) {
+  fs.cpSync(publicWellKnown, path.join(distDir, '.well-known'), { recursive: true });
+}
+
 console.log(
   `Enhanced ${indexPath}, created 404.html + .nojekyll (canonical=${canonicalSiteUrl}, assetPrefix="${assetPrefix || '/'}")`,
 );
