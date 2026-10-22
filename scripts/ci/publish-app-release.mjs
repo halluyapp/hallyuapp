@@ -134,7 +134,6 @@ const dbRes = await fetch(`${supabaseUrl}/rest/v1/app_releases?on_conflict=versi
     is_mandatory: false,
     min_supported_version: 1,
     git_commit: commit || null,
-    is_active: true,
   }),
 });
 
