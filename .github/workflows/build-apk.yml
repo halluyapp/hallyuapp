@@ -158,16 +158,16 @@ jobs:
         run: |
           set -euo pipefail
           BT="${ANDROID_SDK_ROOT}/build-tools/34.0.0"
-          EXPECTED_SHA="64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA"
+          EXPECTED_HEX="6420be5bcfb5eab5d73a74ba06b79436fc68b2697e3e6336164b7451cb1531da"
 
           for APK in app/build/outputs/apk/release/app-arm64-v8a-release.apk app/build/outputs/apk/release/app-release.apk; do
             echo "=== Verifying $APK ($(du -h "$APK" | cut -f1)) ==="
             "$BT/zipalign" -c -v 4 "$APK" >/dev/null
             "$BT/apksigner" verify --verbose "$APK"
             CERTS=$("$BT/apksigner" verify --print-certs "$APK")
-            echo "$CERTS" | head -4
-            echo "$CERTS" | grep -iq "$EXPECTED_SHA" || {
-              echo "::error::APK signature fingerprint mismatch!"
+            echo "$CERTS" | head -6
+            echo "$CERTS" | tr -d ':' | grep -iq "$EXPECTED_HEX" || {
+              echo "::error::APK signature fingerprint mismatch! Got: $CERTS"
               exit 1
             }
             unzip -l "$APK" | grep -q "assets/index.android.bundle"
@@ -209,7 +209,7 @@ jobs:
         run: node scripts/ci/test-account.mjs verify
 
       - name: Remove the device-test member
-        if: always()
+        if: always() && env.HALLYU_TEST_USER_ID != ''
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -235,13 +235,6 @@ jobs:
           ls -lh hallyu-slim.apk hallyu.apk
           echo "SLIM_SIZE=$(du -h hallyu-slim.apk | cut -f1)" >> "$GITHUB_ENV"
           echo "APK_SIZE=$(du -h hallyu.apk | cut -f1)" >> "$GITHUB_ENV"
-
-      - name: Publish Slim & Universal APKs + latest.json to Supabase App-Releases CDN
-        env:
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
-        run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu.apk
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
@@ -269,3 +262,12 @@ jobs:
           • **Universal Build (All CPUs / Chromebooks)**: \`hallyu.apk\` (${APK_SIZE})
           • **In-Place Upgrade Ready**: Signed with Hallyu's permanent 4096-bit RSA key (\`64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA\`), versionCode \`${HALLYU_SLIM_VERSION_CODE}\`. Installs seamlessly right on top of previous releases without uninstalling.
           • **Commit**: \`${SOURCE_COMMIT}\` (\`${SOURCE_REF}\`)."
+
+      - name: Publish Slim & Universal APKs + latest.json to Supabase App-Releases CDN
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
+          GITHUB_REPO_SLUG: ${{ github.repository }}
+          GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
+        run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu.apk

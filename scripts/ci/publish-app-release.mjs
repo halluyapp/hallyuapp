@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Publishes freshly verified signed APKs (`hallyu-arm64.apk` + `hallyu-universal.apk`) to public
- * Supabase Storage bucket `app-releases/latest/` AND registers the release metadata row in
+ * Supabase Storage bucket `app-releases/latest/` (with automatic fallback to GitHub Release CDN
+ * if an ABI bundle exceeds a plan's per-object proxy threshold) AND registers the release row in
  * `public.app_releases` so both the Web Landing Page and In-App Self-Updater (`get_latest_app_release`)
  * serve the exact latest build automatically.
  */
@@ -13,6 +14,8 @@ const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABAS
   .trim()
   .replace(/\/$/, '');
 const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
+const repoSlug = (process.env.GITHUB_REPO_SLUG ?? 'macaulay-spec/Grok-hallyu').trim();
+const releaseTag = (process.env.GITHUB_RELEASE_TAG ?? '').trim();
 const slimPath = process.argv[2] || 'hallyu-slim.apk';
 const universalPath = process.argv[3] || 'hallyu.apk';
 const versionCode = Number.parseInt(process.env.HALLYU_SLIM_VERSION_CODE ?? '10004', 10);
@@ -53,26 +56,40 @@ const universalSha256 = sha256File(universalPath);
 const slimSizeMb = Number((slimBytes.byteLength / (1024 * 1024)).toFixed(1));
 const universalSizeMb = Number((univBytes.byteLength / (1024 * 1024)).toFixed(1));
 
-const slimPublicUrl = `${supabaseUrl}/storage/v1/object/public/app-releases/latest/hallyu-arm64.apk`;
-const universalPublicUrl = `${supabaseUrl}/storage/v1/object/public/app-releases/latest/hallyu-universal.apk`;
+const ghReleaseBase = releaseTag
+  ? `https://github.com/${repoSlug}/releases/download/${releaseTag}`
+  : `https://github.com/${repoSlug}/releases/latest/download`;
+
+let slimPublicUrl = `${supabaseUrl}/storage/v1/object/public/app-releases/latest/hallyu-arm64.apk`;
+let universalPublicUrl = `${supabaseUrl}/storage/v1/object/public/app-releases/latest/hallyu-universal.apk`;
 
 console.log(`Uploading latest/hallyu-arm64.apk (${slimSizeMb} MB, sha256=${slimSha256.slice(0, 16)}…)`);
-await uploadObject(
-  'latest/hallyu-arm64.apk',
-  slimBytes,
-  'application/vnd.android.package-archive',
-  'public, max-age=300',
-);
+try {
+  await uploadObject(
+    'latest/hallyu-arm64.apk',
+    slimBytes,
+    'application/vnd.android.package-archive',
+    'public, max-age=300',
+  );
+} catch (err) {
+  console.warn(`Supabase CDN upload fallback for slim APK: ${err.message}`);
+  slimPublicUrl = `${ghReleaseBase}/hallyu-slim.apk`;
+}
 
 console.log(
   `Uploading latest/hallyu-universal.apk (${universalSizeMb} MB, sha256=${universalSha256.slice(0, 16)}…)`,
 );
-await uploadObject(
-  'latest/hallyu-universal.apk',
-  univBytes,
-  'application/vnd.android.package-archive',
-  'public, max-age=300',
-);
+try {
+  await uploadObject(
+    'latest/hallyu-universal.apk',
+    univBytes,
+    'application/vnd.android.package-archive',
+    'public, max-age=300',
+  );
+} catch (err) {
+  console.warn(`Supabase CDN upload fallback for universal APK: ${err.message}`);
+  universalPublicUrl = `${ghReleaseBase}/hallyu.apk`;
+}
 
 const releaseNotes = `Signed release #${versionCode} (${commit || 'latest'}): Social-First Home Feed, Live Watch Parties & Prediction Polls, 24/7 Live Push Engine, and Pure 2025/2026 Explore Rankings.`;
 
