@@ -11,7 +11,7 @@ import { Stack, useRootNavigationState, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState as RNAppState } from 'react-native';
+import { AppState as RNAppState, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '../components/ui/ErrorBoundary';
@@ -77,6 +77,22 @@ export default function RootLayout() {
       (id) => getState().importedDramas.find((d) => d.id === id),
       (id) => getState().importedActors.find((a) => a.id === id),
     );
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      const basePath = (process.env.EXPO_PUBLIC_BASE_PATH ?? '').trim().replace(/\/$/, '');
+      const swUrl = `${basePath}/sw.js`;
+      navigator.serviceWorker
+        .register(swUrl, { scope: `${basePath}/`, updateViaCache: 'none' })
+        .then((reg) => {
+          void reg.update().catch(() => {});
+          const onVis = () => {
+            if (document.visibilityState === 'visible') {
+              void reg.update().catch(() => {});
+            }
+          };
+          document.addEventListener('visibilitychange', onVis);
+        })
+        .catch(() => {});
+    }
   }, []);
 
   // Hide the native splash as soon as fonts settle OR the gate times out — whichever comes first.

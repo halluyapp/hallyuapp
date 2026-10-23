@@ -3,23 +3,28 @@ import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { Linking, Platform } from 'react-native';
+import { Linking, NativeModules, Platform } from 'react-native';
 import { supabase } from './api/client';
 import {
+  ANDROID_RELEASE_SHA256,
   LATEST_ARM32_APK_CDN_URL,
-  LATEST_SLIM_APK_CDN_URL,
+  LATEST_ARM64_APK_CDN_URL,
+  LATEST_UNIVERSAL_APK_CDN_URL,
   LATEST_X86_64_APK_CDN_URL,
+  LATEST_X86_APK_CDN_URL,
   SUPABASE_PUBLIC_STORAGE_BASE,
 } from './links';
 
-export type SupportedApkAbi = 'arm64-v8a' | 'armeabi-v7a' | 'x86_64';
+export type SupportedApkAbi = 'arm64-v8a' | 'armeabi-v7a' | 'x86_64' | 'x86' | 'universal';
 
 export interface AbiArtifactInfo {
   abi: SupportedApkAbi;
   url: string;
+  fallbackGithubUrl?: string | null;
   sha256?: string | null;
   sizeBytes?: number | null;
   versionCode?: number | null;
+  supportedAbis?: string[];
 }
 
 export type ApkSelectionOutcome =
@@ -36,13 +41,71 @@ export type ApkSelectionOutcome =
       message: string;
     };
 
+export interface NativeInstalledPackageInfo {
+  packageName: string;
+  versionName: string;
+  versionCode: number;
+  minSdkVersion: number;
+  targetSdkVersion: number;
+  nativeLibraryDir: string;
+  signingSha256: string;
+  signingSha256List: string[];
+}
+
+export interface AndroidDeviceEnvironment {
+  source: 'native-os' | 'fallback';
+  supportedAbis: string[];
+  supported64BitAbis: string[];
+  supported32BitAbis: string[];
+  kernelArch: string;
+  cpu64BitCapableOs32BitOnly: boolean;
+  sdkInt: number;
+  androidRelease: string;
+  brand: string;
+  manufacturer: string;
+  model: string;
+  device: string;
+  canRequestPackageInstalls: boolean;
+  installed: NativeInstalledPackageInfo;
+}
+
+export interface ApkArchiveInspection {
+  ok: boolean;
+  reasonCode: string;
+  message: string;
+  sizeBytes?: number;
+  actualSha256?: string;
+  packageName?: string;
+  versionName?: string;
+  versionCode?: number;
+  minSdkVersion?: number;
+  targetSdkVersion?: number;
+  apkAbis?: string[];
+  deviceAbis?: string[];
+  matchedAbi?: string | null;
+  signingSha256?: string;
+  packageMatches?: boolean;
+  signatureMatches?: boolean;
+  sdkCompatible?: boolean;
+  abiCompatible?: boolean;
+  versionNotDowngrade?: boolean;
+}
+
 export interface AppReleaseInfo {
+  packageId?: string;
+  minSdkVersion?: number;
+  targetSdkVersion?: number;
+  signingSha256?: string;
   versionCode: number;
   releaseTrain: number;
   versionName: string;
   apkUrl: string;
+  arm64ApkUrl: string;
   arm32ApkUrl: string;
   x86_64ApkUrl: string;
+  x86ApkUrl: string;
+  universalApkUrl: string;
+  perAbi?: Partial<Record<SupportedApkAbi, AbiArtifactInfo>>;
   abis?: Partial<Record<SupportedApkAbi, AbiArtifactInfo>>;
   sha256?: string | null;
   fileSizeBytes?: number | null;
@@ -60,7 +123,9 @@ export interface PendingInstallRecord {
   abi: SupportedApkAbi;
   localUri: string;
   startedAt: number;
-  status: 'awaiting_user_install' | 'not_installed_yet';
+  status: 'awaiting_user_install' | 'not_installed_yet' | 'cancelled_by_user' | 'install_failed';
+  lastErrorReasonCode?: string | null;
+  lastErrorMessage?: string | null;
 }
 
 export interface UpdateCheckResult {
@@ -68,6 +133,7 @@ export interface UpdateCheckResult {
   installedTrain: number;
   installedVersion: string;
   deviceAbis: string[];
+  deviceEnv: AndroidDeviceEnvironment | null;
   selectedArtifact: ApkSelectionOutcome;
   latest: AppReleaseInfo;
   hasUpdate: boolean;
@@ -82,33 +148,83 @@ export interface DownloadProgressSnapshot {
   writtenBytes: number;
   totalBytes: number;
   speedBytesPerSec: number;
+  stage?: 'downloading' | 'verifying' | 'launching_installer';
 }
 
 export type InstallLaunchOutcome =
-  | { status: 'awaiting_user_install'; usedCachedApk: boolean; selectedAbi: SupportedApkAbi }
-  | { status: 'not_installed_yet'; usedCachedApk: boolean; selectedAbi: SupportedApkAbi }
-  | { status: 'needs_unknown_sources_permission'; selectedAbi: SupportedApkAbi }
+  | {
+      status: 'installed';
+      usedCachedApk: boolean;
+      selectedAbi: SupportedApkAbi;
+      inspection: ApkArchiveInspection | null;
+    }
+  | {
+      status: 'awaiting_user_install';
+      usedCachedApk: boolean;
+      selectedAbi: SupportedApkAbi;
+      inspection: ApkArchiveInspection | null;
+    }
+  | {
+      status: 'cancelled_by_user';
+      usedCachedApk: boolean;
+      selectedAbi: SupportedApkAbi;
+      message: string;
+    }
+  | {
+      status: 'not_installed_yet';
+      usedCachedApk: boolean;
+      selectedAbi: SupportedApkAbi;
+      message?: string;
+    }
+  | {
+      status: 'needs_unknown_sources_permission';
+      selectedAbi: SupportedApkAbi;
+      message?: string;
+    }
+  | {
+      status: 'install_failed';
+      reasonCode: string;
+      message: string;
+      selectedAbi: SupportedApkAbi;
+      inspection?: ApkArchiveInspection | null;
+    }
   | { status: 'browser_opened'; selectedAbi: SupportedApkAbi };
+
+interface NativeApkInstallerBridge {
+  getDeviceEnvironment(): Promise<Omit<AndroidDeviceEnvironment, 'source'>>;
+  inspectApkArchive(
+    filePathOrUri: string,
+    expectedSha256: string | null,
+  ): Promise<ApkArchiveInspection>;
+  installApkSession(filePathOrUri: string): Promise<{
+    status: string;
+    androidStatus?: number;
+    reasonCode?: string;
+    message?: string;
+  }>;
+}
+
+function getNativeInstallerBridge(): NativeApkInstallerBridge | null {
+  if (Platform.OS !== 'android') return null;
+  const mod = (NativeModules as Record<string, unknown>)?.HallyuApkInstaller as
+    | NativeApkInstallerBridge
+    | undefined;
+  return mod && typeof mod.getDeviceEnvironment === 'function' ? mod : null;
+}
 
 const SEEN_VERSION_STORAGE_KEY = 'hallyu.updater.seenBuild.v2';
 const PENDING_INSTALL_STORAGE_KEY = 'hallyu.updater.pendingInstall.v1';
 const APK_STORAGE_SUBDIR = 'hallyu-updates/';
 const APK_CACHE_PREFIX = 'hallyu-release-';
 const APK_ZIP_MAGIC_BASE64_PREFIX = 'UEsDB'; // `PK\x03\x04` (0x50 0x4b 0x03 0x04)
-
-// CRITICAL ANDROID 14 FIX:
-// `expo-intent-launcher` (`IntentLauncherModule.kt`) calls `currentActivity.startActivityForResult(intent, 12)`.
-// Never combine `FLAG_ACTIVITY_NEW_TASK` (0x10000000) with `startActivityForResult` — on Android,
-// ActivityTaskManager immediately cancels the result contract with `Activity.RESULT_CANCELED (0)`
-// before the user can tap Update! Pass `FLAG_GRANT_READ_URI_PERMISSION` (0x00000001) ONLY, plus
-// `android.intent.extra.RETURN_RESULT: true`, so Hallyu receives the authentic result when Android's
-// PackageInstaller closes without installing.
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
 
+let cachedNativeEnv: AndroidDeviceEnvironment | null = null;
+
 /**
- * Normalizes ABI-split version codes (`12121` universal, `12122` armv7, `12123` x86_64, `12124` arm64)
- * to their shared CI release train (`1212`) so EVERY ABI variant of the exact same commit knows
- * with 100% certainty whether it is already running the latest build.
+ * Normalizes ABI-split version codes (`12191` x86, `12192` armeabi-v7a, `12193` x86_64,
+ * `12194` arm64-v8a, `12195` universal) to their shared CI release train (`1219`) so EVERY
+ * ABI variant of the exact same commit knows with 100% certainty whether it is up to date.
  */
 export function getReleaseTrain(versionCode: number): number {
   if (!Number.isFinite(versionCode) || versionCode <= 0) return 0;
@@ -117,7 +233,7 @@ export function getReleaseTrain(versionCode: number): number {
 
 /**
  * Compares version strings numerically across arbitrary segments including zero-padded segments
- * like `1.7.01` vs `1.7.02` vs `1.0.215` (`-1` if `a < b`, `0` if equal, `1` if `a > b`).
+ * like `1.7.01` vs `1.7.02` vs `1.0.219` (`-1` if `a < b`, `0` if equal, `1` if `a > b`).
  */
 export function compareVersionStrings(a: string, b: string): number {
   const parse = (raw: string) =>
@@ -140,8 +256,6 @@ export function compareVersionStrings(a: string, b: string): number {
 
 /**
  * Determines whether a published release is genuinely newer than the currently installed build.
- * Uses integer `releaseTrain` (`Math.floor(versionCode / 10)`) whenever valid native build codes
- * exist, falling back to numeric semver comparison when running in an un-numbered environment.
  */
 export function isReleaseNewer(
   installedCode: number,
@@ -157,8 +271,10 @@ export function isReleaseNewer(
 }
 
 /**
- * Infers the installed APK ABI from split versionCode suffix when Android platform constants
- * do not expose `SupportedAbis` (`...2` = `armeabi-v7a`, `...3` = `x86_64`, `...4` = `arm64-v8a`).
+ * Infers the specific per-ABI split from split versionCode suffix ONLY when installed build is an
+ * explicit single-ABI split (`...1` in >=12190 = `x86` only when native confirmed, `...2` = `armeabi-v7a`,
+ * `...3` = `x86_64`, `...4` = `arm64-v8a`). Returns `null` when unknown or Universal (`...5` / legacy `...1`)
+ * so Hallyu NEVER guesses `arm64-v8a` on a 32-bit phone!
  */
 export function inferInstalledAbiFromBuildCode(versionCode: number): SupportedApkAbi | null {
   if (!Number.isFinite(versionCode) || versionCode < 10_000) return null;
@@ -170,9 +286,92 @@ export function inferInstalledAbiFromBuildCode(versionCode: number): SupportedAp
 }
 
 /**
- * Detects ordered CPU ABIs supported by the running Android device without hardcoding `arm64-v8a`.
+ * Queries real Android OS runtime environment via `HallyuApkInstaller.getDeviceEnvironment()`,
+ * distinguishing hardware CPU capability (`kernelArch` e.g. `aarch64` Cortex-A53) from the ABIs
+ * actually supported by the installed Android OS Zygote (`Build.SUPPORTED_ABIS` e.g. `armeabi-v7a`).
+ */
+export async function resolveAndroidDeviceEnvironment(): Promise<AndroidDeviceEnvironment | null> {
+  if (Platform.OS !== 'android') return null;
+  const bridge = getNativeInstallerBridge();
+  if (bridge) {
+    try {
+      const raw = await bridge.getDeviceEnvironment();
+      const env: AndroidDeviceEnvironment = {
+        source: 'native-os',
+        supportedAbis: Array.isArray(raw.supportedAbis)
+          ? raw.supportedAbis.map((s) => String(s).trim()).filter(Boolean)
+          : [],
+        supported64BitAbis: Array.isArray(raw.supported64BitAbis) ? raw.supported64BitAbis : [],
+        supported32BitAbis: Array.isArray(raw.supported32BitAbis) ? raw.supported32BitAbis : [],
+        kernelArch: String(raw.kernelArch ?? ''),
+        cpu64BitCapableOs32BitOnly: Boolean(raw.cpu64BitCapableOs32BitOnly),
+        sdkInt: Number(raw.sdkInt || Platform.Version || 23),
+        androidRelease: String(raw.androidRelease ?? ''),
+        brand: String(raw.brand ?? ''),
+        manufacturer: String(raw.manufacturer ?? ''),
+        model: String(raw.model ?? ''),
+        device: String(raw.device ?? ''),
+        canRequestPackageInstalls: Boolean(raw.canRequestPackageInstalls),
+        installed: {
+          packageName: String(raw.installed?.packageName ?? Application.applicationId ?? 'com.hallyu.app'),
+          versionName: String(raw.installed?.versionName ?? Application.nativeApplicationVersion ?? ''),
+          versionCode: Number(raw.installed?.versionCode ?? getInstalledBuildCode()),
+          minSdkVersion: Number(raw.installed?.minSdkVersion ?? 23),
+          targetSdkVersion: Number(raw.installed?.targetSdkVersion ?? 34),
+          nativeLibraryDir: String(raw.installed?.nativeLibraryDir ?? ''),
+          signingSha256: String(raw.installed?.signingSha256 ?? ''),
+          signingSha256List: Array.isArray(raw.installed?.signingSha256List)
+            ? raw.installed.signingSha256List
+            : [],
+        },
+      };
+      cachedNativeEnv = env;
+      return env;
+    } catch {
+      // Fall through to non-assumed metadata below
+    }
+  }
+
+  const inferred = inferInstalledAbiFromBuildCode(getInstalledBuildCode());
+  const consts = (Platform.constants ?? {}) as Record<string, unknown>;
+  return {
+    source: 'fallback',
+    supportedAbis: inferred ? [inferred] : ['universal'],
+    supported64BitAbis: inferred === 'arm64-v8a' || inferred === 'x86_64' ? [inferred] : [],
+    supported32BitAbis: inferred === 'armeabi-v7a' || inferred === 'x86' ? [inferred] : [],
+    kernelArch: '',
+    cpu64BitCapableOs32BitOnly: false,
+    sdkInt: typeof Platform.Version === 'number' ? Platform.Version : 23,
+    androidRelease: String(consts.Release ?? ''),
+    brand: String(consts.Brand ?? ''),
+    manufacturer: String(consts.Manufacturer ?? ''),
+    model: String(consts.Model ?? ''),
+    device: '',
+    canRequestPackageInstalls: true,
+    installed: {
+      packageName: Application.applicationId ?? 'com.hallyu.app',
+      versionName: Application.nativeApplicationVersion ?? '',
+      versionCode: getInstalledBuildCode(),
+      minSdkVersion: 23,
+      targetSdkVersion: 34,
+      nativeLibraryDir: '',
+      signingSha256: '',
+      signingSha256List: [],
+    },
+  };
+}
+
+/**
+ * Synchronously returns ordered device ABIs from cached native Android OS `Build.SUPPORTED_ABIS`
+ * (or optional override constants for unit tests). NEVER guesses `arm64-v8a` when unknown —
+ * returns `['universal']` when exact OS ABI has not been verified natively so a 32-bit phone
+ * can NEVER accidentally be fed an `arm64-v8a`-only split!
  */
 export function detectDeviceAbis(overridePlatformConstants?: Record<string, unknown>): string[] {
+  if (!overridePlatformConstants && cachedNativeEnv?.supportedAbis?.length) {
+    return [...cachedNativeEnv.supportedAbis];
+  }
+
   const consts =
     overridePlatformConstants ??
     ((Platform.constants ?? {}) as unknown as Record<string, unknown>);
@@ -200,11 +399,19 @@ export function detectDeviceAbis(overridePlatformConstants?: Record<string, unkn
     if (singleArch === 'aarch64' || singleArch === 'arm64' || singleArch === 'arm64-v8a') {
       return ['arm64-v8a'];
     }
-    if (singleArch === 'armv7l' || singleArch === 'armeabi-v7a' || singleArch === 'armeabi' || singleArch === 'arm') {
+    if (
+      singleArch === 'armv7l' ||
+      singleArch === 'armeabi-v7a' ||
+      singleArch === 'armeabi' ||
+      singleArch === 'arm'
+    ) {
       return ['armeabi-v7a'];
     }
     if (singleArch === 'x86_64' || singleArch === 'amd64') {
       return ['x86_64'];
+    }
+    if (singleArch === 'x86' || singleArch === 'i686' || singleArch === 'i386' || singleArch === 'ia32') {
+      return ['x86'];
     }
     return [singleArch];
   }
@@ -212,29 +419,67 @@ export function detectDeviceAbis(overridePlatformConstants?: Record<string, unkn
   const fromInstalledBuild = inferInstalledAbiFromBuildCode(getInstalledBuildCode());
   if (fromInstalledBuild) return [fromInstalledBuild];
 
-  return ['arm64-v8a'];
+  return ['universal'];
 }
 
-function normalizeAbiToken(raw: string): SupportedApkAbi | null {
+export function normalizeAbiToken(raw: string): SupportedApkAbi | null {
   const clean = raw.trim().toLowerCase();
   if (clean === 'arm64-v8a' || clean === 'arm64' || clean === 'aarch64') return 'arm64-v8a';
-  if (clean === 'armeabi-v7a' || clean === 'armeabi') return 'armeabi-v7a';
+  if (clean === 'armeabi-v7a' || clean === 'armeabi' || clean === 'armv7' || clean === 'armv7l') {
+    return 'armeabi-v7a';
+  }
   if (clean === 'x86_64' || clean === 'amd64') return 'x86_64';
+  if (clean === 'x86' || clean === 'i686' || clean === 'i386' || clean === 'ia32') return 'x86';
+  if (clean === 'universal') return 'universal';
   return null;
 }
 
 /**
- * Pure, deterministic APK selector matching device ABI priority order against available release
- * artifacts. Never substitutes an `arm64-v8a` binary onto an `armeabi-v7a`, `x86_64`, or unsupported device.
+ * Pure, deterministic APK selector matching Android's exact `Build.SUPPORTED_ABIS` priority order
+ * across `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`, and `universal`:
+ *   1. Prefers exact `perAbi` artifact when available (fast ~16–20 MB download matching exact ABI).
+ *   2. Uses `universal` (4-ABI `arm64-v8a` + `armeabi-v7a` + `x86_64` + `x86`) ONLY when device
+ *      ABI was `'universal'` (unknown) or if a specific split URL was omitted while universal supports it.
+ *   3. Cleanly rejects unsupported exotic architectures (`mips`, `riscv64`, empty list) with an
+ *      honest, actionable error instead of ever silently serving an `arm64-v8a` APK.
  */
+export async function getDeviceSupportedAbisAsync(): Promise<string[]> {
+  const env = await resolveAndroidDeviceEnvironment();
+  return env?.supportedAbis?.length ? env.supportedAbis : detectDeviceAbis();
+}
+
 export function selectApkArtifactForAbis(
   deviceAbis: readonly string[],
-  release: Pick<
-    AppReleaseInfo,
-    'apkUrl' | 'arm32ApkUrl' | 'x86_64ApkUrl' | 'abis' | 'sha256' | 'fileSizeBytes'
+  release: Partial<
+    Pick<
+      AppReleaseInfo,
+      | 'apkUrl'
+      | 'arm64ApkUrl'
+      | 'arm32ApkUrl'
+      | 'x86_64ApkUrl'
+      | 'x86ApkUrl'
+      | 'universalApkUrl'
+      | 'perAbi'
+      | 'abis'
+      | 'sha256'
+      | 'fileSizeBytes'
+    >
   >,
 ): ApkSelectionOutcome {
+  const per = release.perAbi;
+  const legacyAbis = release.abis;
+  const explicitUniversalUrl = per?.universal?.url || legacyAbis?.universal?.url || release.universalApkUrl || '';
+
   if (!Array.isArray(deviceAbis) || deviceAbis.length === 0) {
+    if (explicitUniversalUrl) {
+      return {
+        ok: true,
+        abi: 'universal',
+        url: explicitUniversalUrl,
+        sha256: per?.universal?.sha256 ?? release.sha256 ?? null,
+        sizeBytes: per?.universal?.sizeBytes ?? release.fileSizeBytes ?? null,
+      };
+    }
     return {
       ok: false,
       unsupportedAbis: [],
@@ -242,21 +487,60 @@ export function selectApkArtifactForAbis(
     };
   }
 
-  const artifacts: Record<SupportedApkAbi, { url: string; sha256: string | null; sizeBytes: number | null }> = {
+  const artifacts: Record<
+    SupportedApkAbi,
+    { url: string; fallbackUrl: string | null; sha256: string | null; sizeBytes: number | null }
+  > = {
     'arm64-v8a': {
-      url: release.abis?.['arm64-v8a']?.url || release.apkUrl || LATEST_SLIM_APK_CDN_URL,
-      sha256: release.abis?.['arm64-v8a']?.sha256 ?? release.sha256 ?? null,
-      sizeBytes: release.abis?.['arm64-v8a']?.sizeBytes ?? release.fileSizeBytes ?? null,
+      url:
+        per?.['arm64-v8a']?.url ||
+        release.arm64ApkUrl ||
+        legacyAbis?.['arm64-v8a']?.url ||
+        release.apkUrl ||
+        LATEST_ARM64_APK_CDN_URL,
+      fallbackUrl: per?.['arm64-v8a']?.fallbackGithubUrl ?? null,
+      sha256: per?.['arm64-v8a']?.sha256 ?? legacyAbis?.['arm64-v8a']?.sha256 ?? release.sha256 ?? null,
+      sizeBytes:
+        per?.['arm64-v8a']?.sizeBytes ??
+        legacyAbis?.['arm64-v8a']?.sizeBytes ??
+        release.fileSizeBytes ??
+        null,
     },
     'armeabi-v7a': {
-      url: release.abis?.['armeabi-v7a']?.url || release.arm32ApkUrl || LATEST_ARM32_APK_CDN_URL,
-      sha256: release.abis?.['armeabi-v7a']?.sha256 ?? null,
-      sizeBytes: release.abis?.['armeabi-v7a']?.sizeBytes ?? null,
+      url:
+        per?.['armeabi-v7a']?.url ||
+        legacyAbis?.['armeabi-v7a']?.url ||
+        release.arm32ApkUrl ||
+        LATEST_ARM32_APK_CDN_URL,
+      fallbackUrl: per?.['armeabi-v7a']?.fallbackGithubUrl ?? null,
+      sha256: per?.['armeabi-v7a']?.sha256 ?? legacyAbis?.['armeabi-v7a']?.sha256 ?? null,
+      sizeBytes: per?.['armeabi-v7a']?.sizeBytes ?? legacyAbis?.['armeabi-v7a']?.sizeBytes ?? null,
     },
     x86_64: {
-      url: release.abis?.x86_64?.url || release.x86_64ApkUrl || LATEST_X86_64_APK_CDN_URL,
-      sha256: release.abis?.x86_64?.sha256 ?? null,
-      sizeBytes: release.abis?.x86_64?.sizeBytes ?? null,
+      url:
+        per?.x86_64?.url ||
+        legacyAbis?.x86_64?.url ||
+        release.x86_64ApkUrl ||
+        LATEST_X86_64_APK_CDN_URL,
+      fallbackUrl: per?.x86_64?.fallbackGithubUrl ?? null,
+      sha256: per?.x86_64?.sha256 ?? legacyAbis?.x86_64?.sha256 ?? null,
+      sizeBytes: per?.x86_64?.sizeBytes ?? legacyAbis?.x86_64?.sizeBytes ?? null,
+    },
+    x86: {
+      url: per?.x86?.url || legacyAbis?.x86?.url || release.x86ApkUrl || LATEST_X86_APK_CDN_URL,
+      fallbackUrl: per?.x86?.fallbackGithubUrl ?? null,
+      sha256: per?.x86?.sha256 ?? legacyAbis?.x86?.sha256 ?? null,
+      sizeBytes: per?.x86?.sizeBytes ?? legacyAbis?.x86?.sizeBytes ?? null,
+    },
+    universal: {
+      url:
+        per?.universal?.url ||
+        release.universalApkUrl ||
+        release.apkUrl ||
+        LATEST_UNIVERSAL_APK_CDN_URL,
+      fallbackUrl: per?.universal?.fallbackGithubUrl ?? null,
+      sha256: per?.universal?.sha256 ?? release.sha256 ?? null,
+      sizeBytes: per?.universal?.sizeBytes ?? release.fileSizeBytes ?? null,
     },
   };
 
@@ -312,8 +596,7 @@ export function validateApkHttpHeaders(
 }
 
 /**
- * Verifies that a local APK file has valid ZIP/APK magic bytes (`PK\x03\x04`) and matches the
- * expected byte size before Android Package Installer is ever invoked.
+ * Verifies that a local APK file has valid ZIP/APK magic bytes (`PK\x03\x04`) and exact byte length.
  */
 export function verifyApkZipMagicAndSize(
   headerBase64: string | null | undefined,
@@ -325,7 +608,10 @@ export function verifyApkZipMagicAndSize(
   }
   if (typeof headerBase64 === 'string' && headerBase64.length >= 5) {
     if (!headerBase64.startsWith(APK_ZIP_MAGIC_BASE64_PREFIX)) {
-      return { ok: false, reason: 'Downloaded file does not have a valid Android APK signature header.' };
+      return {
+        ok: false,
+        reason: 'Downloaded file does not have a valid Android APK signature header.',
+      };
     }
   }
   if (expectedSizeBytes && expectedSizeBytes > 1_000_000) {
@@ -340,10 +626,14 @@ export function verifyApkZipMagicAndSize(
 }
 
 /**
- * Reads the exact installed build code from Android native metadata (`android.versionCode`),
- * falling back to `EXPO_PUBLIC_BUILD_NUMBER` on web.
+ * Reads the exact installed build code from native Android PackageManager metadata when available,
+ * falling back to `Application.nativeBuildVersion` -> `EXPO_PUBLIC_BUILD_NUMBER`.
  */
 export function getInstalledBuildCode(): number {
+  if (cachedNativeEnv && cachedNativeEnv.installed.versionCode > 0) {
+    return cachedNativeEnv.installed.versionCode;
+  }
+
   const nativeCode = Number.parseInt(String(Application.nativeBuildVersion ?? ''), 10);
   if (Number.isFinite(nativeCode) && nativeCode > 0) return nativeCode;
 
@@ -354,18 +644,17 @@ export function getInstalledBuildCode(): number {
 }
 
 /**
- * Returns the exact human-readable release version currently running on this device
- * (e.g. `1.0.215`), synthesizing `1.0.<run>` automatically even on legacy APKs whose
- * `AndroidManifest` carried `1.0.0` before explicit `versionName` injection.
+ * Returns the exact human-readable release version currently running on this device.
  */
 export function getInstalledVersionLabel(): string {
   const code = getInstalledBuildCode();
   const train = getReleaseTrain(code);
+  const nativePkgVer = cachedNativeEnv?.installed.versionName?.trim();
   const nativeVer = Application.nativeApplicationVersion?.trim();
   const configVer = Constants.expoConfig?.version?.trim();
   const envVer = process.env.EXPO_PUBLIC_APP_VERSION?.trim();
 
-  const bestExplicit = [nativeVer, envVer, configVer].find(
+  const bestExplicit = [nativePkgVer, nativeVer, envVer, configVer].find(
     (v) => v && v !== '1.0.0',
   );
   if (bestExplicit) return bestExplicit;
@@ -373,7 +662,7 @@ export function getInstalledVersionLabel(): string {
   if (train > 1000) {
     return `1.0.${train - 1000}`;
   }
-  return nativeVer || configVer || '1.0.0';
+  return nativePkgVer || nativeVer || configVer || '1.0.0';
 }
 
 function getApkStorageDir(): string | null {
@@ -406,10 +695,20 @@ async function readLocalApkHeaderBase64(uri: string): Promise<string | null> {
   }
 }
 
+async function inspectLocalApkWithNativeBridge(
+  uri: string,
+  expectedSha256?: string | null,
+): Promise<ApkArchiveInspection | null> {
+  const bridge = getNativeInstallerBridge();
+  if (!bridge) return null;
+  return bridge.inspectApkArchive(uri, expectedSha256 ?? null);
+}
+
 async function hasValidCachedApk(
   versionCode: number,
   abi: SupportedApkAbi,
   expectedSizeBytes?: number | null,
+  expectedSha256?: string | null,
 ): Promise<string | null> {
   if (Platform.OS !== 'android') return null;
   const target = getApkStoragePath(versionCode, abi);
@@ -419,7 +718,16 @@ async function hasValidCachedApk(
     if (!info.exists || typeof info.size !== 'number') return null;
     const headerBase64 = await readLocalApkHeaderBase64(target);
     const check = verifyApkZipMagicAndSize(headerBase64, info.size, expectedSizeBytes);
-    return check.ok ? target : null;
+    if (!check.ok) {
+      await FileSystem.deleteAsync(target, { idempotent: true }).catch(() => {});
+      return null;
+    }
+    const nativeInspection = await inspectLocalApkWithNativeBridge(target, expectedSha256);
+    if (nativeInspection && !nativeInspection.ok) {
+      await FileSystem.deleteAsync(target, { idempotent: true }).catch(() => {});
+      return null;
+    }
+    return target;
   } catch {
     return null;
   }
@@ -453,7 +761,6 @@ async function reconcilePendingInstall(installedTrain: number): Promise<PendingI
     const parsed = JSON.parse(raw) as PendingInstallRecord;
     if (!parsed || typeof parsed.targetTrain !== 'number') return null;
 
-    // If Android actually replaced the installed APK, clear the pending marker AND clean up disk!
     if (installedTrain >= parsed.targetTrain) {
       await AsyncStorage.removeItem(PENDING_INSTALL_STORAGE_KEY).catch(() => {});
       if (parsed.localUri) {
@@ -462,21 +769,25 @@ async function reconcilePendingInstall(installedTrain: number): Promise<PendingI
       return null;
     }
 
-    // If the user returned to Hallyu and is STILL running the older build code, mark honestly
-    // as `not_installed_yet` so Hallyu never falsely claims installation succeeded!
     if (parsed.localUri) {
       const info = await FileSystem.getInfoAsync(parsed.localUri).catch(() => null);
-      if (!info?.exists) {
+      if (!info?.exists && parsed.status !== 'install_failed') {
         await AsyncStorage.removeItem(PENDING_INSTALL_STORAGE_KEY).catch(() => {});
         return null;
       }
     }
-    const updated: PendingInstallRecord = {
-      ...parsed,
-      status: 'not_installed_yet',
-    };
-    await AsyncStorage.setItem(PENDING_INSTALL_STORAGE_KEY, JSON.stringify(updated)).catch(() => {});
-    return updated;
+
+    if (parsed.status === 'awaiting_user_install') {
+      const updated: PendingInstallRecord = {
+        ...parsed,
+        status: 'not_installed_yet',
+      };
+      await AsyncStorage.setItem(PENDING_INSTALL_STORAGE_KEY, JSON.stringify(updated)).catch(
+        () => {},
+      );
+      return updated;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -523,19 +834,27 @@ async function detectPostInstallUpgrade(
   }
 }
 
-function parseManifestAbis(rawAbis: unknown): Partial<Record<SupportedApkAbi, AbiArtifactInfo>> | undefined {
+function parseManifestAbis(
+  rawAbis: unknown,
+): Partial<Record<SupportedApkAbi, AbiArtifactInfo>> | undefined {
   if (!rawAbis || typeof rawAbis !== 'object') return undefined;
   const out: Partial<Record<SupportedApkAbi, AbiArtifactInfo>> = {};
-  for (const key of ['arm64-v8a', 'armeabi-v7a', 'x86_64'] as const) {
+  for (const key of ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'universal'] as const) {
     const entry = (rawAbis as Record<string, unknown>)[key];
-    if (entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).url === 'string') {
+    if (
+      entry &&
+      typeof entry === 'object' &&
+      typeof (entry as Record<string, unknown>).url === 'string'
+    ) {
       const obj = entry as Record<string, unknown>;
       out[key] = {
         abi: key,
         url: String(obj.url),
+        fallbackGithubUrl: obj.fallbackGithubUrl ? String(obj.fallbackGithubUrl) : null,
         sha256: obj.sha256 ? String(obj.sha256) : null,
         sizeBytes: typeof obj.sizeBytes === 'number' ? obj.sizeBytes : null,
         versionCode: typeof obj.versionCode === 'number' ? obj.versionCode : null,
+        supportedAbis: Array.isArray(obj.supportedAbis) ? (obj.supportedAbis as string[]) : undefined,
       };
     }
   }
@@ -551,14 +870,18 @@ export async function openUnknownSourcesSettings(): Promise<void> {
 }
 
 /**
- * Checks BOTH `public.get_latest_app_release()` AND live CDN `latest/manifest.json` (cache-busted)
- * and verifies actual installed build + any pending unconfirmed APK installation honestly.
+ * Checks live Android runtime environment + `public.get_latest_app_release()` + live CDN
+ * `latest/manifest.json` (cache-busted) and verifies actual running build honestly.
  */
 export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
-  const installedCode = getInstalledBuildCode();
+  const deviceEnv = await resolveAndroidDeviceEnvironment();
+  const installedCode = deviceEnv?.installed.versionCode || getInstalledBuildCode();
   const installedTrain = getReleaseTrain(installedCode);
   const installedVersion = getInstalledVersionLabel();
-  const deviceAbis = detectDeviceAbis();
+  const deviceAbis =
+    deviceEnv?.supportedAbis && deviceEnv.supportedAbis.length > 0
+      ? deviceEnv.supportedAbis
+      : detectDeviceAbis();
 
   let rpcLatest: AppReleaseInfo | null = null;
   let cdnLatest: AppReleaseInfo | null = null;
@@ -579,17 +902,23 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
     const raw = rpcOutcome.value.data as Record<string, unknown>;
     const vCode = Number(raw.version_code ?? 0);
     if (vCode > 0) {
-      const rawUniv = String(raw.universal_apk_url ?? '');
+      const universalUrl = String(raw.universal_apk_url || raw.apk_url || LATEST_UNIVERSAL_APK_CDN_URL);
       rpcLatest = {
+        packageId: 'com.hallyu.app',
+        minSdkVersion: 23,
+        targetSdkVersion: 34,
+        signingSha256: ANDROID_RELEASE_SHA256,
         versionCode: vCode,
         releaseTrain: getReleaseTrain(vCode),
-        versionName: String(raw.version_name ?? `1.0.${Math.max(0, getReleaseTrain(vCode) - 1000)}`),
-        apkUrl: String(raw.apk_url ?? LATEST_SLIM_APK_CDN_URL),
-        arm32ApkUrl:
-          rawUniv.includes('/storage/v1/object/public/') && !rawUniv.endsWith('hallyu-arm64.apk')
-            ? rawUniv
-            : LATEST_ARM32_APK_CDN_URL,
+        versionName: String(
+          raw.version_name ?? `1.0.${Math.max(0, getReleaseTrain(vCode) - 1000)}`,
+        ),
+        apkUrl: String(raw.apk_url ?? LATEST_UNIVERSAL_APK_CDN_URL),
+        arm64ApkUrl: LATEST_ARM64_APK_CDN_URL,
+        arm32ApkUrl: LATEST_ARM32_APK_CDN_URL,
         x86_64ApkUrl: LATEST_X86_64_APK_CDN_URL,
+        x86ApkUrl: LATEST_X86_APK_CDN_URL,
+        universalApkUrl: universalUrl,
         sha256: raw.sha256 ? String(raw.sha256) : null,
         fileSizeBytes: typeof raw.file_size_bytes === 'number' ? raw.file_size_bytes : null,
         gitCommit: raw.git_commit ? String(raw.git_commit) : null,
@@ -605,20 +934,26 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
     const m = manifestOutcome.value as Record<string, unknown>;
     const mCode = Number(m.versionCode ?? 0);
     if (mCode > 0) {
+      const perAbi = parseManifestAbis(m.perAbi);
+      const abis = parseManifestAbis(m.abis);
       cdnLatest = {
+        packageId: String(m.packageId ?? 'com.hallyu.app'),
+        minSdkVersion: Number(m.minSdkVersion ?? 23),
+        targetSdkVersion: Number(m.targetSdkVersion ?? 34),
+        signingSha256: String(m.signingSha256 ?? ANDROID_RELEASE_SHA256),
         versionCode: mCode,
         releaseTrain: getReleaseTrain(mCode),
         versionName: String(m.version ?? `1.0.${Math.max(0, getReleaseTrain(mCode) - 1000)}`),
-        apkUrl: String(m.slimUrl ?? LATEST_SLIM_APK_CDN_URL),
-        arm32ApkUrl:
-          typeof m.arm32Url === 'string' && !m.arm32Url.endsWith('hallyu-arm64.apk')
-            ? m.arm32Url
-            : LATEST_ARM32_APK_CDN_URL,
-        x86_64ApkUrl:
-          typeof m.x86_64Url === 'string' && !m.x86_64Url.endsWith('hallyu-arm64.apk')
-            ? m.x86_64Url
-            : LATEST_X86_64_APK_CDN_URL,
-        abis: parseManifestAbis(m.abis),
+        apkUrl: String(m.universalUrl ?? m.slimUrl ?? LATEST_UNIVERSAL_APK_CDN_URL),
+        arm64ApkUrl: String(perAbi?.['arm64-v8a']?.url ?? m.arm64Url ?? LATEST_ARM64_APK_CDN_URL),
+        arm32ApkUrl: String(perAbi?.['armeabi-v7a']?.url ?? m.arm32Url ?? LATEST_ARM32_APK_CDN_URL),
+        x86_64ApkUrl: String(perAbi?.x86_64?.url ?? m.x86_64Url ?? LATEST_X86_64_APK_CDN_URL),
+        x86ApkUrl: String(perAbi?.x86?.url ?? m.x86Url ?? LATEST_X86_APK_CDN_URL),
+        universalApkUrl: String(
+          perAbi?.universal?.url ?? m.universalUrl ?? LATEST_UNIVERSAL_APK_CDN_URL,
+        ),
+        perAbi,
+        abis,
         sha256: m.slimSha256 ? String(m.slimSha256) : null,
         fileSizeBytes:
           typeof m.slimSizeBytes === 'number'
@@ -647,9 +982,12 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
           versionCode: installedCode,
           releaseTrain: installedTrain,
           versionName: installedVersion,
-          apkUrl: LATEST_SLIM_APK_CDN_URL,
+          apkUrl: LATEST_UNIVERSAL_APK_CDN_URL,
+          arm64ApkUrl: LATEST_ARM64_APK_CDN_URL,
           arm32ApkUrl: LATEST_ARM32_APK_CDN_URL,
           x86_64ApkUrl: LATEST_X86_64_APK_CDN_URL,
+          x86ApkUrl: LATEST_X86_APK_CDN_URL,
+          universalApkUrl: LATEST_UNIVERSAL_APK_CDN_URL,
           releaseNotes: 'Signed Hallyu release.',
           isMandatory: false,
           minSupportedVersion: 1,
@@ -661,7 +999,12 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
   const justUpdatedFromVersion = await detectPostInstallUpgrade(installedTrain, installedVersion);
   const cachedPath =
     hasUpdate && selectedArtifact.ok
-      ? await hasValidCachedApk(latest.versionCode, selectedArtifact.abi, selectedArtifact.sizeBytes)
+      ? await hasValidCachedApk(
+          latest.versionCode,
+          selectedArtifact.abi,
+          selectedArtifact.sizeBytes,
+          selectedArtifact.sha256,
+        )
       : null;
 
   return {
@@ -669,6 +1012,7 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
     installedTrain,
     installedVersion,
     deviceAbis,
+    deviceEnv,
     selectedArtifact,
     latest,
     hasUpdate,
@@ -680,10 +1024,9 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
 }
 
 /**
- * Launches Android's native Package Installer against a persistent verified local APK URI using
- * `FLAG_GRANT_READ_URI_PERMISSION` (WITHOUT `FLAG_ACTIVITY_NEW_TASK`) and inspects the authentic
- * `resultCode` returned by Android's installer dialog so Hallyu NEVER falsely reports success
- * when installation was canceled or blocked by unknown-sources permissions.
+ * Launches Android installation using `HallyuApkInstaller.installApkSession` (Android
+ * `PackageInstaller.Session` with authentic `BroadcastReceiver` status codes) when present, falling
+ * back cleanly to `IntentLauncher` without `FLAG_ACTIVITY_NEW_TASK`.
  */
 async function launchAndroidPackageInstaller(
   localFileUri: string,
@@ -691,8 +1034,8 @@ async function launchAndroidPackageInstaller(
   targetVersionCode: number,
   targetVersionName: string,
   usedCachedApk: boolean,
+  inspection: ApkArchiveInspection | null,
 ): Promise<InstallLaunchOutcome> {
-  const contentUri = await FileSystem.getContentUriAsync(localFileUri);
   const targetTrain = getReleaseTrain(targetVersionCode);
 
   const initialPending: PendingInstallRecord = {
@@ -708,7 +1051,80 @@ async function launchAndroidPackageInstaller(
     () => {},
   );
 
+  const bridge = getNativeInstallerBridge();
+  if (bridge && typeof bridge.installApkSession === 'function') {
+    const nativeRes = await bridge.installApkSession(localFileUri);
+    const refreshedEnv = await resolveAndroidDeviceEnvironment();
+    const installedTrainAfter = getReleaseTrain(
+      refreshedEnv?.installed.versionCode ?? getInstalledBuildCode(),
+    );
+
+    if (nativeRes.status === 'needs_unknown_sources_permission') {
+      await openUnknownSourcesSettings();
+      return {
+        status: 'needs_unknown_sources_permission',
+        selectedAbi,
+        message: nativeRes.message,
+      };
+    }
+
+    if (nativeRes.status === 'cancelled_by_user') {
+      const rec: PendingInstallRecord = {
+        ...initialPending,
+        status: 'cancelled_by_user',
+        lastErrorReasonCode: nativeRes.reasonCode ?? 'INSTALL_CANCELLED',
+        lastErrorMessage:
+          nativeRes.message ?? 'Installation cancelled — still running your previous version.',
+      };
+      await AsyncStorage.setItem(PENDING_INSTALL_STORAGE_KEY, JSON.stringify(rec)).catch(() => {});
+      return {
+        status: 'cancelled_by_user',
+        usedCachedApk,
+        selectedAbi,
+        message: rec.lastErrorMessage!,
+      };
+    }
+
+    if (nativeRes.status === 'install_failed') {
+      const rec: PendingInstallRecord = {
+        ...initialPending,
+        status: 'install_failed',
+        lastErrorReasonCode: nativeRes.reasonCode ?? 'INSTALL_FAILED',
+        lastErrorMessage: nativeRes.message ?? 'Android rejected package installation.',
+      };
+      await AsyncStorage.setItem(PENDING_INSTALL_STORAGE_KEY, JSON.stringify(rec)).catch(() => {});
+      return {
+        status: 'install_failed',
+        reasonCode: rec.lastErrorReasonCode!,
+        message: rec.lastErrorMessage!,
+        selectedAbi,
+        inspection,
+      };
+    }
+
+    // NEVER claim `installed` unless actual native installed build train matches `targetTrain`!
+    if (nativeRes.status === 'installed' && installedTrainAfter >= targetTrain) {
+      await AsyncStorage.removeItem(PENDING_INSTALL_STORAGE_KEY).catch(() => {});
+      await FileSystem.deleteAsync(localFileUri, { idempotent: true }).catch(() => {});
+      return {
+        status: 'installed',
+        usedCachedApk,
+        selectedAbi,
+        inspection,
+      };
+    }
+
+    return {
+      status: 'awaiting_user_install',
+      usedCachedApk,
+      selectedAbi,
+      inspection,
+    };
+  }
+
+  // Fallback for environments where `IntentLauncher` is used directly
   try {
+    const contentUri = await FileSystem.getContentUriAsync(localFileUri);
     const res = await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
       data: contentUri,
       flags: FLAG_GRANT_READ_URI_PERMISSION,
@@ -734,125 +1150,235 @@ async function launchAndroidPackageInstaller(
       return { status: 'not_installed_yet', usedCachedApk, selectedAbi };
     }
 
-    return { status: 'awaiting_user_install', usedCachedApk, selectedAbi };
+    return { status: 'awaiting_user_install', usedCachedApk, selectedAbi, inspection };
   } catch {
     await openUnknownSourcesSettings();
     return { status: 'needs_unknown_sources_permission', selectedAbi };
   }
 }
 
+async function downloadAndVerifySingleCandidate(
+  abi: SupportedApkAbi,
+  url: string,
+  fallbackUrl: string | null,
+  versionCode: number,
+  expectedSizeBytes: number | null,
+  expectedSha256: string | null,
+  onProgress?: (snapshot: DownloadProgressSnapshot) => void,
+): Promise<
+  | { ok: true; localUri: string; usedCached: boolean; inspection: ApkArchiveInspection | null }
+  | { ok: false; reasonCode: string; message: string; inspection: ApkArchiveInspection | null }
+> {
+  const existingValid = await hasValidCachedApk(
+    versionCode,
+    abi,
+    expectedSizeBytes,
+    expectedSha256,
+  );
+  if (existingValid) {
+    const inspection = await inspectLocalApkWithNativeBridge(existingValid, expectedSha256);
+    if (!inspection || inspection.ok) {
+      const total = expectedSizeBytes ?? inspection?.sizeBytes ?? 20_000_000;
+      onProgress?.({
+        percent: 100,
+        writtenBytes: total,
+        totalBytes: total,
+        speedBytesPerSec: 0,
+        stage: 'launching_installer',
+      });
+      return { ok: true, localUri: existingValid, usedCached: true, inspection };
+    }
+    await FileSystem.deleteAsync(existingValid, { idempotent: true }).catch(() => {});
+  }
+
+  const targetPath = getApkStoragePath(versionCode, abi)!;
+  await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+
+  const candidateUrls = [url, fallbackUrl].filter((u): u is string => Boolean(u));
+  let lastFailure = 'Download failed before completion.';
+
+  for (const sourceUrl of candidateUrls) {
+    const startedAt = Date.now();
+    let lastEmitAt = 0;
+    let lastPercent = -1;
+
+    try {
+      const resumable = FileSystem.createDownloadResumable(sourceUrl, targetPath, {}, (prog) => {
+        const now = Date.now();
+        const total =
+          prog.totalBytesExpectedToWrite > 0
+            ? prog.totalBytesExpectedToWrite
+            : expectedSizeBytes ?? 20_000_000;
+        const pct =
+          total > 0 ? Math.min(100, Math.round((prog.totalBytesWritten / total) * 100)) : 0;
+
+        if (pct < 100 && now - lastEmitAt < 160 && pct === lastPercent) {
+          return;
+        }
+        lastEmitAt = now;
+        lastPercent = pct;
+
+        const elapsedSec = Math.max(0.25, (now - startedAt) / 1000);
+        onProgress?.({
+          percent: pct,
+          writtenBytes: prog.totalBytesWritten,
+          totalBytes: total,
+          speedBytesPerSec: Math.round(prog.totalBytesWritten / elapsedSec),
+          stage: 'downloading',
+        });
+      });
+
+      const downloaded = await resumable.downloadAsync();
+      if (!downloaded?.uri) {
+        await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+        lastFailure = 'Download interrupted before completion.';
+        continue;
+      }
+
+      const headerCheck = validateApkHttpHeaders(downloaded.status, downloaded.headers);
+      if (!headerCheck.ok) {
+        await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+        lastFailure = headerCheck.reason;
+        continue;
+      }
+
+      onProgress?.({
+        percent: 100,
+        writtenBytes: expectedSizeBytes ?? 20_000_000,
+        totalBytes: expectedSizeBytes ?? 20_000_000,
+        speedBytesPerSec: 0,
+        stage: 'verifying',
+      });
+
+      const stat = await FileSystem.getInfoAsync(downloaded.uri);
+      const actualSize = stat.exists && typeof stat.size === 'number' ? stat.size : 0;
+      const headerBase64 = await readLocalApkHeaderBase64(downloaded.uri);
+      const integrityCheck = verifyApkZipMagicAndSize(
+        headerBase64,
+        actualSize,
+        sourceUrl === url ? expectedSizeBytes : null,
+      );
+      if (!integrityCheck.ok) {
+        await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+        lastFailure = integrityCheck.reason;
+        continue;
+      }
+
+      const inspection = await inspectLocalApkWithNativeBridge(
+        downloaded.uri,
+        sourceUrl === url ? expectedSha256 : null,
+      );
+      if (inspection && !inspection.ok) {
+        await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+        return {
+          ok: false,
+          reasonCode: inspection.reasonCode,
+          message: inspection.message,
+          inspection,
+        };
+      }
+
+      onProgress?.({
+        percent: 100,
+        writtenBytes: actualSize,
+        totalBytes: actualSize,
+        speedBytesPerSec: Math.round(actualSize / Math.max(0.25, (Date.now() - startedAt) / 1000)),
+        stage: 'launching_installer',
+      });
+
+      return { ok: true, localUri: downloaded.uri, usedCached: false, inspection };
+    } catch (dlErr) {
+      await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+      lastFailure = dlErr instanceof Error ? dlErr.message : 'Network error during download.';
+    }
+  }
+
+  return {
+    ok: false,
+    reasonCode: 'DOWNLOAD_VERIFICATION_FAILED',
+    message: `${lastFailure} Partial file was removed safely so you can retry.`,
+    inspection: null,
+  };
+}
+
 /**
- * Selects the exact APK binary matching this device's CPU ABI, verifies HTTP status/headers,
- * APK ZIP header magic (`PK\x03\x04`), and expected byte size, stores it in persistent
- * `documentDirectory`, then launches Android Package Installer honestly.
+ * Selects the exact compatible signed APK for this device's real Android OS environment, verifies
+ * HTTP headers, ZIP integrity, cryptographic SHA-256, package ID, signing certificate, SDK level,
+ * and native `lib/<abi>/*.so` match (falling back automatically to the 4-ABI Universal APK if a
+ * split ever mismatches), then runs Android's `PackageInstaller.Session` honestly.
  */
 export async function downloadAndInstallApk(
-  release: Pick<
-    AppReleaseInfo,
-    | 'apkUrl'
-    | 'arm32ApkUrl'
-    | 'x86_64ApkUrl'
-    | 'abis'
-    | 'versionCode'
-    | 'versionName'
-    | 'fileSizeBytes'
-    | 'sha256'
-  >,
+  release: Partial<AppReleaseInfo> & Pick<AppReleaseInfo, 'versionCode' | 'versionName'>,
   onProgress?: (snapshot: DownloadProgressSnapshot) => void,
   overrideDeviceAbis?: readonly string[],
 ): Promise<InstallLaunchOutcome> {
-  const deviceAbis = overrideDeviceAbis ?? detectDeviceAbis();
+  const nativeEnv = overrideDeviceAbis ? null : await resolveAndroidDeviceEnvironment();
+  const deviceAbis =
+    overrideDeviceAbis ??
+    (nativeEnv?.supportedAbis?.length ? nativeEnv.supportedAbis : detectDeviceAbis());
+
   const selection = selectApkArtifactForAbis(deviceAbis, release);
   if (!selection.ok) {
     throw new Error(selection.message);
   }
 
-  const { abi, url, sizeBytes } = selection;
   const targetDir = getApkStorageDir();
-
   if (Platform.OS !== 'android' || !targetDir) {
-    await Linking.openURL(url);
-    return { status: 'browser_opened', selectedAbi: abi };
+    await Linking.openURL(selection.url);
+    return { status: 'browser_opened', selectedAbi: selection.abi };
   }
 
   await ensureApkStorageDir();
-  await pruneOldCachedApks(release.versionCode, abi);
+  await pruneOldCachedApks(release.versionCode, selection.abi);
 
   const vName =
     release.versionName || `1.0.${Math.max(0, getReleaseTrain(release.versionCode) - 1000)}`;
 
-  const existingValid = await hasValidCachedApk(release.versionCode, abi, sizeBytes);
-  if (existingValid) {
-    const total = sizeBytes ?? 34_300_000;
-    onProgress?.({
-      percent: 100,
-      writtenBytes: total,
-      totalBytes: total,
-      speedBytesPerSec: 0,
-    });
-    return launchAndroidPackageInstaller(existingValid, abi, release.versionCode, vName, true);
-  }
+  let verified = await downloadAndVerifySingleCandidate(
+    selection.abi,
+    selection.url,
+    release.perAbi?.[selection.abi]?.fallbackGithubUrl ?? null,
+    release.versionCode,
+    selection.sizeBytes,
+    selection.sha256,
+    onProgress,
+  );
 
-  const targetPath = getApkStoragePath(release.versionCode, abi)!;
-  await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+  let finalAbi: SupportedApkAbi = selection.abi;
 
-  const startedAt = Date.now();
-  let lastEmitAt = 0;
-  let lastPercent = -1;
-
-  const resumable = FileSystem.createDownloadResumable(url, targetPath, {}, (prog) => {
-    const now = Date.now();
-    const total =
-      prog.totalBytesExpectedToWrite > 0
-        ? prog.totalBytesExpectedToWrite
-        : sizeBytes ?? 34_300_000;
-    const pct =
-      total > 0
-        ? Math.min(100, Math.round((prog.totalBytesWritten / total) * 100))
-        : 0;
-
-    if (pct < 100 && now - lastEmitAt < 160 && pct === lastPercent) {
-      return;
+  // Automatic self-healing Universal fallback if a per-ABI split ever mismatches the device ABI
+  if (!verified.ok && selection.abi !== 'universal' && verified.reasonCode === 'ABI_INCOMPATIBLE') {
+    const univSel = selectApkArtifactForAbis(['universal'], release);
+    if (univSel.ok) {
+      verified = await downloadAndVerifySingleCandidate(
+        'universal',
+        univSel.url,
+        release.perAbi?.universal?.fallbackGithubUrl ?? null,
+        release.versionCode,
+        univSel.sizeBytes,
+        univSel.sha256,
+        onProgress,
+      );
+      finalAbi = 'universal';
     }
-    lastEmitAt = now;
-    lastPercent = pct;
-
-    const elapsedSec = Math.max(0.25, (now - startedAt) / 1000);
-    onProgress?.({
-      percent: pct,
-      writtenBytes: prog.totalBytesWritten,
-      totalBytes: total,
-      speedBytesPerSec: Math.round(prog.totalBytesWritten / elapsedSec),
-    });
-  });
-
-  const downloaded = await resumable.downloadAsync();
-  if (!downloaded?.uri) {
-    await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
-    throw new Error('Download interrupted before completion. Please tap retry.');
   }
 
-  const headerCheck = validateApkHttpHeaders(downloaded.status, downloaded.headers);
-  if (!headerCheck.ok) {
-    await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
-    throw new Error(`${headerCheck.reason} Please tap retry.`);
+  if (!verified.ok) {
+    return {
+      status: 'install_failed',
+      reasonCode: verified.reasonCode,
+      message: verified.message,
+      selectedAbi: finalAbi,
+      inspection: verified.inspection,
+    };
   }
 
-  const stat = await FileSystem.getInfoAsync(downloaded.uri);
-  const actualSize = stat.exists && typeof stat.size === 'number' ? stat.size : 0;
-  const headerBase64 = await readLocalApkHeaderBase64(downloaded.uri);
-  const integrityCheck = verifyApkZipMagicAndSize(headerBase64, actualSize, sizeBytes);
-  if (!integrityCheck.ok) {
-    await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
-    throw new Error(`${integrityCheck.reason} Partial file was removed so you can retry safely.`);
-  }
-
-  onProgress?.({
-    percent: 100,
-    writtenBytes: actualSize,
-    totalBytes: actualSize,
-    speedBytesPerSec: Math.round(actualSize / Math.max(0.25, (Date.now() - startedAt) / 1000)),
-  });
-
-  return launchAndroidPackageInstaller(downloaded.uri, abi, release.versionCode, vName, false);
+  return launchAndroidPackageInstaller(
+    verified.localUri,
+    finalAbi,
+    release.versionCode,
+    vName,
+    verified.usedCached,
+    verified.inspection,
+  );
 }

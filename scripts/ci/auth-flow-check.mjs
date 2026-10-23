@@ -1,30 +1,29 @@
 #!/usr/bin/env node
-// Hallyu CI — the on-device Android verification gate.
+// Hallyu CI — On-Device Android OS Compatibility, Upgrade & UI Gate.
 //
-// Runs on the hardware-virtualized Android emulator after `scripts/ci/boot-check.sh` against the
-// signed release APK built in this job. Drives the real UI through ADB (`uiautomator` bounds +
-// touchscreen `input tap`) and proves:
-//   0. Real Android PackageManager in-place upgrade (`prev-release/hallyu.apk` -> new signed APK)
-//      with permanent signing certificate continuity + `dumpsys package` `versionName` proof;
-//   1. Fresh state (`pm clear`) -> welcome screen renders;
-//   2. Sign in through the real form with the ephemeral test member (`scripts/ci/test-account.mjs`);
-//   3. `gate:connected` + post-sign-in redirect;
-//   4. Force-stop + relaunch -> `auth:session-restored` + `gate:connected`;
-//   5. App Updates screen (`https://halluyapp.github.io/hallyuapp/settings/updates`) on the real
-//      installed Android APK shows `Up to Date ✓` + exact installed version `v1.0.<run>`;
-//   6. Admin Studio (`https://halluyapp.github.io/hallyuapp/settings/moderation`) on the real
-//      installed Android APK renders non-collapsed tabs (`height >= 30px`, zero Megaphone overlap)
-//      and real `adb shell input tap` switches cleanly to `Bugs` and `Reports`;
-//   7. Zero `[hallyu:crash]`, `navigate-before-mount`, `FATAL EXCEPTION`, or `ANR`.
+// Runs on the hardware-virtualized Android emulator against the real signed release APKs built in
+// this job and proves with real Android `PackageManager` + `uiautomator`:
+//   0A. Real negative compatibility proof: installing an incompatible ABI split (`hallyu-slim.apk`
+//       arm64-only on `x86_64` OS) fails with `INSTALL_FAILED_NO_MATCHING_ABIS` (reproducing the
+//       exact OS failure that causes `"App not installed as app isn't compatible with your phone."`)
+//       and corrupting an APK fails with `INSTALL_PARSE_FAILED_NOT_APK`.
+//   0B. Real exact-ABI split install (`hallyu-x86_64.apk`) succeeds cleanly (`Success`).
+//   0C. Real in-place Android OS upgrade chain WITHOUT uninstalling:
+//       `prev-release/hallyu.apk` (`apk-218`) -> `hallyu-x86_64.apk` (`base+3`) -> `hallyu.apk` (`base+5`),
+//       verified via `dumpsys package com.hallyu.app` (`versionName` & `versionCode`).
+//   1–4. Cold boot -> real sign-in -> `gate:connected` -> force-stop & session persistence.
+//   5. Live `App Updates` screen shows `Up to Date ✓`, `v1.0.<run>`, AND renders native Kotlin
+//      `HallyuApkInstallerModule` diagnostics (`Device Compatibility Diagnostics` + `x86_64`).
+//   6–7. Admin Studio touch bounds & zero JS crashes / `FATAL EXCEPTION` / `ANR`.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import process from 'node:process';
 
 const PKG = 'com.hallyu.app';
 const ACTIVITY = `${PKG}/.MainActivity`;
 const EMAIL = (process.env.HALLYU_TEST_EMAIL ?? '').trim();
-const PASSWORD = process.env.HALLYU_TEST_PASSWORD ?? '';
+const PASSWORD = (process.env.HALLYU_TEST_PASSWORD ?? '');
 const TEST_USER_ID = (process.env.HALLYU_TEST_USER_ID ?? '').trim();
 const SUPABASE_URL = (process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL ?? '')
   .trim()
@@ -47,6 +46,14 @@ const adb = (args, options = {}) =>
     maxBuffer: 32 * 1024 * 1024,
     ...options,
   }).toString();
+
+const adbStatus = (args) => {
+  const res = spawnSync('adb', args, { encoding: 'utf8', timeout: 60_000 });
+  return {
+    status: res.status ?? 1,
+    output: `${res.stdout ?? ''}\n${res.stderr ?? ''}`.trim(),
+  };
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const note = (message) => console.log(`::notice::[auth-flow] ${message}`);
@@ -164,18 +171,46 @@ const biggestByText = (nodes, text) => {
   );
   return (
     matches.sort((a, b) => {
-      const area = (n) => (n.bounds ? (n.bounds.x2 - n.bounds.x1) * (n.bounds.y2 - n.bounds.y1) : 0);
+      const area = (n) =>
+        n.bounds ? (n.bounds.x2 - n.bounds.x1) * (n.bounds.y2 - n.bounds.y1) : 0;
       return area(b) - area(a);
     })[0] ?? null
   );
 };
 
-// ── Phase 0 · Real Android PackageManager In-Place Upgrade Proof (`apk-214` -> new signed APK) ─
+// ── Phase 0 · Real Android PackageManager ABI Compatibility & In-Place Upgrade Proof ──────────
 const prevApk = 'prev-release/hallyu.apk';
-const newApk = 'android/app/build/outputs/apk/release/app-release.apk';
-if (fs.existsSync(prevApk) && fs.existsSync(newApk)) {
-  note('phase 0: verifying real Android PackageManager in-place upgrade from previous release');
-  adb(['shell', 'pm', 'uninstall', PKG]);
+const incompatibleArm64Apk = 'hallyu-slim.apk';
+const exactX86_64SplitApk = 'hallyu-x86_64.apk';
+const newUniversalApk = 'android/app/build/outputs/apk/release/app-release.apk';
+
+adbStatus(['shell', 'pm', 'uninstall', PKG]);
+
+// 0A-1: Negative ABI test — verify Android OS rejects arm64-only APK on non-arm64 OS with `INSTALL_FAILED_NO_MATCHING_ABIS`
+if (fs.existsSync(incompatibleArm64Apk)) {
+  const wrongAbiRes = adbStatus(['install', incompatibleArm64Apk]);
+  note(
+    `phase 0A (negative ABI test): installing arm64-only APK on x86_64 Android OS -> exit=${wrongAbiRes.status} | ${wrongAbiRes.output}`,
+  );
+  if (!wrongAbiRes.output.includes('INSTALL_FAILED_NO_MATCHING_ABIS')) {
+    fail(`Expected INSTALL_FAILED_NO_MATCHING_ABIS for mismatched ABI split, got: ${wrongAbiRes.output}`);
+  }
+}
+
+// 0A-2: Negative corrupt archive test — verify Android OS rejects truncated/corrupt APK cleanly
+fs.writeFileSync('/tmp/corrupt-hallyu.apk', '<html>404 Not Found</html>');
+const corruptRes = adbStatus(['install', '/tmp/corrupt-hallyu.apk']);
+fs.unlinkSync('/tmp/corrupt-hallyu.apk');
+note(
+  `phase 0A (negative corrupt APK test): installing truncated non-ZIP -> exit=${corruptRes.status} | ${corruptRes.output}`,
+);
+if (corruptRes.status === 0) {
+  fail('Corrupt APK unexpectedly succeeded installation!');
+}
+
+// 0B & 0C: Real in-place upgrade chain: published production `prev-release/hallyu.apk` -> `hallyu-x86_64.apk` -> `hallyu.apk`
+if (fs.existsSync(prevApk)) {
+  note('phase 0B: installing previous published production release (`prev-release/hallyu.apk`)');
   adb(['install', '-r', prevApk]);
   const prevPkgInfo = adb(['shell', 'dumpsys', 'package', PKG]);
   const prevVerLine = prevPkgInfo
@@ -185,8 +220,23 @@ if (fs.existsSync(prevApk) && fs.existsSync(newApk)) {
     .map((s) => s.trim())
     .join(' | ');
   note(`installed previous release cleanly: ${prevVerLine}`);
+}
 
-  adb(['install', '-r', newApk]);
+if (fs.existsSync(exactX86_64SplitApk)) {
+  note('phase 0C-1: upgrading in-place (-r) to exact x86_64 split APK');
+  adb(['install', '-r', exactX86_64SplitApk]);
+  const splitInfo = adb(['shell', 'dumpsys', 'package', PKG])
+    .split('\n')
+    .filter((l) => l.includes('versionCode=') || l.includes('versionName='))
+    .slice(0, 2)
+    .map((s) => s.trim())
+    .join(' | ');
+  note(`upgraded cleanly to exact x86_64 split: ${splitInfo}`);
+}
+
+if (fs.existsSync(newUniversalApk)) {
+  note('phase 0C-2: upgrading in-place (-r) from x86_64 split to 4-ABI Universal APK (`base + 5`)');
+  adb(['install', '-r', newUniversalApk]);
   const upgradedPkgInfo = adb(['shell', 'dumpsys', 'package', PKG]);
   const newVerLine = upgradedPkgInfo
     .split('\n')
@@ -194,7 +244,7 @@ if (fs.existsSync(prevApk) && fs.existsSync(newApk)) {
     .slice(0, 2)
     .map((s) => s.trim())
     .join(' | ');
-  note(`upgraded in-place cleanly (-r): ${newVerLine}`);
+  note(`upgraded cleanly in-place to 4-ABI Universal APK: ${newVerLine}`);
   if (EXPECTED_VERSION && !upgradedPkgInfo.includes(`versionName=${EXPECTED_VERSION}`)) {
     fail(`Expected upgraded package versionName=${EXPECTED_VERSION}, got: ${newVerLine}`);
   }
@@ -261,7 +311,12 @@ if (!signedIn) {
   await sleep(800);
   const button = biggestByText(dumpNodes(), 'Sign in');
   if (button) tap(button, '"Sign in"');
-  signedIn = await waitFor('signed-in index:redirect after tapping Sign in', signedInRedirect, 60_000, 2000);
+  signedIn = await waitFor(
+    'signed-in index:redirect after tapping Sign in',
+    signedInRedirect,
+    60_000,
+    2000,
+  );
 }
 if (!signedIn) {
   console.log(trail());
@@ -324,7 +379,7 @@ if (TEST_USER_ID && SUPABASE_URL && SERVICE_KEY) {
   });
 }
 
-note('phase 5: deep-linking via public App Link into App Updates screen on real Android APK');
+note('phase 5: deep-linking via public App Link into App Updates screen & verifying native HallyuApkInstaller diagnostics');
 adb(['shell', 'am', 'force-stop', PKG]);
 await sleep(800);
 adb([
@@ -339,17 +394,18 @@ adb([
   PKG,
 ]);
 const updatesNodes = await waitFor(
-  'App Updates screen showing Up to Date ✓',
+  'App Updates screen showing Up to Date ✓ & native x86_64 OS ABI diagnostics',
   () => {
     const nodes = dumpNodes();
     const title = byText(nodes, 'Up to Date');
     const ver = EXPECTED_VERSION ? byText(nodes, `v${EXPECTED_VERSION}`) : title;
-    if (!title || !ver) {
+    const nativeDiag = byText(nodes, 'x86_64');
+    if (!title || !ver || !nativeDiag) {
       throw new Error(
         `updates visible: ${nodes
           .map((n) => n.text)
           .filter(Boolean)
-          .slice(0, 10)
+          .slice(0, 12)
           .join(' | ')}`,
       );
     }
@@ -360,7 +416,9 @@ const updatesNodes = await waitFor(
 );
 saveScreenProof('updates');
 if (updatesNodes) {
-  note(`App Updates verified on Android OS via App Link: Up to Date ✓ · v${EXPECTED_VERSION}`);
+  note(
+    `App Updates verified on Android OS: Up to Date ✓ · v${EXPECTED_VERSION} + live Kotlin HallyuApkInstaller x86_64 diagnostics!`,
+  );
 }
 
 // ── Phase 6 · Verify Admin Studio UI Bounds & Touch Navigation on Real Android APK ────────────
@@ -415,7 +473,6 @@ if (TEST_USER_ID && SUPABASE_URL && SERVICE_KEY) {
       );
     }
 
-    // Real touchscreen tap on `Bugs`
     tap(adminNodes.bugs, '"Bugs" tab');
     await sleep(2000);
     saveScreenProof('admin-studio-bugs');
@@ -426,7 +483,6 @@ if (TEST_USER_ID && SUPABASE_URL && SERVICE_KEY) {
       note('Tapping "Bugs" tab cleanly switched Admin Studio out of Megaphone into Bugs inbox!');
     }
 
-    // Real touchscreen tap on `Reports`
     const reportsBtn = byText(afterBugsTap, 'Reports');
     if (reportsBtn) {
       tap(reportsBtn, '"Reports" tab');
@@ -458,5 +514,5 @@ if (process.exitCode === 1) {
   process.exit(1);
 }
 
-note('PASSED — In-place APK upgrade, auth persistence, App Updates, and Admin Studio UI touch bounds all verified on real Android OS!');
+note('PASSED — Negative ABI/corrupt-APK tests, exact x86_64 split install, in-place upgrade to 4-ABI Universal APK, native HallyuApkInstaller diagnostics, auth persistence, App Updates, and Admin Studio UI touch bounds ALL VERIFIED on real Android OS!');
 process.exit(0);

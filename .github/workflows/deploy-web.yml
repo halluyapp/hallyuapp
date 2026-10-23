@@ -6,9 +6,18 @@ on:
     branches:
       - main
       - "arena/**"
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "scripts/ci/android-installer-module.mjs"
+      - "scripts/ci/configure-android-release.mjs"
+      - "scripts/ci/publish-app-release.mjs"
+      - "scripts/ci/auth-flow-check.mjs"
+      - "scripts/ci/boot-check.sh"
+      - ".github/workflows/build-apk.yml"
 
 concurrency:
-  group: pages-deploy
+  group: pages-deploy-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -17,17 +26,15 @@ permissions:
   id-token: write
 
 jobs:
-  build-and-deploy:
-    name: Build & Deploy Live Hallyu Web App + PWA
+  verify-and-build:
+    name: Gate, Build & Headless Chrome Audit
     runs-on: ubuntu-22.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     env:
       EXPO_NO_TELEMETRY: "1"
       CI: "1"
       EXPO_PUBLIC_APP_VERSION: "1.0.${{ github.run_number }}"
+      EXPO_PUBLIC_GIT_COMMIT: "${{ github.sha }}"
       EXPO_PUBLIC_TMDB_ACCESS_TOKEN: ${{ secrets.EXPO_PUBLIC_TMDB_ACCESS_TOKEN }}
       EXPO_PUBLIC_TMDB_API_KEY: ${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}
       EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
@@ -57,55 +64,40 @@ jobs:
             ln -s ../../schema-utils/node_modules/ajv node_modules/ajv-keywords/node_modules/ajv
           fi
 
-      - name: Export Live GitHub Pages Bundle (/hallyuapp)
+      - name: Stamp build metadata & run full static, type, SQL & Vitest gate
+        run: |
+          echo "EXPO_PUBLIC_GIT_SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "EXPO_PUBLIC_BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          npm run check
+
+      - name: Export & stamp GitHub Pages bundle (/hallyuapp) + clean root bundle
         env:
-          EXPO_PUBLIC_BASE_PATH: "/${{ github.event.repository.name }}"
           GITHUB_REPOSITORY_OWNER: "${{ github.repository_owner }}"
         run: |
           set -euo pipefail
-          npx expo export --platform web --output-dir dist-pages --clear
-          node scripts/ci/enhance-web-html.mjs dist-pages
+          EXPO_PUBLIC_BASE_PATH="/${{ github.event.repository.name }}" \
+            npx expo export --platform web --output-dir dist-pages --clear
+          EXPO_PUBLIC_BASE_PATH="/${{ github.event.repository.name }}" \
+            node scripts/ci/enhance-web-html.mjs dist-pages
+
+          EXPO_PUBLIC_BASE_PATH="" \
+            npx expo export --platform web --output-dir dist-root --clear
+          EXPO_PUBLIC_BASE_PATH="" \
+            node scripts/ci/enhance-web-html.mjs dist-root
 
           test -f dist-pages/index.html
           test -f dist-pages/404.html
           test -f dist-pages/.nojekyll
           test -f dist-pages/manifest.json
           test -f dist-pages/sw.js
+          test -f dist-pages/version.json
           test -f dist-pages/.well-known/assetlinks.json
-          grep -q "apple-mobile-web-app-capable" dist-pages/index.html
+          grep -q "${GITHUB_SHA}" dist-pages/index.html
+          grep -q "${GITHUB_SHA}" dist-pages/version.json
+          ! grep -q "__HALLYU_SW_BUILD_ID__" dist-pages/sw.js
+          cat dist-pages/version.json
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./dist-pages
-
-      - name: Deploy Live Website to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
-      - name: Publish mirror bundle to gh-pages branch
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist-pages
-          publish_branch: gh-pages
-          force_orphan: true
-
-      - name: Also export & deploy clean root bundle when hallyuapp.github.io is configured
-        env:
-          EXPO_PUBLIC_BASE_PATH: ""
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          HALLYU_PAGES_TOKEN: ${{ secrets.HALLYU_PAGES_TOKEN }}
-        run: |
-          set -euo pipefail
-          npx expo export --platform web --output-dir dist-root --clear
-          node scripts/ci/enhance-web-html.mjs dist-root
-
-      - name: Audit 360x800 mobile viewport routes, Admin Studio bounds & zero runtime errors
+      - name: Pre-deploy Headless Chrome verification (Landing Page, SW, version.json & 360x800 routes)
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
@@ -173,6 +165,21 @@ jobs:
               const port = srv.address().port;
               const browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox"] });
               try {
+                // 0. Unauthenticated public Landing Page & version.json check
+                const pubCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+                const pubPage = await pubCtx.newPage();
+                const pubErrors = [];
+                pubPage.on("pageerror", (e) => pubErrors.push(e.message));
+                await pubPage.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+                await pubPage.getByText("Download Android APK").first().waitFor({ timeout: 20000 });
+                const verRes = await pubPage.evaluate(async () => (await fetch("/version.json")).json());
+                if (verRes.commit !== process.env.GITHUB_SHA) {
+                  throw new Error("version.json mismatch: " + JSON.stringify(verRes));
+                }
+                if (pubErrors.length > 0) throw new Error("Landing errors: " + JSON.stringify(pubErrors));
+                await pubCtx.close();
+
+                // 1. Authenticated 360x800 mobile viewport audit
                 const context = await browser.newContext({ viewport: { width: 360, height: 800 } });
                 await context.addInitScript(({ k, v }) => {
                   window.localStorage.setItem(k, v);
@@ -181,14 +188,13 @@ jobs:
                 const pageErrors = [];
                 page.on("pageerror", (e) => pageErrors.push(e.message));
 
-                // 1. Audit core routes on 360x800 mobile viewport with authenticated live session
                 for (const route of ["/notifications", "/settings/updates", "/settings/bug-report", "/events", "/watch-party/00000000-0000-4000-8000-000000000000"]) {
                   await page.goto(`http://127.0.0.1:${port}${route}`, { waitUntil: "domcontentloaded" });
                   await page.waitForTimeout(1600);
                   console.log("360x800 OK:", route, "->", page.url());
                 }
 
-                // 2. Audit Admin Studio on 360x800: verify tablist height >= 40px, zero overlap with Megaphone card, and real clicks across tabs
+                // 2. Audit Admin Studio bounds & touch navigation
                 await page.goto(`http://127.0.0.1:${port}/settings/moderation?tab=broadcast`, { waitUntil: "domcontentloaded" });
                 await page.waitForTimeout(2500);
                 const box = await page.getByRole("tablist").boundingBox();
@@ -215,6 +221,22 @@ jobs:
             });
           '
 
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload verified GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist-pages
+
+      - name: Upload verified dist-pages directory for gh-pages branch mirror
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-pages-verified
+          path: ./dist-pages
+          include-hidden-files: true
+          retention-days: 7
+
       - name: Upload root hallyuapp.github.io static bundle artifact
         uses: actions/upload-artifact@v4
         with:
@@ -222,3 +244,99 @@ jobs:
           path: ./dist-root
           include-hidden-files: true
           retention-days: 30
+
+  deploy:
+    name: Deploy & Verify Live Public Website
+    needs: verify-and-build
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Download verified dist-pages directory
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-pages-verified
+          path: ./dist-pages
+
+      - name: Deploy verified bundle to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Publish mirror bundle to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist-pages
+          publish_branch: gh-pages
+          force_orphan: true
+
+      - name: Verify live public site serves exact commit SHA & zero stale/404 bundles
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p /tmp/pw-live && npm --prefix /tmp/pw-live install --no-save playwright-core >/dev/null
+          NODE_PATH="/tmp/pw-live/node_modules" node -e '
+            const { chromium } = require("playwright-core");
+            const base = (process.env.PAGE_URL || "https://halluyapp.github.io/hallyuapp/").replace(/\/?$/, "/");
+            const expected = process.env.EXPECTED_SHA;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            (async () => {
+              let liveVersion = null;
+              for (let attempt = 1; attempt <= 24; attempt++) {
+                try {
+                  const res = await fetch(`${base}version.json?cb=${Date.now()}-${attempt}`, {
+                    headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
+                  });
+                  if (res.ok) {
+                    const data = await res.json();
+                    console.log(`Attempt ${attempt}: live commit=${data.commit} (expected=${expected})`);
+                    if (data.commit === expected) {
+                      liveVersion = data;
+                      break;
+                    }
+                  }
+                } catch (err) {
+                  console.log(`Attempt ${attempt} error:`, err.message);
+                }
+                await sleep(5000);
+              }
+              if (!liveVersion) {
+                throw new Error(`Live site at ${base}version.json did not propagate commit ${expected} within 120s`);
+              }
+
+              const browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox"] });
+              try {
+                const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+                const errors = [];
+                const failedAssets = [];
+                page.on("pageerror", (e) => errors.push(e.message));
+                page.on("response", (res) => {
+                  if (res.url().includes("/_expo/static/") && res.status() >= 400) {
+                    failedAssets.push(`${res.status()} ${res.url()}`);
+                  }
+                });
+                await page.goto(`${base}?verify=${Date.now()}`, { waitUntil: "domcontentloaded" });
+                await page.getByText("Download Android APK").first().waitFor({ timeout: 25000 });
+                const metaCommit = await page.locator("meta[name=\"hallyu-commit\"]").getAttribute("content");
+                console.log("Verified live HTML meta hallyu-commit:", metaCommit);
+                if (metaCommit !== expected) {
+                  throw new Error(`Live HTML meta commit ${metaCommit} !== ${expected}`);
+                }
+                if (failedAssets.length > 0) {
+                  throw new Error("Broken static assets on live site: " + JSON.stringify(failedAssets));
+                }
+                if (errors.length > 0) {
+                  throw new Error("Runtime JS errors on live site: " + JSON.stringify(errors));
+                }
+                console.log("LIVE WEB DEPLOYMENT 100% VERIFIED:", JSON.stringify(liveVersion));
+              } finally {
+                await browser.close();
+              }
+            })().catch((err) => {
+              console.error("::error::" + (err && err.stack ? err.stack : String(err)));
+              process.exit(1);
+            });
+          '

@@ -23,12 +23,14 @@ import {
   ANDROID_RELEASE_SHA256,
   getWebAppBaseUrl,
   LATEST_ARM32_APK_CDN_URL,
-  LATEST_SLIM_APK_CDN_URL,
+  LATEST_ARM64_APK_CDN_URL,
+  LATEST_UNIVERSAL_APK_CDN_URL,
   LATEST_X86_64_APK_CDN_URL,
+  LATEST_X86_APK_CDN_URL,
 } from '../../lib/links';
 
 function formatMb(bytes?: number | null): string {
-  if (!bytes || bytes <= 0) return '32.7 MB';
+  if (!bytes || bytes <= 0) return '19.5 MB';
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
@@ -46,9 +48,14 @@ export default function AppUpdatesScreen() {
   const [downloading, setDownloading] = useState(false);
   const [dlSnap, setDlSnap] = useState<DownloadProgressSnapshot | null>(null);
   const [awaitingPermissionInstall, setAwaitingPermissionInstall] = useState(false);
+  const [lastInstallError, setLastInstallError] = useState<{
+    reasonCode: string;
+    message: string;
+  } | null>(null);
 
-  const installedCode = getInstalledBuildCode();
-  const installedVersion = getInstalledVersionLabel();
+  const installedCode = info?.installedCode ?? getInstalledBuildCode();
+  const installedVersion = info?.installedVersion ?? getInstalledVersionLabel();
+  const webCommit = (process.env.EXPO_PUBLIC_GIT_SHORT ?? '').trim();
 
   const runCheck = useCallback(
     async (notify = false) => {
@@ -56,12 +63,20 @@ export default function AppUpdatesScreen() {
       try {
         const res = await checkForAppUpdate();
         setInfo(res);
+        if (!res.hasUpdate) {
+          setLastInstallError(null);
+        } else if (res.pendingInstall?.status === 'install_failed' && res.pendingInstall.lastErrorMessage) {
+          setLastInstallError({
+            reasonCode: res.pendingInstall.lastErrorReasonCode ?? 'INSTALL_FAILED',
+            message: res.pendingInstall.lastErrorMessage,
+          });
+        }
         if (notify) {
           haptic.light();
           toast.show({
             message: res.hasUpdate
               ? res.pendingInstall
-                ? `Still on v${res.installedVersion} — downloaded v${res.latest.versionName} is ready to install`
+                ? `Still on v${res.installedVersion} — downloaded v${res.latest.versionName} is not installed yet`
                 : `New release v${res.latest.versionName} is available`
               : `Confirmed up to date — running v${res.installedVersion}`,
             tone: 'success',
@@ -94,14 +109,17 @@ export default function AppUpdatesScreen() {
     if (downloading) return;
     setDownloading(true);
     setAwaitingPermissionInstall(false);
+    setLastInstallError(null);
     try {
       const target = info?.latest ?? {
-        apkUrl: LATEST_SLIM_APK_CDN_URL,
+        apkUrl: LATEST_UNIVERSAL_APK_CDN_URL,
+        universalApkUrl: LATEST_UNIVERSAL_APK_CDN_URL,
+        arm64ApkUrl: LATEST_ARM64_APK_CDN_URL,
         arm32ApkUrl: LATEST_ARM32_APK_CDN_URL,
         x86_64ApkUrl: LATEST_X86_64_APK_CDN_URL,
+        x86ApkUrl: LATEST_X86_APK_CDN_URL,
         versionCode: installedCode + 10,
         versionName: installedVersion,
-        fileSizeBytes: 34_306_457,
       };
       const outcome = await downloadAndInstallApk(target, (snap) => setDlSnap(snap));
       const refreshed = await checkForAppUpdate().catch(() => null);
@@ -110,21 +128,40 @@ export default function AppUpdatesScreen() {
       if (outcome.status === 'needs_unknown_sources_permission') {
         setAwaitingPermissionInstall(true);
         toast.show({
-          message: 'Enable "Install unknown apps", then tap Install Downloaded Update right here!',
+          message: 'Enable "Install unknown apps", then tap Install Verified Update right here!',
+        });
+      } else if (outcome.status === 'cancelled_by_user') {
+        toast.show({
+          message: outcome.message,
         });
       } else if (outcome.status === 'not_installed_yet') {
         toast.show({
-          message: `APK downloaded, not installed yet — your phone is still on v${installedVersion}.`,
+          message: `APK verified on device, not installed yet — still running v${installedVersion}.`,
+        });
+      } else if (outcome.status === 'install_failed') {
+        setLastInstallError({
+          reasonCode: outcome.reasonCode,
+          message: outcome.message,
+        });
+        toast.show({
+          message: outcome.message,
+          tone: 'danger',
+        });
+      } else if (outcome.status === 'installed') {
+        toast.show({
+          message: `Verified update installed — running v${refreshed?.installedVersion ?? target.versionName}`,
+          tone: 'success',
         });
       } else if (outcome.status === 'awaiting_user_install') {
         toast.show({
-          message: 'Installer opened — tap Update in Android’s prompt to finish installing.',
-          tone: 'success',
+          message: 'Verified package staged — tap Update in Android’s prompt to complete installation.',
         });
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Download interrupted — tap to retry';
+      setLastInstallError({ reasonCode: 'DOWNLOAD_ERROR', message: msg });
       toast.show({
-        message: err instanceof Error ? err.message : 'Download interrupted — tap to retry',
+        message: msg,
         tone: 'danger',
       });
     } finally {
@@ -142,9 +179,22 @@ export default function AppUpdatesScreen() {
     : null;
 
   const isUpToDate = info ? !info.hasUpdate : false;
-  const pendingNotInstalled = Boolean(info?.hasUpdate && info?.pendingInstall);
-  const readyFromCache = Boolean(info?.cachedApkReady || awaitingPermissionInstall || pendingNotInstalled);
+  const pendingStatus = info?.hasUpdate ? info?.pendingInstall?.status : undefined;
+  const pendingNotInstalled = Boolean(
+    info?.hasUpdate &&
+      info?.pendingInstall &&
+      info.pendingInstall.status !== 'install_failed',
+  );
+  const readyFromCache = Boolean(
+    info?.cachedApkReady || awaitingPermissionInstall || pendingNotInstalled,
+  );
   const abiIncompatible = Boolean(info && !info.selectedArtifact.ok);
+  const selectedSizeBytes =
+    info?.selectedArtifact.ok && info.selectedArtifact.sizeBytes
+      ? info.selectedArtifact.sizeBytes
+      : info?.latest.fileSizeBytes;
+  const selectedAbiLabel = info?.selectedArtifact.ok ? info.selectedArtifact.abi : 'incompatible';
+  const deviceEnv = info?.deviceEnv ?? null;
 
   return (
     <Screen header={<TopBar mode="stack" title="App Updates" />}>
@@ -170,11 +220,13 @@ export default function AppUpdatesScreen() {
             styles.card,
             isUpToDate
               ? { borderColor: 'rgba(16,185,129,0.45)' }
-              : pendingNotInstalled
-                ? { borderColor: 'rgba(245,158,11,0.52)' }
-                : info?.hasUpdate
-                  ? { borderColor: 'rgba(225,29,72,0.48)' }
-                  : null,
+              : lastInstallError
+                ? { borderColor: 'rgba(239,68,68,0.58)' }
+                : pendingNotInstalled
+                  ? { borderColor: 'rgba(245,158,11,0.52)' }
+                  : info?.hasUpdate
+                    ? { borderColor: 'rgba(225,29,72,0.48)' }
+                    : null,
           ]}
         >
           <View style={styles.badgeRow}>
@@ -194,12 +246,22 @@ export default function AppUpdatesScreen() {
                     ? 'sync-outline'
                     : isUpToDate
                       ? 'shield-checkmark'
-                      : pendingNotInstalled
-                        ? 'alert-circle-outline'
-                        : 'rocket-outline'
+                      : lastInstallError
+                        ? 'close-circle-outline'
+                        : pendingNotInstalled
+                          ? 'alert-circle-outline'
+                          : 'rocket-outline'
                 }
                 size={24}
-                color={isUpToDate ? '#10B981' : pendingNotInstalled ? '#F59E0B' : colors.accent}
+                color={
+                  isUpToDate
+                    ? '#10B981'
+                    : lastInstallError
+                      ? '#EF4444'
+                      : pendingNotInstalled
+                        ? '#F59E0B'
+                        : colors.accent
+                }
               />
             </View>
             <View style={{ flex: 1 }}>
@@ -208,18 +270,26 @@ export default function AppUpdatesScreen() {
                   ? 'Checking live release channel…'
                   : isUpToDate
                     ? 'Up to Date ✓'
-                    : pendingNotInstalled
-                      ? `Downloaded · Not Installed Yet`
-                      : `Update Available · v${info?.latest.versionName}`}
+                    : lastInstallError
+                      ? 'Update Failed Verification'
+                      : pendingStatus === 'cancelled_by_user'
+                        ? 'Installation Cancelled'
+                        : pendingNotInstalled
+                          ? 'Downloaded · Awaiting Approval'
+                          : `Update Available · v${info?.latest.versionName}`}
               </Text>
               <Text variant="caption" tone="secondary">
                 {isUpToDate
-                  ? 'You are running the newest official signed build.'
-                  : pendingNotInstalled
-                    ? `Your device is still running v${installedVersion}. Tap below to confirm installation.`
-                    : info?.latest.gitCommit
-                      ? `Commit ${info.latest.gitCommit}${publishedTime ? ` · Published ${publishedTime}` : ''}`
-                      : 'Direct high-speed CDN package ready to install'}
+                  ? Platform.OS === 'web' && webCommit
+                    ? `Live web deployment verified on commit ${webCommit}.`
+                    : 'You are running the newest official signed build.'
+                  : lastInstallError
+                    ? `Still running v${installedVersion} — see diagnostic details below.`
+                    : pendingNotInstalled
+                      ? `Still running v${installedVersion}. Tap below and confirm Update in Android’s prompt.`
+                      : info?.latest.gitCommit
+                        ? `Commit ${info.latest.gitCommit}${publishedTime ? ` · Published ${publishedTime}` : ''}`
+                        : 'Direct high-speed CDN package ready to install'}
               </Text>
             </View>
           </View>
@@ -255,15 +325,30 @@ export default function AppUpdatesScreen() {
               </Text>
               <Text variant="caption" tone="secondary">
                 {info
-                  ? `Build ${info.latest.versionCode} · ${formatMb(info.latest.fileSizeBytes)}`
+                  ? `Build ${info.latest.versionCode} · ${selectedAbiLabel} (${formatMb(selectedSizeBytes)})`
                   : 'Checking…'}
               </Text>
             </View>
           </View>
 
+          {/* Explicit Honest Error Banner when installation or pre-flight validation fails */}
+          {lastInstallError ? (
+            <View style={styles.errorNotice}>
+              <Ionicons name="alert-circle" size={18} color="#EF4444" />
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text variant="caption" style={{ color: '#EF4444', fontFamily: fonts.semibold }}>
+                  Diagnostic Code: {lastInstallError.reasonCode}
+                </Text>
+                <Text variant="caption" style={{ color: colors.textPrimary }}>
+                  {lastInstallError.message}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
           {abiIncompatible && info && !info.selectedArtifact.ok ? (
-            <View style={styles.warningNotice}>
-              <Ionicons name="warning-outline" size={18} color={colors.accent} />
+            <View style={styles.errorNotice}>
+              <Ionicons name="warning-outline" size={18} color="#EF4444" />
               <Text variant="caption" style={{ flex: 1, color: colors.textPrimary }}>
                 {info.selectedArtifact.message}
               </Text>
@@ -275,9 +360,9 @@ export default function AppUpdatesScreen() {
               <Ionicons name="information-circle-outline" size={18} color="#F59E0B" />
               <View style={{ flex: 1, gap: 4 }}>
                 <Text variant="caption" style={{ color: colors.textPrimary }}>
-                  v{info?.latest.versionName} is verified on device storage, not installed yet. If
-                  Android asked for “Install unknown apps” permission, make sure it is switched ON,
-                  then tap “Install Downloaded Update” below (no re-download needed).
+                  v{info?.latest.versionName} ({selectedAbiLabel}) is verified on storage, not
+                  installed yet — your phone is still running v{installedVersion}. Make sure
+                  “Install unknown apps” is enabled, then tap “Install Verified Update” below.
                 </Text>
                 {Platform.OS === 'android' ? (
                   <Pressable onPress={() => void openUnknownSourcesSettings()}>
@@ -308,10 +393,14 @@ export default function AppUpdatesScreen() {
               </View>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                 <Text variant="caption" tone="secondary">
-                  {formatMb(dlSnap.writtenBytes)} / {formatMb(dlSnap.totalBytes)} ({dlSnap.percent}%)
+                  {dlSnap.stage === 'verifying'
+                    ? 'Verifying APK SHA-256, ABI & signing certificate…'
+                    : dlSnap.stage === 'launching_installer'
+                      ? 'Staging verified package into Android Installer…'
+                      : `${formatMb(dlSnap.writtenBytes)} / ${formatMb(dlSnap.totalBytes)} (${dlSnap.percent}%)`}
                 </Text>
                 <Text variant="caption" style={{ color: colors.accent, fontFamily: fonts.semibold }}>
-                  {formatSpeed(dlSnap.speedBytesPerSec) || 'Connecting…'}
+                  {formatSpeed(dlSnap.speedBytesPerSec) || 'Verifying…'}
                 </Text>
               </View>
             </View>
@@ -323,10 +412,12 @@ export default function AppUpdatesScreen() {
                 <Button
                   label={
                     downloading
-                      ? `Downloading ${dlSnap?.percent ?? 0}%…`
+                      ? dlSnap?.stage === 'verifying'
+                        ? 'Verifying Package…'
+                        : `Downloading ${dlSnap?.percent ?? 0}%…`
                       : readyFromCache
-                        ? `Install Downloaded Update (v${info.latest.versionName})`
-                        : `Download & Update to v${info.latest.versionName} (${formatMb(info.latest.fileSizeBytes)})`
+                        ? `Install Verified Update (v${info.latest.versionName})`
+                        : `Download & Update to v${info.latest.versionName} (${formatMb(selectedSizeBytes)})`
                   }
                   icon={readyFromCache ? 'flash' : 'download-outline'}
                   block
@@ -345,10 +436,12 @@ export default function AppUpdatesScreen() {
               )
             ) : (
               <Button
-                label="Download Latest Android APK (32.7 MB)"
+                label={`Download Universal Android APK (${formatMb(info?.latest.fileSizeBytes)})`}
                 icon="logo-android"
                 block
-                onPress={() => void Linking.openURL(info?.latest.apkUrl ?? LATEST_SLIM_APK_CDN_URL)}
+                onPress={() =>
+                  void Linking.openURL(info?.latest.universalApkUrl ?? LATEST_UNIVERSAL_APK_CDN_URL)
+                }
               />
             )}
 
@@ -365,24 +458,65 @@ export default function AppUpdatesScreen() {
           </View>
         </View>
 
-        {/* Direct Public CDN Mirrors — Architecture-Matched Public 200 OK Binaries */}
+        {/* Runtime Android Environment & Compatibility Diagnostics */}
+        {Platform.OS === 'android' && deviceEnv ? (
+          <View style={styles.card}>
+            <Text variant="titleSmall">Device Compatibility Diagnostics</Text>
+            <Text variant="caption" tone="secondary">
+              Package: {deviceEnv.installed.packageName} · Android {deviceEnv.androidRelease || '?'} (SDK {deviceEnv.sdkInt})
+              {deviceEnv.brand || deviceEnv.model ? ` · ${deviceEnv.brand} ${deviceEnv.model}` : ''}
+            </Text>
+            <Text variant="caption" tone="secondary">
+              Android OS Supported ABIs: {deviceEnv.supportedAbis.join(', ')}
+              {deviceEnv.kernelArch ? ` · Kernel: ${deviceEnv.kernelArch}` : ''}
+            </Text>
+            {deviceEnv.cpu64BitCapableOs32BitOnly ? (
+              <Text variant="caption" style={{ color: '#F59E0B' }}>
+                Detected 64-bit CPU running 32-bit Android OS — automatically selecting 32-bit armeabi-v7a package.
+              </Text>
+            ) : null}
+            <Text variant="caption" tone="tertiary">
+              Selected Artifact: {selectedAbiLabel} · Unknown-App Install Permission:{' '}
+              {deviceEnv.canRequestPackageInstalls ? 'Granted ✓' : 'Not granted yet'}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Direct Public CDN Mirrors — All 5 Signed Architecture Variants */}
         <View style={styles.card}>
-          <Text variant="titleSmall">Direct Architecture-Specific APK Mirrors</Text>
+          <Text variant="titleSmall">Direct Signed APK Downloads (All Devices)</Text>
           <Text variant="caption" tone="secondary">
-            Every APK below is served directly from Hallyu’s public global CDN and signed with the
-            same permanent key, so Android updates cleanly over your existing install without
-            touching your login or data.
+            Every APK below is signed with Hallyu’s permanent 4096-bit RSA certificate and supports
+            Android 6.0 through Android 16 (including 16 KB memory-page devices) for clean in-place upgrades.
           </Text>
 
           <Pressable
-            onPress={() => void Linking.openURL(info?.latest.apkUrl ?? LATEST_SLIM_APK_CDN_URL)}
+            onPress={() =>
+              void Linking.openURL(info?.latest.universalApkUrl ?? LATEST_UNIVERSAL_APK_CDN_URL)
+            }
+            style={styles.linkRow}
+          >
+            <Ionicons name="shield-checkmark-outline" size={20} color="#10B981" />
+            <View style={{ flex: 1 }}>
+              <Text variant="label">Universal All-Phones APK (arm64 + armv7 + x86_64 + x86)</Text>
+              <Text variant="caption" tone="tertiary">
+                Works on 100% of Android phones, tablets & Chromebooks regardless of 32-bit/64-bit OS
+              </Text>
+            </View>
+            <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
+          </Pressable>
+
+          <Pressable
+            onPress={() =>
+              void Linking.openURL(info?.latest.arm64ApkUrl ?? LATEST_ARM64_APK_CDN_URL)
+            }
             style={styles.linkRow}
           >
             <Ionicons name="phone-portrait-outline" size={20} color={colors.accent} />
             <View style={{ flex: 1 }}>
-              <Text variant="label">Android 64-bit ARM APK (arm64-v8a · {formatMb(info?.latest.fileSizeBytes)})</Text>
+              <Text variant="label">64-bit ARM Slim APK (arm64-v8a)</Text>
               <Text variant="caption" tone="tertiary">
-                Fastest download · Modern 64-bit Samsung, Pixel, Xiaomi, Tecno, Infinix & OnePlus phones
+                Smallest download for 64-bit Android OS phones (Pixel, Galaxy S/A, Xiaomi, OnePlus)
               </Text>
             </View>
             <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
@@ -396,23 +530,39 @@ export default function AppUpdatesScreen() {
           >
             <Ionicons name="hardware-chip-outline" size={20} color={colors.textPrimary} />
             <View style={{ flex: 1 }}>
-              <Text variant="label">Android 32-bit ARM APK (armeabi-v7a)</Text>
+              <Text variant="label">32-bit ARM Slim APK (armeabi-v7a)</Text>
               <Text variant="caption" tone="tertiary">
-                For 32-bit ARM Android phones · Direct public CDN
+                Smallest download for 32-bit Android OS phones (including 64-bit SoCs running Android Go)
               </Text>
             </View>
             <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
           </Pressable>
 
           <Pressable
-            onPress={() => void Linking.openURL(info?.latest.x86_64ApkUrl ?? LATEST_X86_64_APK_CDN_URL)}
+            onPress={() =>
+              void Linking.openURL(info?.latest.x86_64ApkUrl ?? LATEST_X86_64_APK_CDN_URL)
+            }
             style={styles.linkRow}
           >
             <Ionicons name="laptop-outline" size={20} color={colors.textPrimary} />
             <View style={{ flex: 1 }}>
-              <Text variant="label">Chromebook & Emulator APK (x86_64)</Text>
+              <Text variant="label">64-bit Chromebook & Emulator APK (x86_64)</Text>
               <Text variant="caption" tone="tertiary">
-                For ChromeOS laptops & PC Android emulators · Direct public CDN
+                For 64-bit ChromeOS laptops & desktop emulators
+              </Text>
+            </View>
+            <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
+          </Pressable>
+
+          <Pressable
+            onPress={() => void Linking.openURL(info?.latest.x86ApkUrl ?? LATEST_X86_APK_CDN_URL)}
+            style={styles.linkRow}
+          >
+            <Ionicons name="tablet-landscape-outline" size={20} color={colors.textPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text variant="label">32-bit Intel Tablet & Emulator APK (x86)</Text>
+              <Text variant="caption" tone="tertiary">
+                For 32-bit x86 Android tablets & legacy emulators
               </Text>
             </View>
             <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
@@ -513,6 +663,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(245,158,11,0.12)',
     borderWidth: 1,
     borderColor: 'rgba(245,158,11,0.4)',
+  },
+  errorNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.x2,
+    padding: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: 'rgba(239,68,68,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.45)',
   },
   progressTrack: {
     height: 8,

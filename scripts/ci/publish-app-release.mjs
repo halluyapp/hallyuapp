@@ -1,299 +1,466 @@
 #!/usr/bin/env node
 /**
- * Publishes all freshly verified signed CPU split APKs (`arm64-v8a`, `armeabi-v7a`, `x86_64`)
- * directly to public Supabase Storage bucket `app-releases/latest/`, generates truthful commit-based
- * release notes dynamically from git history since the previous `apk-*` tag, registers the release
- * in `public.app_releases` + `latest/manifest.json`, AND broadcasts out-of-app push alerts via
- * `public.announce_app_release` + `push-dispatch` so users know an update is ready even when Hallyu
- * is closed.
+ * Publishes all signed Android release APKs (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`,
+ * `arm-universal` [dual ARM64+ARMv7 <= 30 MB], and full 4-ABI `universal`):
+ *   1. Uploads every artifact `<= 49 MB` to immutable versioned paths
+ *      `releases/v<versionName>/hallyu-<abi>.apk` AND mutable `latest/hallyu-<abi>.apk` in
+ *      Supabase Storage CDN, while gracefully falling back to GitHub Releases CDN URLs if the
+ *      full 4-ABI `universal` APK exceeds Supabase Free-Tier's 50 MB per-object cap.
+ *   2. Uploads a dual-ARM (`arm64-v8a` + `armeabi-v7a`, ~26 MB) or full 4-ABI universal APK to
+ *      legacy `latest/hallyu-arm64.apk` AND `manifest.abis['arm64-v8a']` (`versionCode = base + 5`)
+ *      so existing installs on older Hallyu builds (`v1.0.201`–`v1.0.218`) upgrade cleanly in 1 tap
+ *      even on 64-bit CPUs running 32-bit Android OS!
+ *   3. Publishes `latest/manifest.json` (`perAbi` exact splits + `universal` + `minSdkVersion`).
+ *   4. Upserts `public.app_releases` (`is_latest = true`) and verifies HTTP 200 / 302 across every
+ *      published URL before marking the build green.
  */
-import { execSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import process from 'node:process';
 
-const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL ?? '')
+const SUPABASE_URL = (process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL ?? '')
   .trim()
   .replace(/\/$/, '');
-const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
-const repoSlug = (process.env.GITHUB_REPO_SLUG ?? 'halluyapp/hallyuapp').trim();
-const releaseTag = (process.env.GITHUB_RELEASE_TAG ?? '').trim();
+const SERVICE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
+const BUCKET = 'app-releases';
+const SUPABASE_MAX_UPLOAD_BYTES = 49 * 1024 * 1024; // 49 MiB safety margin below 50 MiB limit
+const SIGNING_SHA256 =
+  '64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA';
 
-const slimPath = process.argv[2] || 'hallyu-slim.apk';
-const arm32Path = process.argv[3] || 'hallyu-armeabi-v7a.apk';
-const x86Path = process.argv[4] || 'hallyu-x86_64.apk';
+if (!SUPABASE_URL || !SERVICE_KEY) {
+  console.log('Skipping Supabase CDN APK publish: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.');
+  process.exit(0);
+}
 
-const versionCode = Number.parseInt(process.env.HALLYU_SLIM_VERSION_CODE ?? '10004', 10);
-const releaseTrain = Math.floor(versionCode / 10);
-const versionName = (
-  process.env.HALLYU_APP_VERSION ??
-  process.env.EXPO_PUBLIC_APP_VERSION ??
-  '1.0.0'
-).trim();
-const commit = (process.env.SOURCE_SHORT ?? '').trim();
+const cliArgs = process.argv.slice(2).map((p) => path.resolve(p));
+const releaseDir = path.resolve('android/app/build/outputs/apk/release');
 
-if (!supabaseUrl || !serviceKey) {
-  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for CDN release upload.');
+function pickExisting(candidates) {
+  for (const p of candidates) {
+    if (p && fs.existsSync(p) && fs.statSync(p).size > 1_000_000) return p;
+  }
+  return null;
+}
+
+const arm64Path = pickExisting([
+  path.resolve('hallyu-arm64-v8a.apk'),
+  path.resolve('hallyu-slim.apk'),
+  path.join(releaseDir, 'app-arm64-v8a-release.apk'),
+  cliArgs[0],
+]);
+const arm32Path = pickExisting([
+  path.resolve('hallyu-armeabi-v7a.apk'),
+  path.join(releaseDir, 'app-armeabi-v7a-release.apk'),
+  cliArgs[1],
+]);
+const x86_64Path = pickExisting([
+  path.resolve('hallyu-x86_64.apk'),
+  path.join(releaseDir, 'app-x86_64-release.apk'),
+  cliArgs[2],
+]);
+const x86Path = pickExisting([
+  path.resolve('hallyu-x86.apk'),
+  path.join(releaseDir, 'app-x86-release.apk'),
+  cliArgs[3],
+]);
+const universalPath = pickExisting([
+  path.resolve('hallyu-universal.apk'),
+  path.resolve('hallyu.apk'),
+  path.join(releaseDir, 'app-universal-release.apk'),
+  path.join(releaseDir, 'app-release.apk'),
+  cliArgs[4],
+]);
+const armUniversalPath = pickExisting([
+  path.resolve('hallyu-arm-universal.apk'),
+  universalPath,
+]);
+
+if (!arm64Path || !universalPath) {
+  console.error(
+    `Missing required APK files (arm64=${arm64Path}, universal=${universalPath})`,
+  );
   process.exit(1);
 }
 
-export function buildDynamicReleaseNotes({
-  versionName: ver,
-  commitShort,
-  overrideNotes,
-} = {}) {
-  if (overrideNotes && String(overrideNotes).trim()) {
-    return String(overrideNotes).trim();
-  }
-  try {
-    const tags = execSync('git tag --list "apk-*" --sort=-creatordate', {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .split('\n')
-      .map((t) => t.trim())
-      .filter((t) => t && t !== releaseTag);
-    const prevTag = tags[0] ?? '';
-    const rangeArg = prevTag ? `${prevTag}..HEAD` : '-n 6';
-    const subjects = execSync(`git log ${rangeArg} --no-merges --pretty=format:%s`, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !/^chore\(ci\):/i.test(line));
+const runNumber = Number(process.env.GITHUB_RUN_NUMBER ?? '1');
+const baseCode = Number(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? String(10000 + runNumber * 10));
+const versionName = (process.env.HALLYU_APP_VERSION ?? `1.0.${runNumber}`).trim();
+const gitRef = process.env.SOURCE_REF ?? process.env.GITHUB_REF_NAME ?? 'main';
+const repoSlug = process.env.GITHUB_REPO_SLUG ?? process.env.GITHUB_REPOSITORY ?? 'halluyapp/hallyuapp';
+const releaseTag = process.env.GITHUB_RELEASE_TAG ?? `apk-${runNumber}`;
 
-    const unique = [...new Set(subjects)].slice(0, 6);
-    if (unique.length > 0) {
-      return [
-        `Signed release v${ver}${commitShort ? ` (${commitShort})` : ''}:`,
-        ...unique.map((s) => `• ${s}`),
-      ].join('\n');
-    }
+let gitCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA ?? '';
+if (!gitCommit) {
+  try {
+    gitCommit = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
   } catch {
-    // Fallback if git history unavailable
+    gitCommit = 'unknown';
   }
-  return `Signed release v${ver}${commitShort ? ` (${commitShort})` : ''}: Reliability, performance, and stability updates.`;
 }
 
-function inspectApkFile(filePath, label) {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Required APK artifact missing for ${label}: ${filePath}`);
-  }
-  const bytes = fs.readFileSync(filePath);
-  if (
-    bytes.byteLength < 5_000_000 ||
-    bytes[0] !== 0x50 ||
-    bytes[1] !== 0x4b ||
-    bytes[2] !== 0x03 ||
-    bytes[3] !== 0x04
-  ) {
-    throw new Error(`Invalid or truncated APK binary for ${label}: ${filePath} (${bytes.byteLength} bytes)`);
-  }
-  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+let commitBullets = '';
+try {
+  const prevTag = execSync('git tag --list "apk-*" --sort=-creatordate | head -n 1', {
+    encoding: 'utf8',
+  }).trim();
+  const range = prevTag ? `${prevTag}..HEAD` : '-n 6';
+  commitBullets = execSync(`git log ${range} --no-merges --pretty=format:"• %s" | head -n 6`, {
+    encoding: 'utf8',
+  }).trim();
+} catch {
+  commitBullets = '';
+}
+
+const releaseNotes = (
+  process.env.HALLYU_RELEASE_NOTES ??
+  (commitBullets ||
+    `Hallyu v${versionName} — universal Android ABI compatibility (ARM64, ARMv7, x86_64, x86 & 16 KB page support), verified in-place upgrades, and stability improvements.`)
+).trim();
+
+function inspectLocalApk(filePath, versionCode, ghAssetName) {
+  const buf = fs.readFileSync(filePath);
+  const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
   return {
-    bytes,
+    filePath,
+    buf,
+    bytes: buf.byteLength,
     sha256,
-    sizeBytes: bytes.byteLength,
-    sizeMb: Number((bytes.byteLength / (1024 * 1024)).toFixed(1)),
+    versionCode,
+    ghUrl: `https://github.com/${repoSlug}/releases/download/${releaseTag}/${ghAssetName}`,
   };
 }
 
-async function uploadObject(objectPath, bytes, contentType, cacheControl) {
-  const res = await fetch(`${supabaseUrl}/storage/v1/object/app-releases/${objectPath}`, {
+const artifacts = {
+  x86: x86Path ? inspectLocalApk(x86Path, baseCode + 1, 'hallyu-x86.apk') : null,
+  'armeabi-v7a': arm32Path
+    ? inspectLocalApk(arm32Path, baseCode + 2, 'hallyu-armeabi-v7a.apk')
+    : null,
+  x86_64: x86_64Path
+    ? inspectLocalApk(x86_64Path, baseCode + 3, 'hallyu-x86_64.apk')
+    : null,
+  'arm64-v8a': inspectLocalApk(arm64Path, baseCode + 4, 'hallyu-slim.apk'),
+  universal: inspectLocalApk(universalPath, baseCode + 5, 'hallyu.apk'),
+  armUniversal:
+    armUniversalPath && armUniversalPath !== universalPath
+      ? inspectLocalApk(armUniversalPath, baseCode + 5, 'hallyu-arm-universal.apk')
+      : null,
+};
+
+async function ensurePublicBucket() {
+  const listRes = await fetch(`${SUPABASE_URL}/storage/v1/bucket/${BUCKET}`, {
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+  });
+  if (listRes.ok) return;
+
+  const createRes = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
     method: 'POST',
     headers: {
-      apikey: serviceKey,
-      Authorization: `Bearer ${serviceKey}`,
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      id: BUCKET,
+      name: BUCKET,
+      public: true,
+    }),
+  });
+  if (!createRes.ok) {
+    throw new Error(`Bucket create failed (${createRes.status}): ${await createRes.text()}`);
+  }
+}
+
+async function uploadObject(objectPath, bodyBuffer, contentType, cacheControl) {
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${objectPath}`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
       'Content-Type': contentType,
       'Cache-Control': cacheControl,
       'x-upsert': 'true',
     },
-    body: bytes,
+    body: bodyBuffer,
   });
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Upload ${objectPath} failed (${res.status}): ${errText}`);
+    throw new Error(`Upload ${objectPath} failed (${res.status}): ${await res.text()}`);
+  }
+  return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${objectPath}`;
+}
+
+async function verifyLiveApkUrl(label, url) {
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Range: 'bytes=0-15',
+      'Cache-Control': 'no-cache',
+    },
+  });
+  if (res.status !== 200 && res.status !== 206) {
+    throw new Error(`Post-publish verification failed for ${label} (${url}): HTTP ${res.status}`);
+  }
+  const headBytes = Buffer.from(await res.arrayBuffer());
+  if (headBytes.length < 4 || headBytes[0] !== 0x50 || headBytes[1] !== 0x4b) {
+    throw new Error(`Post-publish ZIP magic mismatch for ${label} (${url})`);
+  }
+  console.log(`Verified live APK HTTP ${res.status} + PK header: ${label} -> ${url}`);
+}
+
+await ensurePublicBucket();
+
+const publishedUrls = {};
+const publishedMeta = {};
+
+for (const key of ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'universal']) {
+  const art = artifacts[key];
+  if (!art) continue;
+  const mb = (art.bytes / (1024 * 1024)).toFixed(2);
+
+  if (art.bytes <= SUPABASE_MAX_UPLOAD_BYTES) {
+    console.log(
+      `Uploading ${key} (${mb} MB, code=${art.versionCode}, sha256=${art.sha256.slice(0, 12)}…) to Supabase CDN…`,
+    );
+    const immutablePath = `releases/v${versionName}/hallyu-${key}.apk`;
+    const latestPath = `latest/hallyu-${key}.apk`;
+    const immutableUrl = await uploadObject(
+      immutablePath,
+      art.buf,
+      'application/vnd.android.package-archive',
+      'public, max-age=31536000, immutable',
+    );
+    const latestUrl = await uploadObject(
+      latestPath,
+      art.buf,
+      'application/vnd.android.package-archive',
+      'no-cache',
+    );
+    publishedUrls[key] = { immutableUrl, latestUrl };
+    publishedMeta[key] = {
+      url: immutableUrl,
+      latestUrl,
+      githubUrl: art.ghUrl,
+      sha256: art.sha256,
+      sizeBytes: art.bytes,
+      versionCode: art.versionCode,
+    };
+  } else if (key === 'universal' && artifacts.armUniversal && artifacts.armUniversal.bytes <= SUPABASE_MAX_UPLOAD_BYTES) {
+    const fallbackArt = artifacts.armUniversal;
+    const fbMb = (fallbackArt.bytes / (1024 * 1024)).toFixed(2);
+    console.log(
+      `4-ABI universal is ${mb} MB (> 49 MB Supabase cap) — uploading ${fbMb} MB Dual-ARM (arm64-v8a + armeabi-v7a) universal APK directly to public Supabase CDN so public downloads never hit private GitHub URLs!`,
+    );
+    const immutablePath = `releases/v${versionName}/hallyu-universal.apk`;
+    const latestPath = `latest/hallyu-universal.apk`;
+    const immutableUrl = await uploadObject(
+      immutablePath,
+      fallbackArt.buf,
+      'application/vnd.android.package-archive',
+      'public, max-age=31536000, immutable',
+    );
+    const latestUrl = await uploadObject(
+      latestPath,
+      fallbackArt.buf,
+      'application/vnd.android.package-archive',
+      'no-cache',
+    );
+    publishedUrls[key] = { immutableUrl, latestUrl };
+    publishedMeta[key] = {
+      url: immutableUrl,
+      latestUrl,
+      githubUrl: art.ghUrl,
+      sha256: fallbackArt.sha256,
+      sizeBytes: fallbackArt.bytes,
+      versionCode: fallbackArt.versionCode,
+    };
+  } else {
+    console.log(
+      `Artifact ${key} is ${mb} MB (> 49 MB Supabase cap) — serving directly via verified GitHub Releases global CDN (${art.ghUrl}).`,
+    );
+    publishedUrls[key] = { immutableUrl: art.ghUrl, latestUrl: art.ghUrl };
+    publishedMeta[key] = {
+      url: art.ghUrl,
+      latestUrl: art.ghUrl,
+      githubUrl: art.ghUrl,
+      sha256: art.sha256,
+      sizeBytes: art.bytes,
+      versionCode: art.versionCode,
+    };
   }
 }
 
-const ghReleaseBase = releaseTag
-  ? `https://github.com/${repoSlug}/releases/download/${releaseTag}`
-  : `https://github.com/${repoSlug}/releases/latest/download`;
+// Bridge `latest/hallyu-arm64.apk` + `manifest.abis['arm64-v8a']` for legacy installs (`v1.0.201`–`v1.0.218`):
+// Use full 4-ABI `universal` if <= 49 MB, otherwise `armUniversal` (dual ARM64 + ARMv7, ~26 MB),
+// so BOTH 64-bit ARM phones AND 64-bit CPUs running 32-bit Android OS upgrade seamlessly!
+const bridgeArt =
+  artifacts.universal.bytes <= SUPABASE_MAX_UPLOAD_BYTES
+    ? artifacts.universal
+    : artifacts.armUniversal ?? artifacts['arm64-v8a'];
 
-const arm64Info = inspectApkFile(slimPath, 'arm64-v8a');
-let slimPublicUrl = `${supabaseUrl}/storage/v1/object/public/app-releases/latest/hallyu-arm64.apk`;
-console.log(
-  `Uploading latest/hallyu-arm64.apk (${arm64Info.sizeMb} MB, sha256=${arm64Info.sha256.slice(0, 16)}…)`,
+const legacyBridgeUrl = await uploadObject(
+  'latest/hallyu-arm64.apk',
+  bridgeArt.buf,
+  'application/vnd.android.package-archive',
+  'no-cache',
 );
-try {
-  await uploadObject(
-    'latest/hallyu-arm64.apk',
-    arm64Info.bytes,
-    'application/vnd.android.package-archive',
-    'public, max-age=120',
-  );
-} catch (err) {
-  console.warn(`Supabase CDN upload fallback for arm64 APK: ${err.message}`);
-  slimPublicUrl = `${ghReleaseBase}/hallyu-slim.apk`;
+publishedUrls.legacyArm64Bridge = { latestUrl: legacyBridgeUrl };
+
+const perAbi = {};
+for (const abi of ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'universal']) {
+  const m = publishedMeta[abi];
+  if (!m) continue;
+  perAbi[abi] = {
+    url: m.url,
+    latestUrl: m.latestUrl,
+    githubUrl: m.githubUrl,
+    sha256: m.sha256,
+    sizeBytes: m.sizeBytes,
+    versionCode: m.versionCode,
+  };
 }
 
-const abis = {
+const legacyCompatAbis = {
+  ...perAbi,
   'arm64-v8a': {
-    abi: 'arm64-v8a',
-    url: slimPublicUrl,
-    sha256: arm64Info.sha256,
-    sizeBytes: arm64Info.sizeBytes,
-    sizeMb: arm64Info.sizeMb,
-    versionCode: releaseTrain * 10 + 4,
+    url: legacyBridgeUrl,
+    latestUrl: legacyBridgeUrl,
+    sha256: bridgeArt.sha256,
+    sizeBytes: bridgeArt.bytes,
+    versionCode: bridgeArt.versionCode,
   },
 };
-
-let arm32PublicUrl = null;
-if (fs.existsSync(arm32Path)) {
-  const arm32Info = inspectApkFile(arm32Path, 'armeabi-v7a');
-  arm32PublicUrl = `${supabaseUrl}/storage/v1/object/public/app-releases/latest/hallyu-armeabi-v7a.apk`;
-  console.log(
-    `Uploading latest/hallyu-armeabi-v7a.apk (${arm32Info.sizeMb} MB, sha256=${arm32Info.sha256.slice(0, 16)}…)`,
-  );
-  try {
-    await uploadObject(
-      'latest/hallyu-armeabi-v7a.apk',
-      arm32Info.bytes,
-      'application/vnd.android.package-archive',
-      'public, max-age=120',
-    );
-  } catch (err) {
-    console.warn(`Supabase CDN upload fallback for armeabi-v7a APK: ${err.message}`);
-    arm32PublicUrl = `${ghReleaseBase}/hallyu-armeabi-v7a.apk`;
-  }
-  abis['armeabi-v7a'] = {
-    abi: 'armeabi-v7a',
-    url: arm32PublicUrl,
-    sha256: arm32Info.sha256,
-    sizeBytes: arm32Info.sizeBytes,
-    sizeMb: arm32Info.sizeMb,
-    versionCode: releaseTrain * 10 + 2,
-  };
-}
-
-let x86PublicUrl = null;
-if (fs.existsSync(x86Path)) {
-  const x86Info = inspectApkFile(x86Path, 'x86_64');
-  x86PublicUrl = `${supabaseUrl}/storage/v1/object/public/app-releases/latest/hallyu-x86_64.apk`;
-  console.log(
-    `Uploading latest/hallyu-x86_64.apk (${x86Info.sizeMb} MB, sha256=${x86Info.sha256.slice(0, 16)}…)`,
-  );
-  try {
-    await uploadObject(
-      'latest/hallyu-x86_64.apk',
-      x86Info.bytes,
-      'application/vnd.android.package-archive',
-      'public, max-age=120',
-    );
-  } catch (err) {
-    console.warn(`Supabase CDN upload fallback for x86_64 APK: ${err.message}`);
-    x86PublicUrl = `${ghReleaseBase}/hallyu-x86_64.apk`;
-  }
-  abis.x86_64 = {
-    abi: 'x86_64',
-    url: x86PublicUrl,
-    sha256: x86Info.sha256,
-    sizeBytes: x86Info.sizeBytes,
-    sizeMb: x86Info.sizeMb,
-    versionCode: releaseTrain * 10 + 3,
-  };
-}
-
-const releaseNotes = buildDynamicReleaseNotes({
-  versionName,
-  commitShort: commit,
-  overrideNotes: process.env.RELEASE_NOTES,
-});
 
 const manifest = {
-  version: versionName,
-  versionCode,
-  releaseTrain,
-  slimUrl: slimPublicUrl,
-  arm32Url: arm32PublicUrl,
-  x86_64Url: x86PublicUrl,
-  universalUrl: arm32PublicUrl ?? slimPublicUrl,
-  slimSha256: arm64Info.sha256,
-  slimSizeBytes: arm64Info.sizeBytes,
-  slimSizeMb: arm64Info.sizeMb,
-  abis,
-  commit,
+  packageName: 'com.hallyu.app',
+  versionCode: artifacts.universal.versionCode,
+  versionName,
+  minSdkVersion: 23,
+  targetSdkVersion: 34,
+  pageSizeAlignedBytes: 16384,
+  extractNativeLibs: true,
+  gitCommit: gitCommit.slice(0, 7),
+  gitCommitFull: gitCommit,
+  gitRef,
+  apkUrl: perAbi.universal.url,
+  universalApkUrl: perAbi.universal.url,
+  arm64ApkUrl: perAbi['arm64-v8a'].url,
+  arm32ApkUrl: perAbi['armeabi-v7a']?.url ?? perAbi.universal.url,
+  x86_64ApkUrl: perAbi.x86_64?.url ?? perAbi.universal.url,
+  x86ApkUrl: perAbi.x86?.url ?? perAbi.universal.url,
+  perAbi,
+  abis: legacyCompatAbis,
+  fileSizeBytes: perAbi['arm64-v8a'].sizeBytes,
+  universalSizeBytes: perAbi.universal.sizeBytes,
+  sha256: perAbi.universal.sha256,
+  signingCertSha256: SIGNING_SHA256,
+  releaseNotes,
   publishedAt: new Date().toISOString(),
-  notes: releaseNotes,
 };
 
+const manifestBuf = Buffer.from(JSON.stringify(manifest, null, 2));
+await uploadObject('latest/manifest.json', manifestBuf, 'application/json', 'no-cache');
 await uploadObject(
-  'latest/manifest.json',
-  Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'),
+  `releases/v${versionName}/manifest.json`,
+  manifestBuf,
   'application/json',
-  'no-cache, max-age=0',
+  'public, max-age=31536000, immutable',
 );
 
-const dbRes = await fetch(`${supabaseUrl}/rest/v1/app_releases?on_conflict=version_code`, {
+// Verify every single published URL returns HTTP 200/206 + valid ZIP `PK` magic bytes!
+for (const [abi, entry] of Object.entries(perAbi)) {
+  await verifyLiveApkUrl(abi, entry.url);
+}
+await verifyLiveApkUrl('legacy-arm64-bridge', legacyBridgeUrl);
+
+const markOldRes = await fetch(`${SUPABASE_URL}/rest/v1/app_releases?is_latest=eq.true`, {
+  method: 'PATCH',
+  headers: {
+    apikey: SERVICE_KEY,
+    Authorization: `Bearer ${SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+    Prefer: 'return=minimal',
+  },
+  body: JSON.stringify({ is_latest: false }),
+});
+if (!markOldRes.ok) {
+  console.warn('Warning clearing old is_latest flags:', await markOldRes.text());
+}
+
+const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/app_releases?on_conflict=version_code`, {
   method: 'POST',
   headers: {
-    apikey: serviceKey,
-    Authorization: `Bearer ${serviceKey}`,
+    apikey: SERVICE_KEY,
+    Authorization: `Bearer ${SERVICE_KEY}`,
     'Content-Type': 'application/json',
-    Prefer: 'resolution=merge-duplicates,return=minimal',
+    Prefer: 'resolution=merge-duplicates,return=representation',
   },
   body: JSON.stringify({
-    version_code: versionCode,
+    version_code: artifacts.universal.versionCode,
     version_name: versionName,
-    apk_url: slimPublicUrl,
-    universal_apk_url: arm32PublicUrl ?? slimPublicUrl,
-    sha256: arm64Info.sha256,
-    file_size_bytes: arm64Info.sizeBytes,
+    git_commit: gitCommit.slice(0, 7),
+    git_ref: gitRef,
+    apk_url: legacyBridgeUrl,
+    universal_apk_url: perAbi.universal.url,
+    file_size_bytes: perAbi['arm64-v8a'].sizeBytes,
+    sha256: bridgeArt.sha256,
+    signing_cert_sha256: SIGNING_SHA256,
     release_notes: releaseNotes,
-    is_mandatory: false,
-    min_supported_version: 1,
-    git_commit: commit || null,
+    is_latest: true,
   }),
 });
-
-if (!dbRes.ok) {
-  console.warn(`Warning: app_releases table upsert status ${dbRes.status}: ${await dbRes.text()}`);
-} else {
-  console.log(`Registered build v${versionName} (#${versionCode}) in public.app_releases!`);
+if (!insertRes.ok) {
+  throw new Error(`Insert app_releases failed (${insertRes.status}): ${await insertRes.text()}`);
 }
 
-// Broadcast background + in-app update alert idempotently across all members (`public.announce_app_release`)
-const announceRes = await fetch(`${supabaseUrl}/rest/v1/rpc/announce_app_release`, {
-  method: 'POST',
-  headers: {
-    apikey: serviceKey,
-    Authorization: `Bearer ${serviceKey}`,
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    p_version_code: versionCode,
-    p_version_name: versionName,
-    p_release_notes: releaseNotes,
-  }),
-}).catch(() => null);
+console.log(`Published release v${versionName} (build ${artifacts.universal.versionCode}) to app_releases.`);
 
-if (announceRes?.ok) {
-  const notifiedCount = await announceRes.json().catch(() => 0);
-  console.log(`Broadcasted v${versionName} update alert to ${notifiedCount} active member(s).`);
-} else if (announceRes) {
-  console.warn(`Warning: announce_app_release returned HTTP ${announceRes.status}`);
+const notifyTitle = `Hallyu v${versionName} is Ready`;
+const notifyBody = `Tap to update in 1 tap: ${releaseNotes.split('\n')[0].replace(/^•\s*/, '')}`;
+
+const membersRes = await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id&limit=1000`, {
+  headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+});
+if (membersRes.ok) {
+  const members = await membersRes.json();
+  if (Array.isArray(members) && members.length > 0) {
+    const rows = members.map((m) => ({
+      user_id: m.id,
+      kind: 'system_release',
+      title: notifyTitle,
+      body: notifyBody,
+      deep_link: '/settings/updates',
+    }));
+    await fetch(`${SUPABASE_URL}/rest/v1/notifications`, {
+      method: 'POST',
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify(rows),
+    });
+    console.log(`Delivered in-app release alert to ${members.length} members.`);
+  }
 }
 
-// Immediately wake push-dispatch so Android FCM + Web Push devices outside Hallyu get alerted now
-await fetch(`${supabaseUrl}/functions/v1/push-dispatch`, {
-  method: 'POST',
-  headers: {
-    apikey: serviceKey,
-    Authorization: `Bearer ${serviceKey}`,
-    'Content-Type': 'application/json',
-  },
-  body: '{}',
-}).catch(() => {});
-
-console.log('Published signed ARM64 + ARM32 + x86_64 APKs + dynamic notes + push alert cleanly!');
+try {
+  const pushRes = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      broadcast: true,
+      title: notifyTitle,
+      body: notifyBody,
+      path: '/settings/updates',
+    }),
+  });
+  console.log('Release push broadcast status:', pushRes.status);
+} catch (err) {
+  console.warn('Release push broadcast non-fatal warning:', err);
+}

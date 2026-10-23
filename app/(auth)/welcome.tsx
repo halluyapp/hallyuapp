@@ -22,8 +22,10 @@ import {
   ADMIN_CONTACT_EMAIL,
   ANDROID_RELEASE_SHA256,
   getWebAppBaseUrl,
-  LATEST_SLIM_APK_CDN_URL,
+  LATEST_ARM32_APK_CDN_URL,
+  LATEST_ARM64_APK_CDN_URL,
   LATEST_UNIVERSAL_APK_CDN_URL,
+  LATEST_X86_64_APK_CDN_URL,
   SUPPORT_EMAIL,
 } from '../../lib/links';
 import { withAlpha } from '../../lib/motion';
@@ -355,7 +357,7 @@ export default function Welcome() {
                 label="Download Android APK"
                 icon="logo-android"
                 size="lg"
-                onPress={() => void Linking.openURL(LATEST_SLIM_APK_CDN_URL)}
+                onPress={() => void Linking.openURL(LATEST_UNIVERSAL_APK_CDN_URL)}
               />
               <Button
                 label="Install on iPhone / iPad"
@@ -675,8 +677,27 @@ export default function Welcome() {
           <Wordmark size={28} />
           <Text variant="bodySmall" tone="secondary" align="center" style={{ maxWidth: 580 }}>
             Signed with Hallyu’s permanent 4096-bit release key ({ANDROID_RELEASE_SHA256.slice(0, 23)}…)
-            for seamless one-tap in-place Android upgrades and instant iOS Home-Screen Web Push.
+            for seamless one-tap in-place Android upgrades across all 64-bit & 32-bit phones and instant iOS Home-Screen Web Push.
           </Text>
+          <View style={styles.webAuthInline}>
+            <Pressable onPress={() => void Linking.openURL(LATEST_UNIVERSAL_APK_CDN_URL)}>
+              <Text variant="caption" style={{ color: colors.accent, fontFamily: fonts.medium }}>
+                Universal APK (All Phones)
+              </Text>
+            </Pressable>
+            <Text variant="caption" tone="tertiary">·</Text>
+            <Pressable onPress={() => void Linking.openURL(LATEST_ARM64_APK_CDN_URL)}>
+              <Text variant="caption" tone="secondary">Slim ARM64</Text>
+            </Pressable>
+            <Text variant="caption" tone="tertiary">·</Text>
+            <Pressable onPress={() => void Linking.openURL(LATEST_ARM32_APK_CDN_URL)}>
+              <Text variant="caption" tone="secondary">Slim ARM32</Text>
+            </Pressable>
+            <Text variant="caption" tone="tertiary">·</Text>
+            <Pressable onPress={() => void Linking.openURL(LATEST_X86_64_APK_CDN_URL)}>
+              <Text variant="caption" tone="secondary">x86_64</Text>
+            </Pressable>
+          </View>
           <Text variant="caption" tone="tertiary" align="center">
             Support: {SUPPORT_EMAIL} · Admin & Creators: {ADMIN_CONTACT_EMAIL} · Metadata via TMDB
           </Text>

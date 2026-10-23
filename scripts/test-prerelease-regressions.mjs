@@ -846,3 +846,251 @@ test('Notifications, Admin Studio, Bug Reports, Watch Party & Profile Stats end-
   assert.equal(removed, true, 'Leaving room must remove channel cleanly');
   assert.equal(statuses.at(-1), 'disconnected');
 });
+
+test('Universal Android Compatibility & Independent Verified Web Deployment: all 5 ABIs, 64-bit CPU + 32-bit OS, ARMv9 safety, native PackageInstaller diagnostics, Gradle splits, and stamped version.json + sw.js', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+
+  // 1. Verify `lib/links.ts` never aliases `LATEST_UNIVERSAL_APK_CDN_URL` to 32-bit-only `armeabi-v7a`
+  //    (which broke ARMv9 64-bit-only phones!) and never points public downloads at private GitHub repos
+  const linksMod = loadTsModule('lib/links.ts', {
+    'react-native': { Platform: { OS: 'web' } },
+  });
+  assert.notEqual(
+    linksMod.LATEST_UNIVERSAL_APK_CDN_URL,
+    linksMod.LATEST_ARM32_APK_CDN_URL,
+    'Universal APK URL must NEVER point to 32-bit-only armeabi-v7a (breaks Pixel 7+/Galaxy S24+ ARMv9 phones)',
+  );
+  assert.equal(linksMod.LATEST_SLIM_APK_CDN_URL, linksMod.LATEST_UNIVERSAL_APK_CDN_URL);
+  assert.match(linksMod.LATEST_UNIVERSAL_APK_CDN_URL, /^https:\/\/.*\.supabase\.co\/storage\/v1\/object\/public\/app-releases\/latest\/hallyu-universal\.apk$/);
+  assert.match(linksMod.LATEST_ARM64_APK_CDN_URL, /hallyu-arm64-v8a\.apk$/);
+  assert.match(linksMod.LATEST_ARM32_APK_CDN_URL, /hallyu-armeabi-v7a\.apk$/);
+  assert.match(linksMod.LATEST_X86_64_APK_CDN_URL, /hallyu-x86_64\.apk$/);
+  assert.match(linksMod.LATEST_X86_APK_CDN_URL, /hallyu-x86\.apk$/);
+
+  // 2. Verify all 5 ABIs + 64-bit CPU running 32-bit OS + native PackageInstaller outcomes
+  const storageMap = new Map();
+  let inspectImpl = async () => ({
+    ok: true,
+    reasonCode: 'OK',
+    message: 'Verified package is compatible with this device and safe to install.',
+    sizeBytes: 18_500_000,
+    actualSha256: 'abc123sha',
+    packageName: 'com.hallyu.app',
+    versionName: '1.0.219',
+    versionCode: 12192,
+    minSdkVersion: 23,
+    targetSdkVersion: 34,
+    apkAbis: ['armeabi-v7a'],
+    deviceAbis: ['armeabi-v7a', 'armeabi'],
+    matchedAbi: 'armeabi-v7a',
+    signingSha256: '64:20:BE:5B',
+    packageMatches: true,
+    signatureMatches: true,
+    sdkCompatible: true,
+    abiCompatible: true,
+    versionNotDowngrade: true,
+  });
+  let sessionOutcome = {
+    status: 'cancelled_by_user',
+    installerStatusCode: 3,
+    message: 'Installation was cancelled before completion. Tap Install Update whenever ready.',
+  };
+
+  // Simulate a 64-bit Cortex-A55 SoC (`aarch64` kernel) running 32-bit Android Go OS (`armeabi-v7a` ONLY!)
+  const updater32On64 = loadTsModule('lib/appUpdater.ts', {
+    '@react-native-async-storage/async-storage': {
+      getItem: async (k) => storageMap.get(k) ?? null,
+      setItem: async (k, v) => { storageMap.set(k, v); },
+      removeItem: async (k) => { storageMap.delete(k); },
+    },
+    'expo-application': { nativeBuildVersion: '12182', nativeApplicationVersion: '1.0.218' },
+    'expo-constants': { expoConfig: { version: '1.0.218' } },
+    'expo-file-system': {
+      documentDirectory: 'file:///data/user/0/com.hallyu.app/files/',
+      cacheDirectory: 'file:///data/user/0/com.hallyu.app/cache/',
+      EncodingType: { Base64: 'base64' },
+      makeDirectoryAsync: async () => {},
+      readDirectoryAsync: async () => [],
+      getInfoAsync: async () => ({ exists: true, size: 18_500_000 }),
+      readAsStringAsync: async () => 'UEsDBA==',
+      deleteAsync: async () => {},
+      getContentUriAsync: async (u) => u,
+      createDownloadResumable: (url, dest, _opts, cb) => ({
+        downloadAsync: async () => {
+          cb({ totalBytesWritten: 18_500_000, totalBytesExpectedToWrite: 18_500_000 });
+          return { uri: dest, status: 200, headers: { 'Content-Type': 'application/vnd.android.package-archive' } };
+        },
+      }),
+    },
+    'expo-intent-launcher': { startActivityAsync: async () => ({}) },
+    'react-native': {
+      Linking: { openSettings: async () => {}, openURL: async () => {} },
+      Platform: { OS: 'android', constants: {} },
+      NativeModules: {
+        HallyuApkInstaller: {
+          getDeviceEnvironment: async () => ({
+            packageName: 'com.hallyu.app',
+            sdkInt: 33,
+            androidRelease: '13',
+            brand: 'TECNO',
+            model: 'POP 7',
+            device: 'pop7',
+            hardware: 'mt6761',
+            supportedAbis: ['armeabi-v7a', 'armeabi'],
+            supported64BitAbis: [],
+            supported32BitAbis: ['armeabi-v7a', 'armeabi'],
+            kernelArch: 'aarch64',
+            cpu64BitCapableOs32BitOnly: true,
+            canRequestPackageInstalls: true,
+            installed: {
+              packageName: 'com.hallyu.app',
+              versionName: '1.0.218',
+              versionCode: 12182,
+              signingCertSha256: '64:20:BE:5B',
+            },
+          }),
+          inspectApkArchive: (...args) => inspectImpl(...args),
+          installApkSession: async () => sessionOutcome,
+          openUnknownAppSourcesSettings: async () => true,
+        },
+      },
+    },
+    './api/client': { supabase: null },
+    './links': linksMod,
+  });
+
+  const fullManifestRelease = {
+    apkUrl: 'https://cdn.example/hallyu-universal.apk',
+    universalApkUrl: 'https://cdn.example/hallyu-universal.apk',
+    arm64ApkUrl: 'https://cdn.example/hallyu-arm64-v8a.apk',
+    arm32ApkUrl: 'https://cdn.example/hallyu-armeabi-v7a.apk',
+    x86_64ApkUrl: 'https://cdn.example/hallyu-x86_64.apk',
+    x86ApkUrl: 'https://cdn.example/hallyu-x86.apk',
+    versionCode: 12195,
+    versionName: '1.0.219',
+    perAbi: {
+      'arm64-v8a': { abi: 'arm64-v8a', url: 'https://cdn.example/hallyu-arm64-v8a.apk', sha256: 'sha64', sizeBytes: 18_900_000 },
+      'armeabi-v7a': { abi: 'armeabi-v7a', url: 'https://cdn.example/hallyu-armeabi-v7a.apk', sha256: 'abc123sha', sizeBytes: 18_500_000 },
+      x86_64: { abi: 'x86_64', url: 'https://cdn.example/hallyu-x86_64.apk', sha256: 'shax64', sizeBytes: 19_200_000 },
+      x86: { abi: 'x86', url: 'https://cdn.example/hallyu-x86.apk', sha256: 'shax86', sizeBytes: 18_100_000 },
+      universal: { abi: 'universal', url: 'https://cdn.example/hallyu-universal.apk', sha256: 'shauniv', sizeBytes: 27_000_000 },
+    },
+  };
+
+  // All 5 ABIs resolve accurately
+  assert.equal(updater32On64.selectApkArtifactForAbis(['arm64-v8a'], fullManifestRelease).abi, 'arm64-v8a');
+  assert.equal(updater32On64.selectApkArtifactForAbis(['armeabi-v7a'], fullManifestRelease).abi, 'armeabi-v7a');
+  assert.equal(updater32On64.selectApkArtifactForAbis(['x86_64'], fullManifestRelease).abi, 'x86_64');
+  assert.equal(updater32On64.selectApkArtifactForAbis(['x86'], fullManifestRelease).abi, 'x86');
+  assert.equal(updater32On64.selectApkArtifactForAbis([], fullManifestRelease).abi, 'universal');
+
+  // 64-bit CPU running 32-bit OS MUST pick `armeabi-v7a` via native OS ABIs — NEVER `arm64-v8a`!
+  const runtimeAbis = await updater32On64.getDeviceSupportedAbisAsync();
+  assert.deepEqual(runtimeAbis, ['armeabi-v7a', 'armeabi']);
+
+  // User cancelling Android's install prompt returns honest `cancelled_by_user` — NEVER claims installed!
+  const cancelRes = await updater32On64.downloadAndInstallApk(fullManifestRelease);
+  assert.equal(cancelRes.status, 'cancelled_by_user');
+
+  // Signature mismatch caught BEFORE opening Android installer returns honest `install_failed` (`SIGNATURE_MISMATCH`)
+  inspectImpl = async () => ({
+    ok: false,
+    reasonCode: 'SIGNATURE_MISMATCH',
+    message: 'Update signing key does not match installed app certificate.',
+    sizeBytes: 18_500_000,
+    actualSha256: 'abc123sha',
+    packageName: 'com.hallyu.app',
+    versionName: '1.0.219',
+    versionCode: 12192,
+    minSdkVersion: 23,
+    targetSdkVersion: 34,
+    apkAbis: ['armeabi-v7a'],
+    deviceAbis: ['armeabi-v7a', 'armeabi'],
+    matchedAbi: 'armeabi-v7a',
+    signingSha256: 'DE:AD:BE:EF',
+    packageMatches: true,
+    signatureMatches: false,
+    sdkCompatible: true,
+    abiCompatible: true,
+    versionNotDowngrade: true,
+  });
+  const sigFailRes = await updater32On64.downloadAndInstallApk(fullManifestRelease);
+  assert.equal(sigFailRes.status, 'install_failed');
+  assert.equal(sigFailRes.reasonCode, 'SIGNATURE_MISMATCH');
+
+  // 3. Simulate `configure-android-release.mjs` + `android-installer-module.mjs` end-to-end
+  const tmpRepo = mkdtempSync(join(tmpdir(), 'hallyu-gradle-test-'));
+  try {
+    mkdirSync(join(tmpRepo, 'android/app/src/main/java/com/hallyu/app'), { recursive: true });
+    writeFileSync(join(tmpRepo, 'android/gradle.properties'), 'expo.jsEngine=hermes\n');
+    writeFileSync(
+      join(tmpRepo, 'android/app/build.gradle'),
+      `android {\n    defaultConfig {\n        applicationId 'com.hallyu.app'\n        versionCode 1\n        versionName "1.0.0"\n    }\n    signingConfigs {\n        debug {\n            storeFile file('debug.keystore')\n        }\n    }\n    buildTypes {\n        release {\n            signingConfig signingConfigs.debug\n            minifyEnabled false\n        }\n    }\n    packagingOptions {\n        jniLibs {\n            useLegacyPackaging (findProperty('expo.useLegacyPackaging')?.toBoolean() ?: false)\n        }\n    }\n}\n`,
+    );
+    writeFileSync(
+      join(tmpRepo, 'android/app/src/main/java/com/hallyu/app/MainApplication.kt'),
+      `package com.hallyu.app\nclass MainApplication {\n  override fun getPackages(): List<ReactPackage> {\n    return PackageList(this).packages\n  }\n}\n`,
+    );
+
+    execFileSync('node', [join(process.cwd(), 'scripts/ci/configure-android-release.mjs')], {
+      cwd: tmpRepo,
+      env: {
+        ...process.env,
+        EXPO_PUBLIC_APP_VERSION: '1.0.999',
+        ANDROID_KEYSTORE_BASE64: Buffer.from('dummy-p12').toString('base64'),
+        ANDROID_KEYSTORE_PASSWORD: 'pw',
+        ANDROID_KEY_ALIAS: 'hallyu',
+        ANDROID_KEY_PASSWORD: 'pw',
+      },
+    });
+
+    const gradleProps = readFileSync(join(tmpRepo, 'android/gradle.properties'), 'utf8');
+    const buildGradle = readFileSync(join(tmpRepo, 'android/app/build.gradle'), 'utf8');
+    const mainApp = readFileSync(join(tmpRepo, 'android/app/src/main/java/com/hallyu/app/MainApplication.kt'), 'utf8');
+    assert.match(gradleProps, /expo\.useLegacyPackaging=true/);
+    assert.match(buildGradle, /useLegacyPackaging true/);
+    assert.match(buildGradle, /include "arm64-v8a", "armeabi-v7a", "x86_64", "x86"/);
+    assert.match(buildGradle, /universalApk true/);
+    assert.match(buildGradle, /versionName "1\.0\.999"/);
+    assert.equal(existsSync(join(tmpRepo, 'android/app/src/main/java/com/hallyu/app/HallyuApkInstallerModule.kt')), true);
+    assert.match(mainApp, /add\(HallyuApkInstallerPackage\(\)\)/);
+  } finally {
+    rmSync(tmpRepo, { recursive: true, force: true });
+  }
+
+  // 4. Simulate `enhance-web-html.mjs` stamping `version.json`, `sw.js`, and HTML meta tags
+  const tmpDist = mkdtempSync(join(tmpdir(), 'hallyu-dist-test-'));
+  try {
+    mkdirSync(join(tmpDist, '_expo/static/js/web'), { recursive: true });
+    writeFileSync(join(tmpDist, '_expo/static/js/web/entry-9f8e7d6c.js'), 'console.log("ok");');
+    writeFileSync(join(tmpDist, 'index.html'), '<!doctype html><html><head><title>Hallyu</title></head><body><div id="root"></div></body></html>');
+    writeFileSync(join(tmpDist, 'sw.js'), readFileSync(join(process.cwd(), 'public/sw.js'), 'utf8'));
+    writeFileSync(join(tmpDist, 'manifest.json'), readFileSync(join(process.cwd(), 'public/manifest.json'), 'utf8'));
+
+    execFileSync('node', [join(process.cwd(), 'scripts/ci/enhance-web-html.mjs'), tmpDist], {
+      env: {
+        ...process.env,
+        EXPO_PUBLIC_BASE_PATH: '/hallyuapp',
+        EXPO_PUBLIC_APP_VERSION: '1.0.999',
+        EXPO_PUBLIC_GIT_COMMIT: 'deadbeef1234567890abcdef1234567890abcdef',
+        EXPO_PUBLIC_GIT_SHORT: 'deadbee',
+      },
+    });
+
+    const verJson = JSON.parse(readFileSync(join(tmpDist, 'version.json'), 'utf8'));
+    const stampedHtml = readFileSync(join(tmpDist, 'index.html'), 'utf8');
+    const stampedSw = readFileSync(join(tmpDist, 'sw.js'), 'utf8');
+    assert.equal(verJson.commit, 'deadbeef1234567890abcdef1234567890abcdef');
+    assert.equal(verJson.version, '1.0.999');
+    assert.deepEqual(verJson.entryBundles, ['entry-9f8e7d6c.js']);
+    assert.match(stampedHtml, /<meta name="hallyu-commit" content="deadbeef1234567890abcdef1234567890abcdef"/);
+    assert.equal(stampedSw.includes('__HALLYU_SW_BUILD_ID__'), false);
+    assert.equal(stampedSw.includes('deadbee-'), true);
+  } finally {
+    rmSync(tmpDist, { recursive: true, force: true });
+  }
+});
+

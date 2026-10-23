@@ -10,7 +10,7 @@ on:
       - "docs/**"
       - "*.md"
       - "scripts/verify-backend.mjs"
-      - ".github/workflows/build-apk.yml"
+      - ".github/workflows/deploy-web.yml"
 
 concurrency:
   group: apk-${{ github.ref }}
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build:
-    name: Android APK (Permanent Signed Slim + Universal)
+    name: Android APK (All-Device Signed Splits + Universal)
     runs-on: ubuntu-22.04
     timeout-minutes: 75
 
@@ -66,7 +66,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-34 build-tools;34.0.0 ndk;26.1.10909125'
+          packages: 'platforms;android-34 build-tools;34.0.0 build-tools;35.0.0 ndk;26.1.10909125'
 
       - name: Install dependencies
         run: |
@@ -92,14 +92,16 @@ jobs:
         run: |
           BASE_CODE=$((10000 + ${{ github.run_number }} * 10))
           SLIM_CODE=$((BASE_CODE + 4))
+          UNIV_CODE=$((BASE_CODE + 5))
           APP_VER="1.0.${{ github.run_number }}"
           echo "EXPO_PUBLIC_BUILD_NUMBER=${BASE_CODE}" >> "$GITHUB_ENV"
           echo "EXPO_PUBLIC_APP_VERSION=${APP_VER}" >> "$GITHUB_ENV"
           echo "HALLYU_SLIM_VERSION_CODE=${SLIM_CODE}" >> "$GITHUB_ENV"
+          echo "HALLYU_UNIVERSAL_VERSION_CODE=${UNIV_CODE}" >> "$GITHUB_ENV"
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "SOURCE_SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "SOURCE_REF=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          echo "Computed version=${APP_VER}, base versionCode=${BASE_CODE}, slim ARM64 versionCode=${SLIM_CODE}"
+          echo "Computed version=${APP_VER}, base=${BASE_CODE}, arm64=${SLIM_CODE}, universal=${UNIV_CODE}"
 
       - name: Full static, SQL, DB-type & regression check suite
         run: npm run check
@@ -118,16 +120,18 @@ jobs:
       - name: Expo prebuild
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Configure permanent 4096-bit release keystore & Slim ARM64 + Universal splits
+      - name: Configure permanent 4096-bit release keystore, 16KB packaging, 4 ABI splits + native installer module
         run: node scripts/ci/configure-android-release.mjs
 
-      - name: Verify generated Android project
+      - name: Verify generated Android project & native Kotlin installer module
         run: |
           set -euo pipefail
           test -f android/gradlew
           test -f android/settings.gradle
           test -f android/build.gradle
           test -f android/app/google-services.json
+          test -f android/app/src/main/java/com/hallyu/app/HallyuApkInstallerModule.kt
+          test -f android/app/src/main/java/com/hallyu/app/HallyuApkInstallerPackage.kt
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -139,7 +143,7 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: Build signed release APKs (Slim ARM64 + ARM32 + x86_64 + Universal)
+      - name: Build, 16KB-page-align & v1/v2/v3 sign all 5 ABI APKs + Dual-ARM Phone Universal APK
         working-directory: android
         env:
           GRADLE_OPTS: >-
@@ -151,48 +155,116 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
 
-          ls -lh app/build/outputs/apk/release/
+          BT="${ANDROID_SDK_ROOT}/build-tools/35.0.0"
+          REL="app/build/outputs/apk/release"
 
-          cp app/build/outputs/apk/release/app-universal-release.apk app/build/outputs/apk/release/app-release.apk
-          test -f app/build/outputs/apk/release/app-arm64-v8a-release.apk
-          test -f app/build/outputs/apk/release/app-release.apk
+          # Create Dual-ARM Phone Universal APK (arm64-v8a + armeabi-v7a, <= 30 MB) from Universal APK
+          cp "$REL/app-universal-release.apk" /tmp/arm-univ-raw.apk
+          zip -d /tmp/arm-univ-raw.apk "lib/x86/*" "lib/x86_64/*" "META-INF/*" || true
+          cp /tmp/arm-univ-raw.apk "$REL/app-arm-universal-release.apk"
+          rm -f /tmp/arm-univ-raw.apk
 
-      - name: Verify release APKs, explicit versionName & permanent SHA-256 certificate
+          # Apply 16 KB page alignment (`zipalign -P 16 -f 4`) + v1/v2/v3 permanent 4096-bit RSA signing across every artifact
+          for APK in \
+            "$REL/app-x86-release.apk" \
+            "$REL/app-armeabi-v7a-release.apk" \
+            "$REL/app-x86_64-release.apk" \
+            "$REL/app-arm64-v8a-release.apk" \
+            "$REL/app-arm-universal-release.apk" \
+            "$REL/app-universal-release.apk"
+          do
+            "$BT/zipalign" -P 16 -f 4 "$APK" "${APK}.aligned"
+            mv "${APK}.aligned" "$APK"
+            "$BT/apksigner" sign \
+              --ks app/hallyu-release.p12 \
+              --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
+              --ks-key-alias "${ANDROID_KEY_ALIAS}" \
+              --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              "$APK"
+          done
+
+          cp "$REL/app-universal-release.apk" "$REL/app-release.apk"
+          ls -lh "$REL/"
+
+      - name: Verify signing cert, SDK 23..34, extractNativeLibs=true & exact native .so ABIs across all APKs
         working-directory: android
         run: |
           set -euo pipefail
-          BT="${ANDROID_SDK_ROOT}/build-tools/34.0.0"
+          BT="${ANDROID_SDK_ROOT}/build-tools/35.0.0"
+          REL="app/build/outputs/apk/release"
           EXPECTED_HEX="6420be5bcfb5eab5d73a74ba06b79436fc68b2697e3e6336164b7451cb1531da"
 
-          for APK in app/build/outputs/apk/release/app-arm64-v8a-release.apk app/build/outputs/apk/release/app-release.apk; do
+          for APK in \
+            "$REL/app-x86-release.apk" \
+            "$REL/app-armeabi-v7a-release.apk" \
+            "$REL/app-x86_64-release.apk" \
+            "$REL/app-arm64-v8a-release.apk" \
+            "$REL/app-arm-universal-release.apk" \
+            "$REL/app-universal-release.apk"
+          do
             echo "=== Verifying $APK ($(du -h "$APK" | cut -f1)) ==="
-            "$BT/zipalign" -c -v 4 "$APK" >/dev/null
+            "$BT/zipalign" -c -P 16 -v 4 "$APK" >/dev/null
             "$BT/apksigner" verify --verbose "$APK"
             CERTS=$("$BT/apksigner" verify --print-certs "$APK")
-            echo "$CERTS" | head -6
+            echo "$CERTS" | head -4
             echo "$CERTS" | tr -d ':' | grep -iq "$EXPECTED_HEX" || {
               echo "::error::APK signature fingerprint mismatch! Got: $CERTS"
               exit 1
             }
-            BADGING=$("$BT/aapt2" dump badging "$APK" | head -n 2)
+            BADGING=$("$BT/aapt2" dump badging "$APK" | head -n 6)
             echo "$BADGING"
-            echo "$BADGING" | grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'" || {
-              echo "::error::APK versionName was not stamped to ${EXPO_PUBLIC_APP_VERSION}! Got: $BADGING"
+            echo "$BADGING" | grep -q "name='com.hallyu.app'"
+            echo "$BADGING" | grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'"
+            echo "$BADGING" | grep -q "sdkVersion:'23'"
+            "$BT/aapt2" dump xmltree "$APK" --file AndroidManifest.xml | grep -q "extractNativeLibs.*true" || {
+              echo "::error::extractNativeLibs is NOT true in $APK — 16 KB page devices could fail!"
               exit 1
             }
             unzip -l "$APK" | grep -q "assets/index.android.bundle"
           done
-          echo "Both Slim ARM64 & Universal APKs verified with Hallyu permanent release key & versionName=${EXPO_PUBLIC_APP_VERSION}!"
+
+          # Exact native ABI folder assertions
+          unzip -l "$REL/app-arm64-v8a-release.apk" | grep -q "lib/arm64-v8a/libhermes.so"
+          unzip -l "$REL/app-armeabi-v7a-release.apk" | grep -q "lib/armeabi-v7a/libhermes.so"
+          unzip -l "$REL/app-x86_64-release.apk" | grep -q "lib/x86_64/libhermes.so"
+          unzip -l "$REL/app-x86-release.apk" | grep -q "lib/x86/libhermes.so"
+          unzip -l "$REL/app-arm-universal-release.apk" | grep -q "lib/arm64-v8a/libhermes.so"
+          unzip -l "$REL/app-arm-universal-release.apk" | grep -q "lib/armeabi-v7a/libhermes.so"
+          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/arm64-v8a/libhermes.so"
+          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/armeabi-v7a/libhermes.so"
+          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/x86_64/libhermes.so"
+          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/x86/libhermes.so"
+          echo "All 6 APKs passed 16KB zipalign, v1/v2/v3 cert, SDK 23..34, extractNativeLibs=true & exact .so ABI verification!"
 
       - name: Verify the APK's baked backend configuration
         run: node scripts/ci/verify-apk-config.mjs android/app/build/outputs/apk/release/app-release.apk
 
-      - name: Download previous published APK (`apk-214`) to prove live in-place Android OS upgrade
+      - name: Stage named release APKs
+        run: |
+          set -euo pipefail
+          REL="android/app/build/outputs/apk/release"
+          cp "$REL/app-arm64-v8a-release.apk" hallyu-slim.apk
+          cp "$REL/app-arm64-v8a-release.apk" hallyu-arm64-v8a.apk
+          cp "$REL/app-armeabi-v7a-release.apk" hallyu-armeabi-v7a.apk
+          cp "$REL/app-x86_64-release.apk" hallyu-x86_64.apk
+          cp "$REL/app-x86-release.apk" hallyu-x86.apk
+          cp "$REL/app-arm-universal-release.apk" hallyu-arm-universal.apk
+          cp "$REL/app-universal-release.apk" hallyu.apk
+          cp "$REL/app-universal-release.apk" hallyu-universal.apk
+          ls -lh hallyu-*.apk hallyu.apk
+          echo "SLIM_SIZE=$(du -h hallyu-slim.apk | cut -f1)" >> "$GITHUB_ENV"
+          echo "ARM32_SIZE=$(du -h hallyu-armeabi-v7a.apk | cut -f1)" >> "$GITHUB_ENV"
+          echo "APK_SIZE=$(du -h hallyu.apk | cut -f1)" >> "$GITHUB_ENV"
+
+      - name: Download previous published APK (`apk-218`) to prove live in-place Android OS upgrade
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p prev-release
-          gh release download apk-214 -p "hallyu.apk" -D prev-release || true
+          gh release download apk-218 -p "hallyu.apk" -D prev-release || gh release download apk-214 -p "hallyu.apk" -D prev-release || true
           ls -lh prev-release || true
 
       - name: Enable KVM permissions
@@ -208,7 +280,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: node scripts/ci/test-account.mjs create
 
-      - name: Verify release APK in-place upgrade, auth persistence, Updates screen & Admin Studio UI bounds on Android emulator
+      - name: Verify ABI rejection, exact split install, in-place upgrade, native installer diagnostics, auth & UI bounds on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
           CONNECTED_BUILD: "yes"
@@ -249,28 +321,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Prepare Slim & Universal APK artifacts
-        run: |
-          set -euo pipefail
-          cp android/app/build/outputs/apk/release/app-arm64-v8a-release.apk hallyu-slim.apk
-          cp android/app/build/outputs/apk/release/app-armeabi-v7a-release.apk hallyu-armeabi-v7a.apk
-          cp android/app/build/outputs/apk/release/app-x86_64-release.apk hallyu-x86_64.apk
-          cp android/app/build/outputs/apk/release/app-release.apk hallyu.apk
-          ls -lh hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu.apk
-          echo "SLIM_SIZE=$(du -h hallyu-slim.apk | cut -f1)" >> "$GITHUB_ENV"
-          echo "APK_SIZE=$(du -h hallyu.apk | cut -f1)" >> "$GITHUB_ENV"
-
-      - name: Upload APK artifacts
+      - name: Upload all signed APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: hallyu-apk
           path: |
-            hallyu-slim.apk
             hallyu.apk
+            hallyu-slim.apk
+            hallyu-arm-universal.apk
+            hallyu-armeabi-v7a.apk
+            hallyu-x86_64.apk
+            hallyu-x86.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish GitHub Release with dynamic commit changelog
+      - name: Publish GitHub Release with all signed architecture APKs & changelog
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/arena/')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -284,21 +349,29 @@ jobs:
           if [ -n "$PREV_TAG" ]; then
             COMMIT_LOG=$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:"• %s" | head -n 8)
           else
-            COMMIT_LOG="• Stability, notifications, self-updater, Admin Studio & Watch Party fixes"
+            COMMIT_LOG="• Universal Android compatibility (ARM64, ARMv7, x86_64, x86 & 16KB page alignment), verified self-updater & stability fixes"
           fi
           NOTES="Permanent-Key Signed Hallyu Release v1.0.${{ github.run_number }} (#${{ github.run_number }}).
 
           ### Changes in this build
           ${COMMIT_LOG}
 
-          ### Distribution
+          ### Distribution (All Signed with Permanent 4096-bit Key & 16KB Page Alignment)
           • **Web App & iOS PWA**: https://halluyapp.github.io/hallyuapp/
-          • **Fast Phone Download (Recommended — ARM64)**: \`hallyu-slim.apk\` (${SLIM_SIZE})
-          • **Universal Build (All CPUs / Chromebooks)**: \`hallyu.apk\` (${APK_SIZE})
-          • **In-Place Upgrade Verified**: Signed with Hallyu's permanent 4096-bit RSA key (\`64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA\`), versionCode \`${HALLYU_SLIM_VERSION_CODE}\`.
+          • **Universal Build (All Phones, Android Go 32-bit OS, Tablets & Chromebooks)**: \`hallyu.apk\` (${APK_SIZE})
+          • **Slim 64-bit ARM (\`arm64-v8a\`)**: \`hallyu-slim.apk\` (${SLIM_SIZE})
+          • **Slim 32-bit ARM (\`armeabi-v7a\`)**: \`hallyu-armeabi-v7a.apk\` (${ARM32_SIZE})
+          • **Slim Chromebook/Emulator (\`x86_64\` / \`x86\`)**: \`hallyu-x86_64.apk\` / \`hallyu-x86.apk\`
+          • **Certificate SHA-256**: \`64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA\`, universal \`versionCode=${HALLYU_UNIVERSAL_VERSION_CODE}\`.
           • **Commit**: \`${SOURCE_COMMIT}\` (\`${SOURCE_REF}\`)."
 
-          gh release create "$TAG" hallyu-slim.apk hallyu.apk \
+          gh release create "$TAG" \
+            hallyu.apk \
+            hallyu-slim.apk \
+            hallyu-arm-universal.apk \
+            hallyu-armeabi-v7a.apk \
+            hallyu-x86_64.apk \
+            hallyu-x86.apk \
             --title "Hallyu v1.0.${{ github.run_number }} (Signed Android Release #${{ github.run_number }})" \
             --notes "$NOTES"
 
@@ -323,18 +396,24 @@ jobs:
           ')
           if [ -n "$PUB_TOKEN" ]; then
             echo "::add-mask::$PUB_TOKEN"
-            GH_TOKEN="$PUB_TOKEN" gh release create "$TAG" hallyu-slim.apk hallyu.apk \
+            GH_TOKEN="$PUB_TOKEN" gh release create "$TAG" \
+              hallyu.apk \
+              hallyu-slim.apk \
+              hallyu-arm-universal.apk \
+              hallyu-armeabi-v7a.apk \
+              hallyu-x86_64.apk \
+              hallyu-x86.apk \
               --repo hallyuapp/hallyuapp.github.io \
               --title "Hallyu v1.0.${{ github.run_number }} (Signed Android Release #${{ github.run_number }})" \
               --notes "$NOTES" || true
             echo "PUBLIC_RELEASE_REPO=hallyuapp/hallyuapp.github.io" >> "$GITHUB_ENV"
           fi
 
-      - name: Publish Slim, ARM32 & x86_64 APKs + manifest + push alert to Supabase CDN
+      - name: Publish all signed APKs + manifest + live CDN byte verification + push alert
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
           GITHUB_REPO_SLUG: ${{ env.PUBLIC_RELEASE_REPO || github.repository }}
           GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
-        run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk
+        run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk
