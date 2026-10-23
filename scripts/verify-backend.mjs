@@ -1157,9 +1157,27 @@ await test('Fan-out creates one delivery per active device', async () => {
 });
 
 await test('A claimed delivery can be reported sent', async () => {
-  const { data, error } = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
+  let { data, error } = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
   assert(!error, `claim_notification_deliveries failed: ${error?.message}`);
-  const claimed = data ?? [];
+  let claimed = data ?? [];
+  if (claimed.length === 0) {
+    // Live 24/7 push-dispatch Edge Function can claim the test row within ~150ms before this step runs;
+    // re-arm this test run's own verification notification row so claim + report_delivery is always tested deterministically.
+    const { data: notif } = await admin()
+      .from('notifications')
+      .select('id')
+      .eq('dedupe_key', `verify-unmuted-${suffix}`)
+      .single();
+    if (notif?.id) {
+      await admin()
+        .from('notification_deliveries')
+        .update({ status: 'pending', attempts: 0, next_attempt_at: new Date(Date.now() - 1000).toISOString() })
+        .eq('notification_id', notif.id);
+      const retry = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
+      assert(!retry.error, `claim_notification_deliveries retry failed: ${retry.error?.message}`);
+      claimed = retry.data ?? [];
+    }
+  }
   assert(claimed.length > 0, 'nothing was claimable');
 
   const first = claimed[0];

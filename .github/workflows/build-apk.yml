@@ -9,6 +9,8 @@ on:
     paths-ignore:
       - "docs/**"
       - "*.md"
+      - "scripts/verify-backend.mjs"
+      - ".github/workflows/build-apk.yml"
 
 concurrency:
   group: apk-${{ github.ref }}
