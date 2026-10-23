@@ -226,8 +226,35 @@ function reducer(s: AppState, a: Action): AppState {
         },
       };
     }
-    case 'follow':
-      return { ...s, follows: { ...s.follows, [a.kind]: toggle(s.follows[a.kind], a.id, a.on) } };
+    case 'follow': {
+      const prevList = s.follows[a.kind];
+      const nextList = toggle(prevList, a.id, a.on);
+      if (nextList === prevList) return s;
+      if (a.kind !== 'users') {
+        return { ...s, follows: { ...s.follows, [a.kind]: nextList } };
+      }
+      const delta = nextList.length > prevList.length ? 1 : -1;
+      const nextMe: User = {
+        ...s.profile,
+        following: Math.max(0, s.profile.following + delta),
+      };
+      const nextUsers: Record<string, User> = {
+        ...s.users,
+        [nextMe.id]: { ...s.users[nextMe.id], ...nextMe },
+      };
+      if (s.users[a.id]) {
+        nextUsers[a.id] = {
+          ...s.users[a.id]!,
+          followers: Math.max(0, s.users[a.id]!.followers + delta),
+        };
+      }
+      return {
+        ...s,
+        profile: nextMe,
+        users: nextUsers,
+        follows: { ...s.follows, users: nextList },
+      };
+    }
     case 'joinCommunity':
       return { ...s, joinedCommunities: toggle(s.joinedCommunities ?? [], a.id, a.on) };
     case 'dramaNotify':

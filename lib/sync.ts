@@ -102,6 +102,29 @@ const FAILURE_COPY: Record<string, string> = {
 // ── Mirror ────────────────────────────────────────────────────────────────────────────────────
 
 let adopting = false;
+const pendingReadIds = new Map<string, number>();
+let pendingReadGroupUntil: { group: string | null; until: number } | null = null;
+
+function applyPendingReadMarks<T extends { id: string; group: string; read: boolean }>(list: T[]): T[] {
+  const now = Date.now();
+  for (const [id, until] of pendingReadIds.entries()) {
+    if (until < now) pendingReadIds.delete(id);
+  }
+  if (pendingReadGroupUntil && pendingReadGroupUntil.until < now) {
+    pendingReadGroupUntil = null;
+  }
+  return list.map((n) => {
+    if (n.read) return n;
+    if (pendingReadIds.has(n.id)) return { ...n, read: true };
+    if (
+      pendingReadGroupUntil &&
+      (!pendingReadGroupUntil.group || pendingReadGroupUntil.group === n.group)
+    ) {
+      return { ...n, read: true };
+    }
+    return n;
+  });
+}
 
 const sessionReady = (): boolean => Boolean(supabase && getBackendAccessToken());
 
@@ -113,7 +136,7 @@ const MIRRORED_SLICES: Record<string, (keyof AppState)[]> = {
   deleteComment: ['comments', 'posts'],
   react: ['reactions', 'posts', 'comments'],
   save: ['saves', 'posts'],
-  follow: ['follows'],
+  follow: ['follows', 'profile', 'users'],
   dramaNotify: ['dramaNotify'],
   watch: ['watchlist', 'follows'],
   progress: ['watchlist', 'follows'],
@@ -256,6 +279,12 @@ export function mirrorAction(action: Action, prev: AppState, next: AppState): vo
       return;
     case 'readNotifications': {
       const group = action.group && action.group !== 'all' ? action.group : undefined;
+      const until = Date.now() + 12_000;
+      if (action.id) {
+        pendingReadIds.set(action.id, until);
+      } else {
+        pendingReadGroupUntil = { group: group ?? null, until };
+      }
       write(action, prev, 'readNotifications', social.markNotificationsRead(action.id ? [action.id] : undefined, group));
       return;
     }
@@ -615,7 +644,7 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
       communities: mergeCommunities(latest.communities, pulse?.communities ?? []),
     });
 
-    const notifications = await fetchNotifications();
+    const notifications = applyPendingReadMarks(await fetchNotifications());
     if (stale()) return;
     cb.apply({ notifications });
   } catch (e) {
@@ -720,7 +749,7 @@ export async function adoptPublicCollections(cb: Pick<AdoptionCallbacks, 'getSta
 export async function adoptNotifications(cb: Pick<AdoptionCallbacks, 'getState' | 'apply'>): Promise<void> {
   if (!sessionReady()) return;
   try {
-    const notifications = await fetchNotifications();
+    const notifications = applyPendingReadMarks(await fetchNotifications());
     const missingActors = [...new Set(notifications.flatMap((n) => n.actorIds ?? []))].filter(
       (id) => id && !cb.getState().users[id],
     );
@@ -742,7 +771,9 @@ export async function adoptNotifications(cb: Pick<AdoptionCallbacks, 'getState' 
           group: n.group,
           title: n.title,
           body: n.body,
-          deepLink: n.postId ? `/post/${n.postId}` : n.dramaId ? `/drama/${n.dramaId}` : '/notifications',
+          deepLink:
+            n.deepLink ??
+            (n.postId ? `/post/${n.postId}` : n.dramaId ? `/drama/${n.dramaId}` : '/(tabs)/activity'),
         });
       }
     }

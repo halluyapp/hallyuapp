@@ -136,6 +136,8 @@ export default function RootLayout() {
                 <Stack.Screen name="communities" />
                 <Stack.Screen name="community/[id]" />
                 <Stack.Screen name="events" />
+                <Stack.Screen name="watch-party/[eventId]" />
+                <Stack.Screen name="notifications" />
                 <Stack.Screen name="settings/moderation" />
                 <Stack.Screen name="settings/bug-report" />
                 <Stack.Screen name="settings/updates" />

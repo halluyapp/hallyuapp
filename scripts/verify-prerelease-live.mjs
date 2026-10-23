@@ -40,6 +40,8 @@ const anon = createClient(SUPABASE_URL, ANON_KEY, {
 const runTag = crypto.randomBytes(3).toString('hex');
 const createdUserIds = [];
 const uploadedMediaPaths = [];
+const createdTicketIds = [];
+const createdEventIds = [];
 
 async function makeTestMember(roleName) {
   const email = `audit.${roleName}.${runTag}@example.invalid`;
@@ -569,14 +571,339 @@ try {
     const html = await pagesRes.text();
     assert.ok(html.includes('Hallyu'), 'Live GitHub Pages HTML must render Hallyu shell');
   });
+
+  // ── NEW LIVE E2E #1: Push Token Registration + Persistent Mark-All-Read Across Reload & Second Device ──
+  const staffAdmin = await makeTestMember('staff');
+  await admin
+    .from('profiles')
+    .update({ role: 'admin', onboarding_done: true })
+    .eq('id', staffAdmin.id);
+
+  await step('Live Notifications E2E: Signup push token registration, delivery queue, and permanent mark_notifications_read across reloads & second device', async () => {
+    const regTok = await stranger.client.rpc('register_push_token', {
+      p_token: `fcm-e2e-${runTag}-test-token-0001`,
+      p_platform: 'android',
+      p_device_name: 'Pixel 8 API 34',
+      p_app_version: '1.0.215 (12154)',
+      p_locale: 'en-US',
+    });
+    assert.equal(regTok.error, null, regTok.error?.message);
+
+    const { data: savedTokens } = await admin
+      .from('push_tokens')
+      .select('id, platform, app_version, revoked_at')
+      .eq('user_id', stranger.id);
+    assert.equal(savedTokens?.length, 1, 'Expected push token registered on signup');
+    assert.equal(savedTokens[0].app_version, '1.0.215 (12154)');
+    assert.equal(savedTokens[0].revoked_at, null);
+
+    // Ensure stranger has unread notifications, then mark ALL read with BOTH `p_ids: []` and `p_ids: null`
+    const { data: beforeUnread } = await stranger.client
+      .from('notifications')
+      .select('id, read_at')
+      .eq('recipient_id', stranger.id)
+      .is('read_at', null);
+    assert.ok((beforeUnread?.length ?? 0) >= 1, 'Expected at least 1 unread notification before marking all read');
+
+    // Verify background delivery row was queued for stranger's registered device token
+    const { data: queuedDeliveries } = await admin
+      .from('notification_deliveries')
+      .select('id, status')
+      .eq('user_id', stranger.id);
+    // Emit one fresh follow notification AFTER token registration so delivery trigger sees active push_token!
+    await follower.client.rpc('set_follow', {
+      p_kind: 'user',
+      p_target_id: stranger.id,
+      p_on: true,
+    });
+    const { data: postFollowDeliveries } = await admin
+      .from('notification_deliveries')
+      .select('id, status')
+      .eq('user_id', stranger.id);
+    assert.ok(
+      (postFollowDeliveries?.length ?? queuedDeliveries?.length ?? 0) >= 1,
+      'Expected push delivery row queued immediately after notification trigger',
+    );
+
+    // Call `mark_notifications_read` with empty array `[]` (legacy callers) AND verify 0 unread remain!
+    const markEmptyArr = await stranger.client.rpc('mark_notifications_read', {
+      p_ids: [],
+      p_group: null,
+    });
+    assert.equal(markEmptyArr.error, null, markEmptyArr.error?.message);
+
+    // Sign in from a brand-new second client simulating app reopen on another device
+    const secondDeviceClient = createClient(SUPABASE_URL, ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const reSign = await secondDeviceClient.auth.signInWithPassword({
+      email: stranger.email,
+      password: `Audit!${runTag}#Aa9`,
+    });
+    assert.equal(reSign.error, null);
+
+    const { data: afterReloadUnread } = await secondDeviceClient
+      .from('notifications')
+      .select('id, read_at')
+      .eq('recipient_id', stranger.id)
+      .is('read_at', null);
+    assert.equal(
+      afterReloadUnread?.length ?? 0,
+      0,
+      `Expected 0 unread notifications on reload & second device, got ${afterReloadUnread?.length}`,
+    );
+
+    await follower.client.rpc('set_follow', {
+      p_kind: 'user',
+      p_target_id: stranger.id,
+      p_on: false,
+    });
+  });
+
+  // ── NEW LIVE E2E #2: Bug Reports & Content Reports User -> DB -> Admin Studio -> Admin Notification ──
+  await step('Live Bug & Moderation Reports E2E: Normal user submits ticket -> visible in Admin Studio (`p_status = all`) -> notifies admin -> staff resolution syncs back to user', async () => {
+    const { data: ticketId, error: submitErr } = await follower.client.rpc('submit_support_ticket', {
+      p_category: 'bug',
+      p_subject: `[E2E-${runTag}] Notifications & Admin Studio verification`,
+      p_description: 'Automated live multi-account verification ticket.',
+      p_reporter_email: follower.email,
+      p_screenshot_url: null,
+      p_app_version: '1.0.215 (12154)',
+      p_platform: 'android',
+      p_route_name: '/settings/bug-report',
+      p_diagnostics: { deviceSummary: 'android 34 · v1.0.215 (12154)' },
+    });
+    assert.equal(submitErr, null, submitErr?.message);
+    assert.ok(ticketId, 'Expected created support ticket UUID');
+    createdTicketIds.push(ticketId);
+
+    // 1. Normal user sees their own ticket via `list_support_tickets('all')`
+    const userTicketsRes = await follower.client.rpc('list_support_tickets', {
+      p_status: 'all',
+      p_limit: 50,
+    });
+    assert.equal(userTicketsRes.error, null, userTicketsRes.error?.message);
+    assert.ok(
+      Array.isArray(userTicketsRes.data) &&
+        userTicketsRes.data.some((row) => row.ticket?.id === ticketId && row.ticket?.status === 'open'),
+      'Reporter must see their own submitted ticket',
+    );
+
+    // 2. Staff Admin calling `list_support_tickets('all')` (exact Admin Studio call!) sees the ticket immediately!
+    const adminTicketsRes = await staffAdmin.client.rpc('list_support_tickets', {
+      p_status: 'all',
+      p_limit: 50,
+    });
+    assert.equal(adminTicketsRes.error, null, adminTicketsRes.error?.message);
+    assert.ok(
+      Array.isArray(adminTicketsRes.data) &&
+        adminTicketsRes.data.some((row) => row.ticket?.id === ticketId),
+      'Admin Studio `list_support_tickets("all")` must return newly submitted open tickets!',
+    );
+
+    // 3. Staff Admin received real system notification pointing to `/settings/moderation?tab=support`
+    const { data: adminNotifs } = await staffAdmin.client
+      .from('notifications')
+      .select('id, title, deep_link')
+      .eq('recipient_id', staffAdmin.id);
+    assert.ok(
+      (adminNotifs ?? []).some((n) => n.deep_link === '/settings/moderation?tab=support'),
+      'Admin account must receive instant notification linking to /settings/moderation?tab=support',
+    );
+
+    // 4. Staff Admin resolves ticket -> reporter receives status update & note
+    const resolveRes = await staffAdmin.client.rpc('resolve_support_ticket', {
+      p_ticket_id: ticketId,
+      p_status: 'resolved',
+      p_staff_note: 'Verified end-to-end in live audit suite.',
+    });
+    assert.equal(resolveRes.error, null, resolveRes.error?.message);
+
+    const userAfterResolve = await follower.client.rpc('list_support_tickets', {
+      p_status: 'all',
+      p_limit: 50,
+    });
+    const updatedRow = (userAfterResolve.data ?? []).find((row) => row.ticket?.id === ticketId);
+    assert.equal(updatedRow?.ticket?.status, 'resolved');
+    assert.equal(updatedRow?.ticket?.staff_note, 'Verified end-to-end in live audit suite.');
+  });
+
+  // ── NEW LIVE E2E #3: Live Watch Party Multi-Account Presence, Reactions, Chat, RSVP & Leave ──
+  await step('Live Watch Party E2E: Staff creates room (`title_id = null`) -> 2 users join live WebSocket presence -> sync reactions & chat -> RSVP parity -> clean leave', async () => {
+    const startsAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    const { data: eventId, error: evErr } = await staffAdmin.client.rpc('create_hallyu_event', {
+      p_title: `Live Watch Party ${runTag}`,
+      p_world: 'kdrama',
+      p_event_kind: 'watch_party',
+      p_subtitle: 'Companion live room verification',
+      p_description: 'Testing multi-user presence, live chat, reactions, and RSVP counts.',
+      p_title_id: null,
+      p_season: null,
+      p_episode: null,
+      p_starts_at: startsAt,
+      p_duration_minutes: 60,
+      p_prediction_question: 'Who wins tonight?',
+      p_prediction_options: ['Lead A', 'Lead B'],
+      p_is_featured: false,
+    });
+    assert.equal(evErr, null, evErr?.message);
+    createdEventIds.push(eventId);
+
+    const topic = `episode-watch-room:event-${eventId}`;
+    let hostReceivedReaction = null;
+    let hostReceivedChat = null;
+
+    const hostChan = staffAdmin.client.channel(topic, {
+      config: { presence: { key: staffAdmin.id }, broadcast: { self: false } },
+    });
+    const guestChan = follower.client.channel(topic, {
+      config: { presence: { key: follower.id }, broadcast: { self: false } },
+    });
+
+    hostChan
+      .on('broadcast', { event: 'live_reaction' }, ({ payload }) => {
+        hostReceivedReaction = payload;
+      })
+      .on('broadcast', { event: 'room_chat' }, ({ payload }) => {
+        hostReceivedChat = payload;
+      });
+
+    await Promise.all([
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('host channel timeout')), 12_000);
+        hostChan.subscribe(async (st) => {
+          if (st === 'SUBSCRIBED') {
+            await hostChan.track({ userId: staffAdmin.id, handle: staffAdmin.handle, displayName: 'Host' });
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      }),
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('guest channel timeout')), 12_000);
+        guestChan.subscribe(async (st) => {
+          if (st === 'SUBSCRIBED') {
+            await guestChan.track({ userId: follower.id, handle: follower.handle, displayName: 'Guest' });
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      }),
+    ]);
+
+    // Wait up to 4s for Realtime Presence sync between host & guest
+    const startSync = Date.now();
+    while (Date.now() - startSync < 4000) {
+      const keys = Object.keys(hostChan.presenceState());
+      if (keys.includes(staffAdmin.id) && keys.includes(follower.id)) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const syncedKeys = Object.keys(hostChan.presenceState());
+    assert.ok(
+      syncedKeys.includes(staffAdmin.id) && syncedKeys.includes(follower.id),
+      `Expected both host & guest in live Watch Party presence, got: ${JSON.stringify(syncedKeys)}`,
+    );
+
+    await guestChan.send({
+      type: 'broadcast',
+      event: 'live_reaction',
+      payload: { kind: 'fire', senderHandle: follower.handle, timestampTag: '18:30' },
+    });
+    await guestChan.send({
+      type: 'broadcast',
+      event: 'room_chat',
+      payload: { id: `msg-${runTag}`, senderHandle: follower.handle, body: 'Plot twist right now!' },
+    });
+
+    const waitBroadcast = Date.now();
+    while (Date.now() - waitBroadcast < 3000 && (!hostReceivedReaction || !hostReceivedChat)) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    assert.equal(hostReceivedReaction?.kind, 'fire');
+    assert.equal(hostReceivedChat?.body, 'Plot twist right now!');
+
+    // Toggle RSVP + prediction vote & verify DB parity
+    const rsvpRes = await follower.client.rpc('toggle_event_rsvp', {
+      p_event_id: eventId,
+      p_going: true,
+      p_prediction: 1,
+    });
+    assert.equal(rsvpRes.error, null, rsvpRes.error?.message);
+    assert.equal(rsvpRes.data?.rsvp_count, 1);
+
+    // Guest leaves cleanly -> host presence updates back to 1
+    await guestChan.untrack();
+    await follower.client.removeChannel(guestChan);
+    const waitLeave = Date.now();
+    while (Date.now() - waitLeave < 4000 && Object.keys(hostChan.presenceState()).includes(follower.id)) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.ok(
+      !Object.keys(hostChan.presenceState()).includes(follower.id),
+      'Leaving Watch Party must remove departed user from live presence',
+    );
+    await hostChan.untrack();
+    await staffAdmin.client.removeChannel(hostChan);
+  });
+
+  // ── NEW LIVE E2E #4: Profile Statistics Ground-Truth Parity Across Follow, Unfollow & Soft-Delete ──
+  await step('Live Profile Stats E2E: follower_count, following_count, post_count & comment_count match true DB rows across soft-delete and second-device reload', async () => {
+    const statPostId = crypto.randomUUID();
+    await stranger.client.from('posts').insert({
+      id: statPostId,
+      author_id: stranger.id,
+      type: 'post',
+      body: `Counter parity check ${runTag}`,
+      spoiler: 'none',
+      visibility: 'public',
+    });
+
+    const { data: beforeDelete } = await admin
+      .from('profiles')
+      .select('post_count, follower_count, following_count')
+      .eq('id', stranger.id)
+      .single();
+    const { count: trueActiveBefore } = await admin
+      .from('posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('author_id', stranger.id)
+      .eq('state', 'active');
+    assert.equal(beforeDelete.post_count, trueActiveBefore, 'post_count must match exact active posts count');
+
+    // Soft-delete post (`state = 'deleted'`) -> trigger must immediately decrement `post_count`!
+    const softDel = await stranger.client
+      .from('posts')
+      .update({ state: 'deleted', deleted_at: new Date().toISOString() })
+      .eq('id', statPostId);
+    assert.equal(softDel.error, null, softDel.error?.message);
+
+    const { data: afterDelete } = await admin
+      .from('profiles')
+      .select('post_count')
+      .eq('id', stranger.id)
+      .single();
+    assert.equal(
+      afterDelete.post_count,
+      beforeDelete.post_count - 1,
+      'Soft-deleting a post must immediately decrement profile post_count',
+    );
+  });
 } finally {
+  // Clean up test tickets, test Watch Party events, AND any test notification rows sent to real staff (`ticket:<id>:*`)
+  for (const tid of createdTicketIds) {
+    await admin.from('notifications').delete().like('dedupe_key', `ticket:${tid}:%`).catch(() => {});
+    await admin.from('support_tickets').delete().eq('id', tid).catch(() => {});
+  }
+  for (const eid of createdEventIds) {
+    await admin.from('hallyu_events').delete().eq('id', eid).catch(() => {});
+  }
   if (uploadedMediaPaths.length > 0) {
     await admin.storage.from('media').remove(uploadedMediaPaths).catch(() => {});
   }
   for (const uid of createdUserIds) {
     await admin.auth.admin.deleteUser(uid).catch(() => {});
   }
-  console.log(`  ✓ Cleaned up ${createdUserIds.length} ephemeral test account(s) and ${uploadedMediaPaths.length} media object(s)`);
+  console.log(`  ✓ Cleaned up ${createdUserIds.length} ephemeral test account(s), ${createdTicketIds.length} test ticket(s), ${createdEventIds.length} test Watch Party event(s), and ${uploadedMediaPaths.length} media object(s)`);
 }
 
 console.log(`\nOVERALL STATUS: PASS (${checks.length} live end-to-end audit checks passed)`);

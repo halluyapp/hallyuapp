@@ -149,7 +149,12 @@ export async function presentServerNotificationBanner(input: {
     if (!perm.granted) return false;
     await ensureAndroidNotificationChannels();
     const channelId = channelForGroup(input.group);
-    const deepLink = input.deepLink && input.deepLink.startsWith('/') ? input.deepLink : '/notifications';
+    const deepLink =
+      input.deepLink && input.deepLink.startsWith('/')
+        ? input.deepLink === '/notifications'
+          ? '/(tabs)/activity'
+          : input.deepLink
+        : '/(tabs)/activity';
     await Notifications.scheduleNotificationAsync({
       identifier: `srv:${input.id}`,
       content: {
@@ -283,6 +288,7 @@ export function parseNotificationDeepLink(data: Record<string, unknown> | null |
     : typeof data.deep_link === 'string' && data.deep_link.startsWith('/')
       ? data.deep_link
       : undefined;
+  if (candidate === '/notifications') return '/(tabs)/activity';
   return candidate;
 }
 

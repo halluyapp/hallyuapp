@@ -105,6 +105,58 @@ jobs:
           npx expo export --platform web --output-dir dist-root --clear
           node scripts/ci/enhance-web-html.mjs dist-root
 
+      - name: Audit 360x800 mobile viewport routes, Admin Studio bounds & zero runtime errors
+        run: |
+          mkdir -p /tmp/pw-ci && npm --prefix /tmp/pw-ci install --no-save playwright-core >/dev/null
+          NODE_PATH="/tmp/pw-ci/node_modules" node -e '
+            const http = require("http");
+            const fs = require("fs");
+            const path = require("path");
+            const { chromium } = require("playwright-core");
+            (async () => {
+              const root = path.resolve("dist-root");
+              const mime = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".ttf": "font/ttf", ".otf": "font/otf", ".ico": "image/x-icon" };
+              const srv = http.createServer((req, res) => {
+                const clean = decodeURIComponent((req.url || "/").split("?")[0]);
+                let file = path.join(root, clean === "/" ? "index.html" : clean);
+                if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+                  const htmlCandidate = file + ".html";
+                  file = fs.existsSync(htmlCandidate) ? htmlCandidate : path.join(root, "index.html");
+                }
+                const ext = path.extname(file);
+                res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream" });
+                fs.createReadStream(file).pipe(res);
+              });
+              await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+              const port = srv.address().port;
+              const browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox"] });
+              const context = await browser.newContext({ viewport: { width: 360, height: 800 } });
+              const page = await context.newPage();
+              const pageErrors = [];
+              page.on("pageerror", (e) => pageErrors.push(e.message));
+              for (const route of ["/", "/notifications", "/settings/updates", "/settings/bug-report", "/events", "/watch-party/00000000-0000-4000-8000-000000000000"]) {
+                await page.goto(`http://127.0.0.1:${port}${route}`, { waitUntil: "domcontentloaded" });
+                await page.waitForTimeout(900);
+                console.log("360x800 OK:", route, "->", page.url());
+              }
+              await page.evaluate(() => {
+                const raw = localStorage.getItem("hallyu:state:v1");
+                const base = raw ? JSON.parse(raw) : {};
+                base.profile = { ...(base.profile || { id: "u1", worlds: ["kdrama"], followers: 1, following: 1, bio: "", joinedAt: "2026-01-01T00:00:00Z" }), role: "admin", handle: "ceohallyu", displayName: "CEO Hallyu" };
+                base.onboarding = { done: true, step: 5 };
+                localStorage.setItem("hallyu:state:v1", JSON.stringify(base));
+              });
+              await page.goto(`http://127.0.0.1:${port}/settings/moderation?tab=broadcast`, { waitUntil: "domcontentloaded" });
+              await page.waitForTimeout(900);
+              const box = await page.getByRole("tablist").boundingBox();
+              console.log("Admin Studio 360x800 tablist bounds:", JSON.stringify(box));
+              if (!box || box.height < 40) throw new Error("Segmented tablist collapsed: " + JSON.stringify(box));
+              if (pageErrors.length > 0) throw new Error("Runtime errors: " + JSON.stringify(pageErrors));
+              await browser.close();
+              srv.close();
+            })();
+          '
+
       - name: Upload root hallyuapp.github.io static bundle artifact
         uses: actions/upload-artifact@v4
         with:

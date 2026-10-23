@@ -53,6 +53,16 @@ export interface AppReleaseInfo {
   minSupportedVersion: number;
 }
 
+export interface PendingInstallRecord {
+  targetVersionCode: number;
+  targetTrain: number;
+  targetVersionName: string;
+  abi: SupportedApkAbi;
+  localUri: string;
+  startedAt: number;
+  status: 'awaiting_user_install' | 'not_installed_yet';
+}
+
 export interface UpdateCheckResult {
   installedCode: number;
   installedTrain: number;
@@ -64,6 +74,7 @@ export interface UpdateCheckResult {
   isMandatory: boolean;
   justUpdatedFromVersion: string | null;
   cachedApkReady: boolean;
+  pendingInstall: PendingInstallRecord | null;
 }
 
 export interface DownloadProgressSnapshot {
@@ -74,15 +85,25 @@ export interface DownloadProgressSnapshot {
 }
 
 export type InstallLaunchOutcome =
-  | { status: 'installer_opened'; usedCachedApk: boolean; selectedAbi: SupportedApkAbi }
+  | { status: 'awaiting_user_install'; usedCachedApk: boolean; selectedAbi: SupportedApkAbi }
+  | { status: 'not_installed_yet'; usedCachedApk: boolean; selectedAbi: SupportedApkAbi }
   | { status: 'needs_unknown_sources_permission'; selectedAbi: SupportedApkAbi }
   | { status: 'browser_opened'; selectedAbi: SupportedApkAbi };
 
 const SEEN_VERSION_STORAGE_KEY = 'hallyu.updater.seenBuild.v2';
+const PENDING_INSTALL_STORAGE_KEY = 'hallyu.updater.pendingInstall.v1';
+const APK_STORAGE_SUBDIR = 'hallyu-updates/';
 const APK_CACHE_PREFIX = 'hallyu-release-';
 const APK_ZIP_MAGIC_BASE64_PREFIX = 'UEsDB'; // `PK\x03\x04` (0x50 0x4b 0x03 0x04)
+
+// CRITICAL ANDROID 14 FIX:
+// `expo-intent-launcher` (`IntentLauncherModule.kt`) calls `currentActivity.startActivityForResult(intent, 12)`.
+// Never combine `FLAG_ACTIVITY_NEW_TASK` (0x10000000) with `startActivityForResult` — on Android,
+// ActivityTaskManager immediately cancels the result contract with `Activity.RESULT_CANCELED (0)`
+// before the user can tap Update! Pass `FLAG_GRANT_READ_URI_PERMISSION` (0x00000001) ONLY, plus
+// `android.intent.extra.RETURN_RESULT: true`, so Hallyu receives the authentic result when Android's
+// PackageInstaller closes without installing.
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
-const FLAG_ACTIVITY_NEW_TASK = 0x10000000;
 
 /**
  * Normalizes ABI-split version codes (`12121` universal, `12122` armv7, `12123` x86_64, `12124` arm64)
@@ -92,6 +113,47 @@ const FLAG_ACTIVITY_NEW_TASK = 0x10000000;
 export function getReleaseTrain(versionCode: number): number {
   if (!Number.isFinite(versionCode) || versionCode <= 0) return 0;
   return versionCode >= 10_000 ? Math.floor(versionCode / 10) : versionCode;
+}
+
+/**
+ * Compares version strings numerically across arbitrary segments including zero-padded segments
+ * like `1.7.01` vs `1.7.02` vs `1.0.215` (`-1` if `a < b`, `0` if equal, `1` if `a > b`).
+ */
+export function compareVersionStrings(a: string, b: string): number {
+  const parse = (raw: string) =>
+    String(raw ?? '')
+      .trim()
+      .replace(/^v/i, '')
+      .split(/[^0-9]+/)
+      .filter(Boolean)
+      .map((s) => Number.parseInt(s, 10) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na !== nb) return na < nb ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Determines whether a published release is genuinely newer than the currently installed build.
+ * Uses integer `releaseTrain` (`Math.floor(versionCode / 10)`) whenever valid native build codes
+ * exist, falling back to numeric semver comparison when running in an un-numbered environment.
+ */
+export function isReleaseNewer(
+  installedCode: number,
+  installedVersion: string,
+  latest: Pick<AppReleaseInfo, 'versionCode' | 'releaseTrain' | 'versionName'>,
+): boolean {
+  const installedTrain = getReleaseTrain(installedCode);
+  const latestTrain = latest.releaseTrain || getReleaseTrain(latest.versionCode);
+  if (installedTrain > 0 && latestTrain > 0) {
+    return latestTrain > installedTrain;
+  }
+  return compareVersionStrings(installedVersion, latest.versionName) < 0;
 }
 
 /**
@@ -293,8 +355,8 @@ export function getInstalledBuildCode(): number {
 
 /**
  * Returns the exact human-readable release version currently running on this device
- * (e.g. `1.0.212`), synthesizing `1.0.<run>` automatically even on legacy APKs whose
- * `AndroidManifest` still carried `1.0.0` before dynamic version injection.
+ * (e.g. `1.0.215`), synthesizing `1.0.<run>` automatically even on legacy APKs whose
+ * `AndroidManifest` carried `1.0.0` before explicit `versionName` injection.
  */
 export function getInstalledVersionLabel(): string {
   const code = getInstalledBuildCode();
@@ -303,7 +365,7 @@ export function getInstalledVersionLabel(): string {
   const configVer = Constants.expoConfig?.version?.trim();
   const envVer = process.env.EXPO_PUBLIC_APP_VERSION?.trim();
 
-  const bestExplicit = [envVer, configVer, nativeVer].find(
+  const bestExplicit = [nativeVer, envVer, configVer].find(
     (v) => v && v !== '1.0.0',
   );
   if (bestExplicit) return bestExplicit;
@@ -314,9 +376,22 @@ export function getInstalledVersionLabel(): string {
   return nativeVer || configVer || '1.0.0';
 }
 
-function getApkCachePath(versionCode: number, abi: SupportedApkAbi): string | null {
-  if (!FileSystem.cacheDirectory) return null;
-  return `${FileSystem.cacheDirectory}${APK_CACHE_PREFIX}${versionCode}-${abi}.apk`;
+function getApkStorageDir(): string | null {
+  const base = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
+  if (!base) return null;
+  return `${base}${APK_STORAGE_SUBDIR}`;
+}
+
+function getApkStoragePath(versionCode: number, abi: SupportedApkAbi): string | null {
+  const dir = getApkStorageDir();
+  if (!dir) return null;
+  return `${dir}${APK_CACHE_PREFIX}${versionCode}-${abi}.apk`;
+}
+
+async function ensureApkStorageDir(): Promise<void> {
+  const dir = getApkStorageDir();
+  if (!dir) return;
+  await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
 }
 
 async function readLocalApkHeaderBase64(uri: string): Promise<string | null> {
@@ -337,7 +412,7 @@ async function hasValidCachedApk(
   expectedSizeBytes?: number | null,
 ): Promise<string | null> {
   if (Platform.OS !== 'android') return null;
-  const target = getApkCachePath(versionCode, abi);
+  const target = getApkStoragePath(versionCode, abi);
   if (!target) return null;
   try {
     const info = await FileSystem.getInfoAsync(target);
@@ -351,21 +426,59 @@ async function hasValidCachedApk(
 }
 
 async function pruneOldCachedApks(keepVersionCode: number, keepAbi: SupportedApkAbi): Promise<void> {
-  if (Platform.OS !== 'android' || !FileSystem.cacheDirectory) return;
+  if (Platform.OS !== 'android') return;
+  const dir = getApkStorageDir();
+  if (!dir) return;
   try {
-    const entries = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
+    const entries = await FileSystem.readDirectoryAsync(dir);
     const keepName = `${APK_CACHE_PREFIX}${keepVersionCode}-${keepAbi}.apk`;
     await Promise.all(
       entries
         .filter((name) => name.startsWith(APK_CACHE_PREFIX) && name !== keepName)
         .map((name) =>
-          FileSystem.deleteAsync(`${FileSystem.cacheDirectory}${name}`, {
+          FileSystem.deleteAsync(`${dir}${name}`, {
             idempotent: true,
           }).catch(() => {}),
         ),
     );
   } catch {
-    // Non-fatal cache cleanup
+    // Non-fatal cleanup
+  }
+}
+
+async function reconcilePendingInstall(installedTrain: number): Promise<PendingInstallRecord | null> {
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_INSTALL_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PendingInstallRecord;
+    if (!parsed || typeof parsed.targetTrain !== 'number') return null;
+
+    // If Android actually replaced the installed APK, clear the pending marker AND clean up disk!
+    if (installedTrain >= parsed.targetTrain) {
+      await AsyncStorage.removeItem(PENDING_INSTALL_STORAGE_KEY).catch(() => {});
+      if (parsed.localUri) {
+        await FileSystem.deleteAsync(parsed.localUri, { idempotent: true }).catch(() => {});
+      }
+      return null;
+    }
+
+    // If the user returned to Hallyu and is STILL running the older build code, mark honestly
+    // as `not_installed_yet` so Hallyu never falsely claims installation succeeded!
+    if (parsed.localUri) {
+      const info = await FileSystem.getInfoAsync(parsed.localUri).catch(() => null);
+      if (!info?.exists) {
+        await AsyncStorage.removeItem(PENDING_INSTALL_STORAGE_KEY).catch(() => {});
+        return null;
+      }
+    }
+    const updated: PendingInstallRecord = {
+      ...parsed,
+      status: 'not_installed_yet',
+    };
+    await AsyncStorage.setItem(PENDING_INSTALL_STORAGE_KEY, JSON.stringify(updated)).catch(() => {});
+    return updated;
+  } catch {
+    return null;
   }
 }
 
@@ -420,7 +533,7 @@ function parseManifestAbis(rawAbis: unknown): Partial<Record<SupportedApkAbi, Ab
       out[key] = {
         abi: key,
         url: String(obj.url),
-        sha256: typeof obj.sha256 === 'string' ? obj.sha256 : null,
+        sha256: obj.sha256 ? String(obj.sha256) : null,
         sizeBytes: typeof obj.sizeBytes === 'number' ? obj.sizeBytes : null,
         versionCode: typeof obj.versionCode === 'number' ? obj.versionCode : null,
       };
@@ -429,9 +542,17 @@ function parseManifestAbis(rawAbis: unknown): Partial<Record<SupportedApkAbi, Ab
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+export async function openUnknownSourcesSettings(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  const pkg = Application.applicationId ?? 'com.hallyu.app';
+  await IntentLauncher.startActivityAsync('android.settings.MANAGE_UNKNOWN_APP_SOURCES', {
+    data: `package:${pkg}`,
+  }).catch(() => Linking.openSettings().catch(() => {}));
+}
+
 /**
- * Fetches the newest published release via `get_latest_app_release()` RPC AND cross-checks live
- * CDN `latest/manifest.json` (cache-busted) so the user always sees real-time ground truth.
+ * Checks BOTH `public.get_latest_app_release()` AND live CDN `latest/manifest.json` (cache-busted)
+ * and verifies actual installed build + any pending unconfirmed APK installation honestly.
  */
 export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
   const installedCode = getInstalledBuildCode();
@@ -535,7 +656,8 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
         };
 
   const selectedArtifact = selectApkArtifactForAbis(deviceAbis, latest);
-  const hasUpdate = latest.releaseTrain > installedTrain;
+  const hasUpdate = isReleaseNewer(installedCode, installedVersion, latest);
+  const pendingInstall = await reconcilePendingInstall(installedTrain);
   const justUpdatedFromVersion = await detectPostInstallUpgrade(installedTrain, installedVersion);
   const cachedPath =
     hasUpdate && selectedArtifact.ok
@@ -553,43 +675,88 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
     isMandatory: hasUpdate && (latest.isMandatory || installedCode < latest.minSupportedVersion),
     justUpdatedFromVersion,
     cachedApkReady: Boolean(cachedPath),
+    pendingInstall,
   };
 }
 
 /**
- * Launches Android's native Package Installer directly against a local `file://` APK using
- * `FileSystem.getContentUriAsync` + `IntentLauncher.startActivityAsync` with
- * `FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK` and `application/vnd.android.package-archive`.
+ * Launches Android's native Package Installer against a persistent verified local APK URI using
+ * `FLAG_GRANT_READ_URI_PERMISSION` (WITHOUT `FLAG_ACTIVITY_NEW_TASK`) and inspects the authentic
+ * `resultCode` returned by Android's installer dialog so Hallyu NEVER falsely reports success
+ * when installation was canceled or blocked by unknown-sources permissions.
  */
 async function launchAndroidPackageInstaller(
   localFileUri: string,
   selectedAbi: SupportedApkAbi,
+  targetVersionCode: number,
+  targetVersionName: string,
+  usedCachedApk: boolean,
 ): Promise<InstallLaunchOutcome> {
   const contentUri = await FileSystem.getContentUriAsync(localFileUri);
+  const targetTrain = getReleaseTrain(targetVersionCode);
+
+  const initialPending: PendingInstallRecord = {
+    targetVersionCode,
+    targetTrain,
+    targetVersionName,
+    abi: selectedAbi,
+    localUri: localFileUri,
+    startedAt: Date.now(),
+    status: 'awaiting_user_install',
+  };
+  await AsyncStorage.setItem(PENDING_INSTALL_STORAGE_KEY, JSON.stringify(initialPending)).catch(
+    () => {},
+  );
+
   try {
-    await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+    const res = await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
       data: contentUri,
-      flags: FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK,
+      flags: FLAG_GRANT_READ_URI_PERMISSION,
       type: 'application/vnd.android.package-archive',
+      extra: {
+        'android.intent.extra.RETURN_RESULT': true,
+        'android.intent.extra.NOT_UNKNOWN_SOURCE': true,
+      },
     });
-    return { status: 'installer_opened', usedCachedApk: false, selectedAbi };
+
+    const installedTrainAfter = getReleaseTrain(getInstalledBuildCode());
+    if (
+      res?.resultCode === IntentLauncher.ResultCode?.Canceled &&
+      installedTrainAfter < targetTrain
+    ) {
+      const notInstalled: PendingInstallRecord = {
+        ...initialPending,
+        status: 'not_installed_yet',
+      };
+      await AsyncStorage.setItem(PENDING_INSTALL_STORAGE_KEY, JSON.stringify(notInstalled)).catch(
+        () => {},
+      );
+      return { status: 'not_installed_yet', usedCachedApk, selectedAbi };
+    }
+
+    return { status: 'awaiting_user_install', usedCachedApk, selectedAbi };
   } catch {
-    const pkg = Application.applicationId ?? 'com.hallyu.app';
-    await IntentLauncher.startActivityAsync('android.settings.MANAGE_UNKNOWN_APP_SOURCES', {
-      data: `package:${pkg}`,
-    }).catch(() => Linking.openSettings().catch(() => {}));
+    await openUnknownSourcesSettings();
     return { status: 'needs_unknown_sources_permission', selectedAbi };
   }
 }
 
 /**
  * Selects the exact APK binary matching this device's CPU ABI, verifies HTTP status/headers,
- * APK ZIP header magic (`PK\x03\x04`), and expected byte size, then opens Android Package Installer.
+ * APK ZIP header magic (`PK\x03\x04`), and expected byte size, stores it in persistent
+ * `documentDirectory`, then launches Android Package Installer honestly.
  */
 export async function downloadAndInstallApk(
   release: Pick<
     AppReleaseInfo,
-    'apkUrl' | 'arm32ApkUrl' | 'x86_64ApkUrl' | 'abis' | 'versionCode' | 'fileSizeBytes' | 'sha256'
+    | 'apkUrl'
+    | 'arm32ApkUrl'
+    | 'x86_64ApkUrl'
+    | 'abis'
+    | 'versionCode'
+    | 'versionName'
+    | 'fileSizeBytes'
+    | 'sha256'
   >,
   onProgress?: (snapshot: DownloadProgressSnapshot) => void,
   overrideDeviceAbis?: readonly string[],
@@ -601,13 +768,18 @@ export async function downloadAndInstallApk(
   }
 
   const { abi, url, sizeBytes } = selection;
+  const targetDir = getApkStorageDir();
 
-  if (Platform.OS !== 'android' || !FileSystem.cacheDirectory) {
+  if (Platform.OS !== 'android' || !targetDir) {
     await Linking.openURL(url);
     return { status: 'browser_opened', selectedAbi: abi };
   }
 
+  await ensureApkStorageDir();
   await pruneOldCachedApks(release.versionCode, abi);
+
+  const vName =
+    release.versionName || `1.0.${Math.max(0, getReleaseTrain(release.versionCode) - 1000)}`;
 
   const existingValid = await hasValidCachedApk(release.versionCode, abi, sizeBytes);
   if (existingValid) {
@@ -618,13 +790,10 @@ export async function downloadAndInstallApk(
       totalBytes: total,
       speedBytesPerSec: 0,
     });
-    const outcome = await launchAndroidPackageInstaller(existingValid, abi);
-    return outcome.status === 'installer_opened'
-      ? { status: 'installer_opened', usedCachedApk: true, selectedAbi: abi }
-      : outcome;
+    return launchAndroidPackageInstaller(existingValid, abi, release.versionCode, vName, true);
   }
 
-  const targetPath = getApkCachePath(release.versionCode, abi)!;
+  const targetPath = getApkStoragePath(release.versionCode, abi)!;
   await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
 
   const startedAt = Date.now();
@@ -685,5 +854,5 @@ export async function downloadAndInstallApk(
     speedBytesPerSec: Math.round(actualSize / Math.max(0.25, (Date.now() - startedAt) / 1000)),
   });
 
-  return launchAndroidPackageInstaller(downloaded.uri, abi);
+  return launchAndroidPackageInstaller(downloaded.uri, abi, release.versionCode, vName, false);
 }

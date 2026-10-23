@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /**
  * Publishes all freshly verified signed CPU split APKs (`arm64-v8a`, `armeabi-v7a`, `x86_64`)
- * directly to public Supabase Storage bucket `app-releases/latest/` (< 35 MB each — guaranteed
- * 200 OK public worldwide CDN access with zero auth gates) AND registers the release row in
- * `public.app_releases` + `latest/manifest.json` with exact per-ABI URLs, byte sizes, and SHA-256
- * digests so the In-App Updater selects and verifies the right binary for every device architecture.
+ * directly to public Supabase Storage bucket `app-releases/latest/`, generates truthful commit-based
+ * release notes dynamically from git history since the previous `apk-*` tag, registers the release
+ * in `public.app_releases` + `latest/manifest.json`, AND broadcasts out-of-app push alerts via
+ * `public.announce_app_release` + `push-dispatch` so users know an update is ready even when Hallyu
+ * is closed.
  */
+import { execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import process from 'node:process';
@@ -33,6 +35,45 @@ const commit = (process.env.SOURCE_SHORT ?? '').trim();
 if (!supabaseUrl || !serviceKey) {
   console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for CDN release upload.');
   process.exit(1);
+}
+
+export function buildDynamicReleaseNotes({
+  versionName: ver,
+  commitShort,
+  overrideNotes,
+} = {}) {
+  if (overrideNotes && String(overrideNotes).trim()) {
+    return String(overrideNotes).trim();
+  }
+  try {
+    const tags = execSync('git tag --list "apk-*" --sort=-creatordate', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')
+      .map((t) => t.trim())
+      .filter((t) => t && t !== releaseTag);
+    const prevTag = tags[0] ?? '';
+    const rangeArg = prevTag ? `${prevTag}..HEAD` : '-n 6';
+    const subjects = execSync(`git log ${rangeArg} --no-merges --pretty=format:%s`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !/^chore\(ci\):/i.test(line));
+
+    const unique = [...new Set(subjects)].slice(0, 6);
+    if (unique.length > 0) {
+      return [
+        `Signed release v${ver}${commitShort ? ` (${commitShort})` : ''}:`,
+        ...unique.map((s) => `• ${s}`),
+      ].join('\n');
+    }
+  } catch {
+    // Fallback if git history unavailable
+  }
+  return `Signed release v${ver}${commitShort ? ` (${commitShort})` : ''}: Reliability, performance, and stability updates.`;
 }
 
 function inspectApkFile(filePath, label) {
@@ -164,7 +205,11 @@ if (fs.existsSync(x86Path)) {
   };
 }
 
-const releaseNotes = `Signed release v${versionName} (${commit || 'latest'}): Private-profile security enforcement, atomic post publishing, verified account deletion, architecture-aware APK updater, and core social & media fixes.`;
+const releaseNotes = buildDynamicReleaseNotes({
+  versionName,
+  commitShort: commit,
+  overrideNotes: process.env.RELEASE_NOTES,
+});
 
 const manifest = {
   version: versionName,
@@ -218,4 +263,37 @@ if (!dbRes.ok) {
   console.log(`Registered build v${versionName} (#${versionCode}) in public.app_releases!`);
 }
 
-console.log('Published signed ARM64 + ARM32 + x86_64 APKs + per-ABI SHA-256 manifest + DB record cleanly!');
+// Broadcast background + in-app update alert idempotently across all members (`public.announce_app_release`)
+const announceRes = await fetch(`${supabaseUrl}/rest/v1/rpc/announce_app_release`, {
+  method: 'POST',
+  headers: {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    p_version_code: versionCode,
+    p_version_name: versionName,
+    p_release_notes: releaseNotes,
+  }),
+}).catch(() => null);
+
+if (announceRes?.ok) {
+  const notifiedCount = await announceRes.json().catch(() => 0);
+  console.log(`Broadcasted v${versionName} update alert to ${notifiedCount} active member(s).`);
+} else if (announceRes) {
+  console.warn(`Warning: announce_app_release returned HTTP ${announceRes.status}`);
+}
+
+// Immediately wake push-dispatch so Android FCM + Web Push devices outside Hallyu get alerted now
+await fetch(`${supabaseUrl}/functions/v1/push-dispatch`, {
+  method: 'POST',
+  headers: {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    'Content-Type': 'application/json',
+  },
+  body: '{}',
+}).catch(() => {});
+
+console.log('Published signed ARM64 + ARM32 + x86_64 APKs + dynamic notes + push alert cleanly!');

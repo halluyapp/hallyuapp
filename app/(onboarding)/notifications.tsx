@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
-import { StyleSheet, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { Platform, StyleSheet, View } from 'react-native';
 import { OnboardingFrame } from '../../components/onboarding/OnboardingFrame';
 import { Avatar } from '../../components/ui/Avatar';
 import { Button } from '../../components/ui/Button';
@@ -41,7 +41,11 @@ export default function NotificationsStep() {
   const watchedCount = Object.keys(state.watchlist).length;
   const leadTint = chosenWorlds[0]?.tint ?? colors.accent;
 
+  const [submitting, setSubmitting] = useState(false);
+
   const finish = async (enable: boolean) => {
+    if (submitting) return;
+    setSubmitting(true);
     dispatch({
       type: 'prefs',
       patch: {
@@ -50,12 +54,30 @@ export default function NotificationsStep() {
           episodes: enable,
           social: enable,
           highlights: enable,
+          system: enable,
         },
       },
     });
     if (enable) {
-      const status = await ensureNotificationPermission();
-      if (status === 'granted') void registerDevicePushToken();
+      if (Platform.OS === 'web') {
+        await Promise.race([
+          registerDevicePushToken(true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 4500)),
+        ]);
+      } else {
+        const status = await ensureNotificationPermission();
+        if (status === 'granted') {
+          const registered = await Promise.race([
+            registerDevicePushToken(true),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 4500)),
+          ]);
+          if (!registered) {
+            setTimeout(() => {
+              void registerDevicePushToken(true);
+            }, 3000);
+          }
+        }
+      }
     }
     dispatch({ type: 'onboarding', patch: { done: true, step: 5 } });
     track('onboarding.done');

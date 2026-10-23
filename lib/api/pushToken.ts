@@ -204,11 +204,19 @@ export async function registerPushTokenValue(
         : 'Web Browser'
       : Constants.deviceName ?? undefined;
 
+  const versionString = Application.nativeApplicationVersion?.trim()
+    ? `${Application.nativeApplicationVersion.trim()}${
+        Application.nativeBuildVersion?.trim()
+          ? ` (${Application.nativeBuildVersion.trim()})`
+          : ''
+      }`
+    : '1.0.215';
+
   const { error } = await supabase.rpc('register_push_token', {
     p_token: token,
     p_platform: resolvedPlatform,
     p_device_name: deviceName,
-    p_app_version: Application.nativeApplicationVersion ?? '1.0.200',
+    p_app_version: versionString,
     p_locale: Intl.DateTimeFormat().resolvedOptions().locale || undefined,
   });
   if (error) {

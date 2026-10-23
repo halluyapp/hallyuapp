@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 /**
- * Configures permanent 4096-bit PKCS12 release signing + ABI split APKs (Slim ARM64 + Universal)
- * inside generated `android/app/build.gradle` after `npx expo prebuild --platform android`.
- *
- * Zero secrets are ever stored in Git: credentials arrive solely through masked CI environment
- * variables materialized in the ephemeral runner workspace.
+ * Configures permanent 4096-bit PKCS12 release signing + ABI split APKs (Slim ARM64, ARM32,
+ * x86_64 + Universal) AND stamps explicit `versionName` inside generated `android/app/build.gradle`
+ * so native `Application.nativeApplicationVersion` always reflects the true release version.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,6 +19,10 @@ const storePassword = (process.env.ANDROID_KEYSTORE_PASSWORD ?? '').trim();
 const keyAlias = (process.env.ANDROID_KEY_ALIAS ?? '').trim();
 const keyPassword = (process.env.ANDROID_KEY_PASSWORD ?? '').trim();
 const baseVersionCode = Number.parseInt(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? '10000', 10);
+const appVersion = (
+  process.env.EXPO_PUBLIC_APP_VERSION ??
+  `1.0.${Math.max(1, Math.floor(baseVersionCode / 10) - 1000)}`
+).trim();
 
 if (!keystoreB64 || !storePassword || !keyAlias || !keyPassword) {
   console.error('Missing permanent release signing environment variables.');
@@ -32,6 +34,9 @@ fs.writeFileSync(keystoreDest, Buffer.from(keystoreB64, 'base64'));
 
 let src = fs.readFileSync(gradlePath, 'utf8');
 
+// Always guarantee explicit `versionName` matches the release train (never left at default `1.0.0`)
+src = src.replace(/versionName\s+"[^"]*"/, `versionName "${appVersion}"`);
+
 if (!src.includes('hallyuReleaseSigning')) {
   const signingNeedle = /signingConfigs\s*\{/;
   if (!signingNeedle.test(src)) {
@@ -39,8 +44,6 @@ if (!src.includes('hallyuReleaseSigning')) {
     process.exit(1);
   }
 
-  // Inject BOTH ABI splits + monotonic per-ABI versionCode AND permanent PKCS12 signing right
-  // inside `android { ... }` immediately above `signingConfigs { ... }`.
   const injectedAndroidConfig = `splits {
         abi {
             enable true
@@ -70,15 +73,14 @@ if (!src.includes('hallyuReleaseSigning')) {
 
   src = src.replace(signingNeedle, injectedAndroidConfig);
 
-  // Switch buildTypes signingConfig -> signingConfigs.release across every buildType
   src = src.replace(
     /signingConfig\s+signingConfigs\.debug/g,
     'signingConfig signingConfigs.release',
   );
-
-  fs.writeFileSync(gradlePath, src, 'utf8');
 }
 
+fs.writeFileSync(gradlePath, src, 'utf8');
+
 console.log(
-  `Configured permanent PKCS12 release signing + Slim ARM64 / Universal splits inside android {} (base versionCode ${baseVersionCode}).`,
+  `Configured permanent PKCS12 release signing + explicit versionName "${appVersion}" + ABI splits (base versionCode ${baseVersionCode}).`,
 );

@@ -165,12 +165,12 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
           </Text>
           <View style={styles.stats}>
             <Stat
-              n={user.followers + (followingThem && !isMe ? 1 : 0)}
+              n={user.followers}
               label="followers"
               onPress={() => router.push({ pathname: '/user/[handle]/connections', params: { handle: user.handle, tab: 'followers' } })}
             />
             <Stat
-              n={isMe ? state.follows.users.length : user.following}
+              n={user.following}
               label="following"
               onPress={() => router.push({ pathname: '/user/[handle]/connections', params: { handle: user.handle, tab: 'following' } })}
             />

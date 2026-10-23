@@ -289,8 +289,8 @@ async function sendFcmSingle(
   const accessToken = await getGoogleAccessToken(sa);
   const channelId = channelForPayload(delivery.payload ?? {});
   const dataStrings: Record<string, string> = {
-    url: delivery.deep_link || '/notifications',
-    deep_link: delivery.deep_link || '/notifications',
+    url: delivery.deep_link || '/(tabs)/activity',
+    deep_link: delivery.deep_link || '/(tabs)/activity',
     notification_id: String(delivery.notification_id ?? ''),
     delivery_id: String(delivery.delivery_id ?? ''),
     title: delivery.title || 'Hallyu',
@@ -488,11 +488,11 @@ async function sendWebPushSingle(
   const messagePayload = JSON.stringify({
     title: delivery.title || 'Hallyu',
     body: delivery.body || '',
-    url: delivery.deep_link || '/notifications',
+    url: delivery.deep_link || '/(tabs)/activity',
     tag: String(delivery.notification_id || 'hallyu'),
     data: {
       ...delivery.payload,
-      url: delivery.deep_link || '/notifications',
+      url: delivery.deep_link || '/(tabs)/activity',
     },
   });
 
@@ -554,8 +554,8 @@ function buildExpoMessage(delivery: ClaimedDelivery): Record<string, unknown> {
     channelId: delivery.platform === 'android' ? channelId : undefined,
     data: {
       ...delivery.payload,
-      url: delivery.deep_link || '/notifications',
-      deep_link: delivery.deep_link || '/notifications',
+      url: delivery.deep_link || '/(tabs)/activity',
+      deep_link: delivery.deep_link || '/(tabs)/activity',
       notification_id: delivery.notification_id,
       delivery_id: delivery.delivery_id,
     },
@@ -698,11 +698,23 @@ Deno.serve(async (request: Request) => {
   const { error: fanoutError } = await rpc('fanout_due_notifications', { p_limit: 500 });
   if (fanoutError) return errorResponse(`fan-out failed: ${fanoutError.message}`, 500);
 
-  const { data, error: claimError } = await rpc<ClaimedDelivery[]>('claim_notification_deliveries', {
+  let { data, error: claimError } = await rpc<ClaimedDelivery[]>('claim_notification_deliveries', {
     p_limit: limit,
     p_max_attempts: body.max_attempts ?? 5,
   });
   if (claimError) return errorResponse(`could not claim deliveries: ${claimError.message}`, 500);
+
+  if ((data ?? []).length === 0 && !body.verify_fcm) {
+    // `AFTER INSERT` wake via `pg_net` can arrive a few milliseconds before the outer SQL
+    // transaction commits; a brief retry catches those newly committed rows immediately.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await rpc('fanout_due_notifications', { p_limit: 500 });
+    const retry = await rpc<ClaimedDelivery[]>('claim_notification_deliveries', {
+      p_limit: limit,
+      p_max_attempts: body.max_attempts ?? 5,
+    });
+    if (!retry.error) data = retry.data;
+  }
 
   const claimed = data ?? [];
   if (claimed.length === 0) {

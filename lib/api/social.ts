@@ -488,8 +488,9 @@ export async function setTitleAlert(dramaId: string, on: boolean): Promise<void>
 
 export async function markNotificationsRead(ids?: string[], group?: NotificationGroup): Promise<void> {
   const client = await dbSession();
+  const cleanIds = (ids ?? []).filter(isUuid);
   const { error } = await client.rpc('mark_notifications_read', {
-    p_ids: (ids ?? []).filter(isUuid),
+    p_ids: cleanIds.length > 0 ? cleanIds : null,
     p_group: group ?? null,
   });
   if (error) fail('notifications read', error.message);

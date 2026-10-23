@@ -66,7 +66,13 @@ export default function Report() {
   const offender = kind === 'user' ? getUser(targetId) : kind === 'post' ? getUser(getPost(targetId)?.authorId ?? '') : undefined;
 
   const submit = () => {
-    dispatch({ type: 'report', id: targetId });
+    dispatch({
+      type: 'report',
+      id: targetId,
+      targetType: kind,
+      reason: reason ?? 'other',
+      detail: detail.trim() || undefined,
+    });
     haptic.success();
     setDone(true);
   };

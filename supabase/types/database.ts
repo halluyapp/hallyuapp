@@ -3318,6 +3318,14 @@ export type Database = {
         Args: { p_limit?: number };
         Returns: Json;
       };
+      announce_app_release: {
+        Args: {
+          p_release_notes?: string | null;
+          p_version_code: number;
+          p_version_name: string;
+        };
+        Returns: Json;
+      };
       list_direct_messages: {
         Args: { p_limit?: number; p_peer_handle: string };
         Returns: Json;

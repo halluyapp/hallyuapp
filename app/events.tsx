@@ -397,12 +397,24 @@ export default function EventsScreen() {
                     {/* Action Row */}
                     <View style={styles.actions}>
                       <Button
+                        label="Join Watch Party"
+                        size="sm"
+                        icon="radio-outline"
+                        onPress={() => {
+                          if (ev.linkedDrama) {
+                            adoptDramas([ev.linkedDrama]);
+                          }
+                          router.push(`/watch-party/${ev.id}`);
+                        }}
+                      />
+
+                      <Button
                         label={
                           ev.viewerGoing
                             ? `Going · ${ev.rsvpCount}`
-                            : `RSVP · ${ev.rsvpCount} going`
+                            : `RSVP · ${ev.rsvpCount}`
                         }
-                        variant={ev.viewerGoing ? 'secondary' : 'primary'}
+                        variant={ev.viewerGoing ? 'secondary' : 'ghost'}
                         size="sm"
                         icon={ev.viewerGoing ? 'checkmark-circle' : 'notifications-outline'}
                         loading={busyId === ev.id}
@@ -413,8 +425,8 @@ export default function EventsScreen() {
                         <Button
                           label={
                             ev.season && ev.episode
-                              ? `Enter S${ev.season}E${ev.episode} Room`
-                              : 'Open Show Hub'
+                              ? `S${ev.season}E${ev.episode} Thread`
+                              : 'Show Hub'
                           }
                           variant="ghost"
                           size="sm"

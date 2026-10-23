@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Avatar } from '../../components/ui/Avatar';
@@ -52,11 +52,26 @@ function formatMb(bytes: number): string {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
+function resolveStudioTab(raw?: string): StudioTab {
+  if (raw === 'support' || raw === 'tickets' || raw === 'bugs') return 'support';
+  if (raw === 'creators') return 'creators';
+  if (raw === 'reports') return 'reports';
+  if (raw === 'communities' || raw === 'rooms') return 'communities';
+  return 'broadcast';
+}
+
 export default function ModerationStudioScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ tab?: string }>();
   const toast = useToast();
   const { me } = useApp();
-  const [tab, setTab] = useState<StudioTab>('broadcast');
+  const [tab, setTab] = useState<StudioTab>(() => resolveStudioTab(params.tab));
+
+  useEffect(() => {
+    if (params.tab) {
+      setTab(resolveStudioTab(params.tab));
+    }
+  }, [params.tab]);
   const [data, setData] = useState<StaffOverviewPayload | null>(null);
   const [tickets, setTickets] = useState<SupportTicketRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -244,10 +259,28 @@ export default function ModerationStudioScreen() {
 
   const pendingRequests = (data?.videoRequests ?? []).filter((r) => r.status === 'pending');
   const openTickets = tickets.filter((t) => t.status !== 'resolved');
+  const openReportsCount = data?.reports.length ?? 0;
 
   return (
-    <Screen header={<TopBar mode="stack" title="Admin & CEO Studio" />}>
+    <Screen
+      header={
+        <TopBar
+          mode="stack"
+          title="Admin & CEO Studio"
+          right={
+            <Button
+              label="Report Bug"
+              variant="ghost"
+              size="sm"
+              icon="bug-outline"
+              onPress={() => router.push('/settings/bug-report')}
+            />
+          }
+        />
+      }
+    >
       <Segmented
+        scrollable
         items={[
           { key: 'broadcast', label: 'Megaphone' },
           {
@@ -262,8 +295,8 @@ export default function ModerationStudioScreen() {
           },
           {
             key: 'reports',
-            label: data?.reports.length ? `Reports (${data.reports.length})` : 'Reports',
-            dot: (data?.reports.length ?? 0) > 0,
+            label: openReportsCount ? `Reports (${openReportsCount})` : 'Reports',
+            dot: openReportsCount > 0,
           },
           { key: 'communities', label: 'Rooms' },
         ]}
@@ -275,9 +308,50 @@ export default function ModerationStudioScreen() {
         <ErrorState body={error} onRetry={load} />
       ) : (
         <ScrollView
+          style={{ flex: 1 }}
+          keyboardShouldPersistTaps="handled"
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.accent} />}
           contentContainerStyle={styles.content}
         >
+          {/* Compact Quick-Switch Strip — every Admin tool visible & 1-tap reachable on mobile */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            <Chip
+              label={`Bugs · ${openTickets.length}`}
+              icon="bug-outline"
+              size="sm"
+              selected={tab === 'support'}
+              onPress={() => setTab('support')}
+            />
+            <Chip
+              label={`Reports · ${openReportsCount}`}
+              icon="flag-outline"
+              size="sm"
+              selected={tab === 'reports'}
+              onPress={() => setTab('reports')}
+            />
+            <Chip
+              label={`Creators · ${pendingRequests.length}`}
+              icon="videocam-outline"
+              size="sm"
+              selected={tab === 'creators'}
+              onPress={() => setTab('creators')}
+            />
+            <Chip
+              label={`Rooms · ${data?.communities.length ?? 0}`}
+              icon="people-outline"
+              size="sm"
+              selected={tab === 'communities'}
+              onPress={() => setTab('communities')}
+            />
+            <Chip
+              label="Megaphone"
+              icon="megaphone-outline"
+              size="sm"
+              selected={tab === 'broadcast'}
+              onPress={() => setTab('broadcast')}
+            />
+          </View>
+
           {tab === 'broadcast' ? (
             <>
               <View style={styles.card}>

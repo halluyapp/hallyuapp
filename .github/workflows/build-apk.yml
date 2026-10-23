@@ -41,6 +41,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 30
+          fetch-tags: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -96,11 +99,8 @@ jobs:
           echo "SOURCE_REF=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
           echo "Computed version=${APP_VER}, base versionCode=${BASE_CODE}, slim ARM64 versionCode=${SLIM_CODE}"
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Verify Home cannot enter a render loop
-        run: npm run test:home-render
+      - name: Full static, SQL, DB-type & regression check suite
+        run: npm run check
 
       - name: Materialize Firebase config & permanent release keystore (ephemeral runner only)
         env:
@@ -137,7 +137,7 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: Build signed release APKs (Slim ARM64 + Universal)
+      - name: Build signed release APKs (Slim ARM64 + ARM32 + x86_64 + Universal)
         working-directory: android
         env:
           GRADLE_OPTS: >-
@@ -155,7 +155,7 @@ jobs:
           test -f app/build/outputs/apk/release/app-arm64-v8a-release.apk
           test -f app/build/outputs/apk/release/app-release.apk
 
-      - name: Verify release APKs & permanent SHA-256 certificate
+      - name: Verify release APKs, explicit versionName & permanent SHA-256 certificate
         working-directory: android
         run: |
           set -euo pipefail
@@ -172,12 +172,26 @@ jobs:
               echo "::error::APK signature fingerprint mismatch! Got: $CERTS"
               exit 1
             }
+            BADGING=$("$BT/aapt2" dump badging "$APK" | head -n 2)
+            echo "$BADGING"
+            echo "$BADGING" | grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'" || {
+              echo "::error::APK versionName was not stamped to ${EXPO_PUBLIC_APP_VERSION}! Got: $BADGING"
+              exit 1
+            }
             unzip -l "$APK" | grep -q "assets/index.android.bundle"
           done
-          echo "Both Slim ARM64 & Universal APKs verified with Hallyu permanent release key!"
+          echo "Both Slim ARM64 & Universal APKs verified with Hallyu permanent release key & versionName=${EXPO_PUBLIC_APP_VERSION}!"
 
       - name: Verify the APK's baked backend configuration
         run: node scripts/ci/verify-apk-config.mjs android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Download previous published APK (`apk-214`) to prove live in-place Android OS upgrade
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p prev-release
+          gh release download apk-214 -p "hallyu.apk" -D prev-release || true
+          ls -lh prev-release || true
 
       - name: Enable KVM permissions
         run: |
@@ -192,10 +206,12 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: node scripts/ci/test-account.mjs create
 
-      - name: Verify release APK boot and authentication on Android emulator
+      - name: Verify release APK in-place upgrade, auth persistence, Updates screen & Admin Studio UI bounds on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
           CONNECTED_BUILD: "yes"
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         with:
           api-level: 30
           target: default
@@ -217,7 +233,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: node scripts/ci/test-account.mjs cleanup
 
-      - name: Upload emulator boot logcat artifact
+      - name: Upload emulator boot, screenshots & UI bounds artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -226,6 +242,8 @@ jobs:
             logcat-errors.txt
             logcat-full.txt
             logcat-boot-trail.txt
+            emulator-*.png
+            emulator-*.xml
           if-no-files-found: ignore
           retention-days: 7
 
@@ -250,7 +268,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release with dynamic commit changelog
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/arena/')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -260,19 +278,28 @@ jobs:
         run: |
           set -euo pipefail
           TAG="apk-${{ github.run_number }}"
-          NOTES="Permanent-Key Signed Hallyu Release (#${{ github.run_number }}).
+          PREV_TAG=$(git tag --list "apk-*" --sort=-creatordate | head -n 1 || true)
+          if [ -n "$PREV_TAG" ]; then
+            COMMIT_LOG=$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:"• %s" | head -n 8)
+          else
+            COMMIT_LOG="• Stability, notifications, self-updater, Admin Studio & Watch Party fixes"
+          fi
+          NOTES="Permanent-Key Signed Hallyu Release v1.0.${{ github.run_number }} (#${{ github.run_number }}).
 
+          ### Changes in this build
+          ${COMMIT_LOG}
+
+          ### Distribution
           • **Web App & iOS PWA**: https://halluyapp.github.io/hallyuapp/
           • **Fast Phone Download (Recommended — ARM64)**: \`hallyu-slim.apk\` (${SLIM_SIZE})
           • **Universal Build (All CPUs / Chromebooks)**: \`hallyu.apk\` (${APK_SIZE})
-          • **In-Place Upgrade Ready**: Signed with Hallyu's permanent 4096-bit RSA key (\`64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA\`), versionCode \`${HALLYU_SLIM_VERSION_CODE}\`. Installs seamlessly right on top of previous releases without uninstalling.
+          • **In-Place Upgrade Verified**: Signed with Hallyu's permanent 4096-bit RSA key (\`64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA\`), versionCode \`${HALLYU_SLIM_VERSION_CODE}\`.
           • **Commit**: \`${SOURCE_COMMIT}\` (\`${SOURCE_REF}\`)."
 
           gh release create "$TAG" hallyu-slim.apk hallyu.apk \
-            --title "Hallyu Signed Release #${{ github.run_number }}" \
+            --title "Hallyu v1.0.${{ github.run_number }} (Signed Android Release #${{ github.run_number }})" \
             --notes "$NOTES"
 
-          # When public distribution repo hallyuapp/hallyuapp.github.io is configured, mirror the public release there too
           PUB_TOKEN=$(node -e '
             (async () => {
               let t = (process.env.HALLYU_PAGES_TOKEN || "").trim();
@@ -296,12 +323,12 @@ jobs:
             echo "::add-mask::$PUB_TOKEN"
             GH_TOKEN="$PUB_TOKEN" gh release create "$TAG" hallyu-slim.apk hallyu.apk \
               --repo hallyuapp/hallyuapp.github.io \
-              --title "Hallyu Signed Release #${{ github.run_number }}" \
+              --title "Hallyu v1.0.${{ github.run_number }} (Signed Android Release #${{ github.run_number }})" \
               --notes "$NOTES" || true
             echo "PUBLIC_RELEASE_REPO=hallyuapp/hallyuapp.github.io" >> "$GITHUB_ENV"
           fi
 
-      - name: Publish Slim & Universal APKs + latest.json to Supabase App-Releases CDN
+      - name: Publish Slim, ARM32 & x86_64 APKs + manifest + push alert to Supabase CDN
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

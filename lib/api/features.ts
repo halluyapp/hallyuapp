@@ -368,8 +368,22 @@ export interface LiveReactionBurst {
   sentAt: string;
 }
 
+export interface LiveRoomChatMessage {
+  id: string;
+  senderId: string;
+  senderHandle: string;
+  senderName: string;
+  senderAvatarUrl?: string;
+  body: string;
+  timestampTag?: string;
+  sentAt: string;
+}
+
+export type LiveRoomStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
+
 export interface LiveRoomConnection {
   sendReaction: (kind: ReactionKind, timestampTag?: string) => void;
+  sendChat: (body: string, timestampTag?: string) => LiveRoomChatMessage | null;
   leave: () => void;
 }
 
@@ -379,25 +393,33 @@ export function connectLiveEpisodeRoom(
   handlers: {
     onViewersChange: (viewers: LiveRoomViewer[]) => void;
     onReactionBurst: (burst: LiveReactionBurst) => void;
+    onChatMessage?: (message: LiveRoomChatMessage) => void;
+    onStatusChange?: (status: LiveRoomStatus) => void;
   },
 ): LiveRoomConnection {
-  if (!supabase) {
-    handlers.onViewersChange([
-      {
-        userId: viewer.id,
-        handle: viewer.handle,
-        displayName: viewer.displayName,
-        avatarUrl: viewer.avatarUrl,
-        joinedAt: new Date().toISOString(),
-      },
-    ]);
+  const joinedAt = new Date().toISOString();
+  const selfViewer: LiveRoomViewer = {
+    userId: viewer.id,
+    handle: viewer.handle,
+    displayName: viewer.displayName,
+    avatarUrl: viewer.avatarUrl,
+    joinedAt,
+  };
+
+  if (!supabase || !roomKey.trim()) {
+    handlers.onStatusChange?.('disconnected');
+    handlers.onViewersChange([selfViewer]);
     return {
       sendReaction: () => {},
-      leave: () => {},
+      sendChat: () => null,
+      leave: () => {
+        handlers.onViewersChange([]);
+        handlers.onStatusChange?.('disconnected');
+      },
     };
   }
 
-  const topic = `episode-watch-room:${roomKey}`;
+  const topic = `episode-watch-room:${roomKey.trim()}`;
   for (const existing of supabase.getChannels()) {
     if (existing.topic === topic || existing.topic === `realtime:${topic}`) {
       void supabase.removeChannel(existing).catch(() => {});
@@ -405,6 +427,9 @@ export function connectLiveEpisodeRoom(
   }
 
   let closed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  handlers.onStatusChange?.('connecting');
+
   const channel: RealtimeChannel = supabase.channel(topic, {
     config: {
       presence: { key: viewer.id },
@@ -422,16 +447,12 @@ export function connectLiveEpisodeRoom(
       }
     }
     if (!map.has(viewer.id)) {
-      map.set(viewer.id, {
-        userId: viewer.id,
-        handle: viewer.handle,
-        displayName: viewer.displayName,
-        avatarUrl: viewer.avatarUrl,
-        joinedAt: new Date().toISOString(),
-      });
+      map.set(viewer.id, selfViewer);
     }
     handlers.onViewersChange([...map.values()]);
   };
+
+  syncPresence();
 
   try {
     channel
@@ -443,32 +464,42 @@ export function connectLiveEpisodeRoom(
           handlers.onReactionBurst(payload as LiveReactionBurst);
         }
       })
+      .on('broadcast', { event: 'room_chat' }, ({ payload }) => {
+        if (!closed && payload?.body && payload?.id) {
+          handlers.onChatMessage?.(payload as LiveRoomChatMessage);
+        }
+      })
       .subscribe(async (status) => {
         if (closed) return;
         if (status === 'SUBSCRIBED') {
+          handlers.onStatusChange?.('connected');
           try {
-            await channel.track({
-              userId: viewer.id,
-              handle: viewer.handle,
-              displayName: viewer.displayName,
-              avatarUrl: viewer.avatarUrl,
-              joinedAt: new Date().toISOString(),
-            });
+            await channel.track(selfViewer);
+            syncPresence();
           } catch {
             // Ignore race if channel closed mid-handshake
           }
+        } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+          handlers.onStatusChange?.('reconnecting');
+          if (!retryTimer) {
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              if (!closed) {
+                try {
+                  channel.subscribe();
+                } catch {
+                  handlers.onStatusChange?.('error');
+                }
+              }
+            }, 2500);
+          }
+        } else if (status === 'CLOSED') {
+          handlers.onStatusChange?.('disconnected');
         }
       });
   } catch {
-    handlers.onViewersChange([
-      {
-        userId: viewer.id,
-        handle: viewer.handle,
-        displayName: viewer.displayName,
-        avatarUrl: viewer.avatarUrl,
-        joinedAt: new Date().toISOString(),
-      },
-    ]);
+    handlers.onStatusChange?.('error');
+    handlers.onViewersChange([selfViewer]);
   }
 
   return {
@@ -487,9 +518,42 @@ export function connectLiveEpisodeRoom(
         })
         .catch(() => {});
     },
+    sendChat: (body: string, timestampTag?: string): LiveRoomChatMessage | null => {
+      const clean = body.trim();
+      if (closed || !clean) return null;
+      const msg: LiveRoomChatMessage = {
+        id: `${viewer.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        senderId: viewer.id,
+        senderHandle: viewer.handle,
+        senderName: viewer.displayName,
+        senderAvatarUrl: viewer.avatarUrl,
+        body: clean,
+        timestampTag,
+        sentAt: new Date().toISOString(),
+      };
+      void channel
+        .send({
+          type: 'broadcast',
+          event: 'room_chat',
+          payload: msg,
+        })
+        .catch(() => {});
+      return msg;
+    },
     leave: () => {
+      if (closed) return;
       closed = true;
-      void supabase?.removeChannel(channel).catch(() => {});
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      handlers.onStatusChange?.('disconnected');
+      void channel
+        .untrack()
+        .catch(() => {})
+        .finally(() => {
+          void supabase?.removeChannel(channel).catch(() => {});
+        });
     },
   };
 }
@@ -1035,8 +1099,9 @@ export async function submitSupportTicket(input: {
 
 export async function fetchSupportTickets(status?: string): Promise<SupportTicketRecord[]> {
   if (!supabase || !(await ensureBackendSessionToken())) return [];
+  const cleanStatus = !status || status === 'all' ? null : status;
   const { data, error } = await supabase.rpc('list_support_tickets', {
-    p_status: status || null,
+    p_status: cleanStatus,
     p_limit: 50,
   });
   if (error || !Array.isArray(data)) return [];

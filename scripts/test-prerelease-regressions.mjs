@@ -561,3 +561,265 @@ test('P2 #7: APK updater selects arm64-v8a, armeabi-v7a, or x86_64 cleanly, reje
   assert.equal(updater.verifyApkZipMagicAndSize('PCFET0NU', 34_321_521, 34_321_521).ok, false);
   assert.equal(updater.verifyApkZipMagicAndSize('UEsDBA==', 12_000_000, 34_321_521).ok, false);
 });
+
+test('Release & Updater v2: semver/train accuracy, zero FLAG_ACTIVITY_NEW_TASK bug, persistent documentDirectory storage, and honest not_installed_yet state', async () => {
+  const storageMap = new Map();
+  let launchedIntent = null;
+
+  const updater = loadTsModule('lib/appUpdater.ts', {
+    '@react-native-async-storage/async-storage': {
+      getItem: async (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: async (k, v) => {
+        storageMap.set(k, v);
+      },
+      removeItem: async (k) => {
+        storageMap.delete(k);
+      },
+    },
+    'expo-application': {
+      applicationId: 'com.hallyu.app',
+      nativeBuildVersion: '12141',
+      nativeApplicationVersion: '1.0.214',
+    },
+    'expo-constants': { expoConfig: { version: '1.0.214' } },
+    'expo-file-system': {
+      documentDirectory: 'file:///data/user/0/com.hallyu.app/files/',
+      cacheDirectory: 'file:///data/user/0/com.hallyu.app/cache/',
+      EncodingType: { Base64: 'base64' },
+      makeDirectoryAsync: async () => {},
+      readDirectoryAsync: async () => [],
+      deleteAsync: async () => {},
+      getInfoAsync: async (uri) =>
+        uri.includes('12154')
+          ? { exists: true, size: 34_328_867 }
+          : { exists: false, size: 0 },
+      readAsStringAsync: async () => 'UEsDBA==',
+      getContentUriAsync: async (uri) =>
+        `content://com.hallyu.app.FileSystemFileProvider/${encodeURIComponent(uri)}`,
+    },
+    'expo-intent-launcher': {
+      ResultCode: { Success: -1, Canceled: 0 },
+      startActivityAsync: async (action, params) => {
+        launchedIntent = { action, params };
+        // Simulate Android returning Canceled when user backs out or unknown-sources wasn't confirmed
+        return { resultCode: 0 };
+      },
+    },
+    'react-native': {
+      Linking: { openURL: async () => {}, openSettings: async () => {} },
+      Platform: { OS: 'android', constants: { SupportedAbis: ['arm64-v8a'] } },
+    },
+    './api/client': { supabase: null },
+    './links': {
+      LATEST_SLIM_APK_CDN_URL: 'https://cdn.example/hallyu-arm64.apk',
+      LATEST_ARM32_APK_CDN_URL: 'https://cdn.example/hallyu-armeabi-v7a.apk',
+      LATEST_X86_64_APK_CDN_URL: 'https://cdn.example/hallyu-x86_64.apk',
+      SUPABASE_PUBLIC_STORAGE_BASE: 'https://cdn.example',
+    },
+  });
+
+  // Same release train across universal (`12141`) vs arm64 (`12144`) MUST report Up to Date (`false`)
+  assert.equal(
+    updater.isReleaseNewer(12141, '1.0.214', {
+      versionCode: 12144,
+      releaseTrain: 1214,
+      versionName: '1.0.214',
+    }),
+    false,
+  );
+  // Newer release train (`12154` > `12141`) MUST report update available (`true`)
+  assert.equal(
+    updater.isReleaseNewer(12141, '1.0.214', {
+      versionCode: 12154,
+      releaseTrain: 1215,
+      versionName: '1.0.215',
+    }),
+    true,
+  );
+  // Zero-padded version segments (`1.7.01` vs `1.7.02`) compare cleanly
+  assert.equal(updater.compareVersionStrings('1.7.01', '1.7.01'), 0);
+  assert.equal(updater.compareVersionStrings('1.7.01', '1.7.02'), -1);
+
+  const outcome = await updater.downloadAndInstallApk({
+    versionCode: 12154,
+    versionName: '1.0.215',
+    apkUrl: 'https://cdn.example/hallyu-arm64.apk',
+    arm32ApkUrl: 'https://cdn.example/hallyu-armeabi-v7a.apk',
+    x86_64ApkUrl: 'https://cdn.example/hallyu-x86_64.apk',
+    fileSizeBytes: 34_328_867,
+    sha256: 'sha256',
+  });
+
+  assert.equal(
+    launchedIntent.params.flags,
+    0x00000001,
+    'Must pass ONLY FLAG_GRANT_READ_URI_PERMISSION (0x1) and NEVER FLAG_ACTIVITY_NEW_TASK (0x10000000)',
+  );
+  assert.ok(
+    decodeURIComponent(launchedIntent.params.data).includes('/files/hallyu-updates/'),
+    'APK must live inside persistent documentDirectory (`files/hallyu-updates/`)',
+  );
+  assert.equal(
+    outcome.status,
+    'not_installed_yet',
+    'When Android PackageInstaller returns ResultCode.Canceled, updater must honestly report not_installed_yet',
+  );
+});
+
+test('Notifications, Admin Studio, Bug Reports, Watch Party & Profile Stats end-to-end invariants', async () => {
+  // 1. Notifications RPC payload: marking ALL read sends `p_ids: null`, never `[]`
+  const rpcCalls = [];
+  const socialMod = loadTsModule('lib/api/social.ts', {
+    './client': {
+      supabase: {
+        rpc: async (fn, args) => {
+          rpcCalls.push({ fn, args });
+          return { data: null, error: null };
+        },
+      },
+      ensureBackendSessionToken: async () => 'tok',
+      fail: (ctx, msg) => {
+        throw new Error(`${ctx}: ${msg}`);
+      },
+    },
+    './mappers': {
+      mapComment: (x) => x,
+      mapNotification: (x) => x,
+      mapPost: (x) => x,
+      mapProfile: (x) => x,
+      POST_SELECT: '*',
+      PROFILE_COLUMNS: '*',
+    },
+    './media': {
+      signedUrls: async () => new Map(),
+      uploadImage: async () => ({}),
+      uploadVideo: async () => ({}),
+    },
+    '../catalogSync': { ensureServerTitle: async () => null },
+  });
+
+  await socialMod.markNotificationsRead(undefined, undefined);
+  await socialMod.markNotificationsRead([], 'social');
+  await socialMod.markNotificationsRead(['11111111-1111-4111-8111-111111111111'], undefined);
+
+  assert.deepEqual(rpcCalls[0], {
+    fn: 'mark_notifications_read',
+    args: { p_ids: null, p_group: null },
+  });
+  assert.deepEqual(rpcCalls[1], {
+    fn: 'mark_notifications_read',
+    args: { p_ids: null, p_group: 'social' },
+  });
+  assert.deepEqual(rpcCalls[2], {
+    fn: 'mark_notifications_read',
+    args: { p_ids: ['11111111-1111-4111-8111-111111111111'], p_group: null },
+  });
+
+  // 2. Notification routes & push-dispatch fallback targets
+  assert.ok(fs.existsSync(path.resolve(ROOT, 'app/notifications.tsx')));
+  assert.ok(fs.existsSync(path.resolve(ROOT, 'app/watch-party/[eventId].tsx')));
+  const pushFn = fs.readFileSync(
+    path.resolve(ROOT, 'supabase/functions/push-dispatch/index.ts'),
+    'utf8',
+  );
+  assert.ok(!pushFn.includes("'/notifications'"), 'push-dispatch must never link to dead /notifications');
+  assert.ok(pushFn.includes("'/(tabs)/activity'"));
+
+  // 3. Admin Studio & Segmented Yoga layout regression guard
+  const segmentedSrc = fs.readFileSync(
+    path.resolve(ROOT, 'components/ui/Segmented.tsx'),
+    'utf8',
+  );
+  assert.ok(!segmentedSrc.includes("!scrollable ? { flex: 1 } : null"));
+  assert.ok(segmentedSrc.includes('minHeight: 45'));
+  assert.ok(segmentedSrc.includes('flexShrink: 0'));
+
+  const moderationSrc = fs.readFileSync(
+    path.resolve(ROOT, 'app/settings/moderation.tsx'),
+    'utf8',
+  );
+  assert.ok(moderationSrc.includes('resolveStudioTab'));
+  assert.ok(moderationSrc.includes("label={`Bugs · ${openTickets.length}`}"));
+
+  // 4. Profile stats accuracy (zero double-counting `+ 1` on followers)
+  const profileViewSrc = fs.readFileSync(
+    path.resolve(ROOT, 'components/profile/ProfileView.tsx'),
+    'utf8',
+  );
+  assert.ok(
+    !profileViewSrc.includes('followingThem && !isMe ? 1 : 0'),
+    'ProfileView must never add +1 on top of server follower_count',
+  );
+
+  // 5. Watch Party real-time room lifecycle (`connectLiveEpisodeRoom`)
+  const statuses = [];
+  const receivedChats = [];
+  let untracked = false;
+  let removed = false;
+  let broadcastHandler = null;
+
+  const mockChannel = {
+    topic: 'episode-watch-room:event-test',
+    presenceState: () => ({
+      'user-1': [{ userId: 'user-1', handle: 'alice', displayName: 'Alice', joinedAt: '2026-10-23T00:00:00Z' }],
+      'user-2': [{ userId: 'user-2', handle: 'bob', displayName: 'Bob', joinedAt: '2026-10-23T00:00:01Z' }],
+    }),
+    on(type, filter, cb) {
+      if (type === 'broadcast' && filter.event === 'room_chat') broadcastHandler = cb;
+      return mockChannel;
+    },
+    subscribe(cb) {
+      cb('SUBSCRIBED');
+      return mockChannel;
+    },
+    track: async () => {},
+    untrack: async () => {
+      untracked = true;
+    },
+    send: async ({ event, payload }) => {
+      if (event === 'room_chat' && broadcastHandler) broadcastHandler({ payload });
+    },
+  };
+
+  const featuresMod = loadTsModule('lib/api/features.ts', {
+    './client': {
+      supabase: {
+        getChannels: () => [],
+        channel: () => mockChannel,
+        removeChannel: async () => {
+          removed = true;
+        },
+      },
+      ensureBackendSessionToken: async () => 'tok',
+      normalizeMediaUrl: (u) => u,
+    },
+    './mappers': { mapPost: (x) => x, mapTitle: (x) => x, POST_SELECT: '*' },
+    './media': { signedUrls: async () => new Map() },
+    './social': { isUuid: () => true },
+  });
+
+  let roomViewers = [];
+  const room = featuresMod.connectLiveEpisodeRoom(
+    'event-test',
+    { id: 'user-1', handle: 'alice', displayName: 'Alice' },
+    {
+      onStatusChange: (st) => statuses.push(st),
+      onViewersChange: (v) => {
+        roomViewers = v;
+      },
+      onReactionBurst: () => {},
+      onChatMessage: (m) => receivedChats.push(m),
+    },
+  );
+
+  assert.deepEqual(statuses, ['connecting', 'connected']);
+  assert.equal(roomViewers.length, 2);
+  const sentMsg = room.sendChat('Hello Watch Party!', '18:30');
+  assert.equal(sentMsg.body, 'Hello Watch Party!');
+  assert.equal(receivedChats.length, 1);
+  room.leave();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(untracked, true, 'Leaving room must untrack presence immediately');
+  assert.equal(removed, true, 'Leaving room must remove channel cleanly');
+  assert.equal(statuses.at(-1), 'disconnected');
+});

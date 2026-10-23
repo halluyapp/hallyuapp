@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, Platform, StyleSheet, View } from 'react-native';
 import { Button } from '../../components/ui/Button';
 import { Chip, ChipRow } from '../../components/ui/Chip';
@@ -10,9 +10,15 @@ import { TextField } from '../../components/ui/TextField';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
-import { submitSupportTicket } from '../../lib/api/features';
+import { reportError } from '../../lib/analytics';
+import {
+  fetchSupportTickets,
+  submitSupportTicket,
+  type SupportTicketRecord,
+} from '../../lib/api/features';
 import { getInstalledBuildCode, getInstalledVersionLabel } from '../../lib/appUpdater';
 import { useAuth } from '../../lib/auth';
+import { timeAgo } from '../../lib/format';
 import { haptic, useApp } from '../../lib/hooks';
 import { ADMIN_CONTACT_EMAIL, SUPPORT_EMAIL } from '../../lib/links';
 
@@ -64,11 +70,26 @@ export default function BugReportScreen() {
   const [body, setBody] = useState('');
   const [contactEmail, setContactEmail] = useState(auth.user?.email ?? '');
   const [submitting, setSubmitting] = useState(false);
+  const [myTickets, setMyTickets] = useState<SupportTicketRecord[]>([]);
 
   const activeMeta = CATEGORIES.find((c) => c.id === category) ?? CATEGORIES[0]!;
   const version = getInstalledVersionLabel();
   const build = Platform.OS === 'web' ? 'web' : String(getInstalledBuildCode());
   const deviceSummary = `${Platform.OS} ${String(Platform.Version ?? '')} · v${version} (${build}) · @${me.handle}`;
+
+  const loadMyTickets = useCallback(async () => {
+    if (auth.status !== 'signedIn') return;
+    const rows = await fetchSupportTickets('all').catch(() => []);
+    setMyTickets(
+      me.role === 'admin' || me.role === 'moderator'
+        ? rows.filter((r) => r.reporter?.handle === me.handle || r.reporterEmail === auth.user?.email)
+        : rows,
+    );
+  }, [auth.status, auth.user?.email, me.handle, me.role]);
+
+  useEffect(() => {
+    void loadMyTickets();
+  }, [loadMyTickets]);
 
   const handleSubmit = async () => {
     if (!subject.trim() || !body.trim() || submitting) return;
@@ -91,20 +112,25 @@ export default function BugReportScreen() {
         },
       });
       haptic.success();
+      setSubject('');
+      setBody('');
+      await loadMyTickets();
       toast.show({
-        message: 'Received! Your report went straight to the Hallyu team.',
+        message: 'Received! Your report is logged in Admin Studio and admins were notified.',
         tone: 'success',
       });
-      router.back();
-    } catch {
-      // Fallback to direct mail client prefilled with fixhallyu@gmail.com if offline
+      if (me.role === 'admin' || me.role === 'moderator') {
+        router.push({ pathname: '/settings/moderation', params: { tab: 'support' } });
+      }
+    } catch (err) {
+      reportError('support.submitTicket', err);
       const mailUrl = `mailto:${SUPPORT_EMAIL}?cc=${encodeURIComponent(
         ADMIN_CONTACT_EMAIL,
       )}&subject=${encodeURIComponent(`[Hallyu ${category.toUpperCase()}] ${subject}`)}&body=${encodeURIComponent(
         `${body}\n\n---\n${deviceSummary}`,
       )}`;
       await Linking.openURL(mailUrl).catch(() => {});
-      toast.show({ message: `Opened email draft to ${SUPPORT_EMAIL}` });
+      toast.show({ message: `Offline fallback: opened email draft to ${SUPPORT_EMAIL}` });
     } finally {
       setSubmitting(false);
     }
@@ -155,12 +181,13 @@ export default function BugReportScreen() {
             label="Details"
             placeholder={activeMeta.placeholder}
             multiline
+            multilineHeight={132}
             value={body}
             onChangeText={setBody}
           />
           <TextField
             label="Reply email (optional)"
-            placeholder="So we can let you know as soon as it’s fixed"
+            placeholder="you@example.com"
             keyboardType="email-address"
             autoCapitalize="none"
             value={contactEmail}
@@ -183,6 +210,47 @@ export default function BugReportScreen() {
             onPress={() => void handleSubmit()}
           />
         </View>
+
+        {myTickets.length > 0 ? (
+          <View style={{ gap: space.x2, marginTop: space.x6 }}>
+            <Text variant="overline" tone="secondary">
+              YOUR SUBMITTED REPORTS ({myTickets.length})
+            </Text>
+            {myTickets.slice(0, 6).map((t) => (
+              <View key={t.id} style={styles.ticketRow}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
+                  <Text variant="label" numberOfLines={1} style={{ flex: 1 }}>
+                    {t.subject}
+                  </Text>
+                  <Text
+                    variant="overline"
+                    style={{
+                      color:
+                        t.status === 'resolved'
+                          ? '#10B981'
+                          : t.status === 'investigating'
+                            ? '#F59E0B'
+                            : colors.accent,
+                    }}
+                  >
+                    {t.status.toUpperCase()}
+                  </Text>
+                </View>
+                <Text variant="caption" tone="secondary" numberOfLines={2}>
+                  {t.description}
+                </Text>
+                {t.staffNote ? (
+                  <Text variant="caption" style={{ color: '#10B981', marginTop: 2 }}>
+                    Team note: {t.staffNote}
+                  </Text>
+                ) : null}
+                <Text variant="caption" tone="tertiary">
+                  {t.category.toUpperCase()} · {timeAgo(t.createdAt)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
       </ScrollScreen>
     </Screen>
   );
@@ -204,6 +272,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    padding: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
+  ticketRow: {
+    gap: 4,
     padding: space.x3,
     borderRadius: radius.md,
     backgroundColor: colors.surface1,

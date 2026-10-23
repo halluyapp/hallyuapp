@@ -1,5 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Animated, LayoutChangeEvent, Pressable, ScrollView, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import {
+  Animated,
+  LayoutChangeEvent,
+  Pressable,
+  ScrollView,
+  StyleProp,
+  StyleSheet,
+  View,
+  ViewStyle,
+} from 'react-native';
 import { colors, motion, space } from '../../constants/theme';
 import { haptic } from '../../lib/hooks';
 import { Text } from './Text';
@@ -15,13 +24,21 @@ interface SegmentedProps<T extends string> {
   items: SegmentItem<T>[];
   value: T;
   onChange: (v: T) => void;
-  scrollable?: boolean; // for >3 items
+  scrollable?: boolean; // defaults to true when items.length > 3
   style?: StyleProp<ViewStyle>;
   variant?: 'underline' | 'pill';
 }
 
 /** Section tabs. Underline variant = text tabs with an animated 2dp indicator (Home, Drama Hub). Pill = segmented control (Watchlist). */
-export function Segmented<T extends string>({ items, value, onChange, scrollable, style, variant = 'underline' }: SegmentedProps<T>) {
+export function Segmented<T extends string>({
+  items,
+  value,
+  onChange,
+  scrollable,
+  style,
+  variant = 'underline',
+}: SegmentedProps<T>) {
+  const isScrollable = scrollable ?? (variant === 'underline' && items.length > 3);
   const [layouts, setLayouts] = useState<Record<string, { x: number; w: number }>>({});
   const x = useRef(new Animated.Value(0)).current;
   const w = useRef(new Animated.Value(0)).current;
@@ -34,16 +51,27 @@ export function Segmented<T extends string>({ items, value, onChange, scrollable
       Animated.timing(x, { toValue: l.x, duration: motion.medium, useNativeDriver: false }),
       Animated.timing(w, { toValue: l.w, duration: motion.medium, useNativeDriver: false }),
     ]).start();
-    if (scrollable) scrollRef.current?.scrollTo({ x: Math.max(0, l.x - 80), animated: true });
-  }, [value, layouts, x, w, scrollable]);
+    if (isScrollable) scrollRef.current?.scrollTo({ x: Math.max(0, l.x - 80), animated: true });
+  }, [value, layouts, x, w, isScrollable]);
 
   const onLayout = (key: string) => (e: LayoutChangeEvent) => {
     const { x: lx, width } = e.nativeEvent.layout;
-    setLayouts((prev) => (prev[key]?.x === lx && prev[key]?.w === width ? prev : { ...prev, [key]: { x: lx, w: width } }));
+    setLayouts((prev) =>
+      prev[key]?.x === lx && prev[key]?.w === width ? prev : { ...prev, [key]: { x: lx, w: width } },
+    );
   };
 
+  // IMPORTANT: Never set `{ flex: 1 }` on `content` inside column-flex `styles.wrap` — on Android
+  // Yoga that sets `flexBasis: 0` vertically, collapsing `styles.wrap` height to 1dp so the sibling
+  // `<ScrollView>` paints directly on top of the tab bar and blocks touch events!
   const content = (
-    <View style={[variant === 'pill' ? styles.pillWrap : styles.row, !scrollable && variant === 'underline' ? { flex: 1 } : null]} accessibilityRole="tablist">
+    <View
+      style={[
+        variant === 'pill' ? styles.pillWrap : styles.row,
+        !isScrollable && variant === 'underline' ? { width: '100%' } : null,
+      ]}
+      accessibilityRole="tablist"
+    >
       {items.map((it) => {
         const active = it.key === value;
         return (
@@ -59,10 +87,17 @@ export function Segmented<T extends string>({ items, value, onChange, scrollable
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
             accessibilityLabel={`${it.label}${it.count ? `, ${it.count}` : ''}`}
-            style={[variant === 'pill' ? [styles.pill, active ? styles.pillActive : null] : styles.tab, !scrollable && variant === 'underline' ? { flex: 1, alignItems: 'center' } : null]}
+            style={[
+              variant === 'pill' ? [styles.pill, active ? styles.pillActive : null] : styles.tab,
+              !isScrollable && variant === 'underline' ? { flex: 1, alignItems: 'center' } : null,
+            ]}
           >
             <View style={styles.labelRow}>
-              <Text variant={variant === 'pill' ? 'label' : 'titleSmall'} style={{ color: active ? colors.textPrimary : colors.textSecondary }}>
+              <Text
+                variant={variant === 'pill' ? 'label' : 'titleSmall'}
+                numberOfLines={1}
+                style={{ color: active ? colors.textPrimary : colors.textSecondary }}
+              >
                 {it.label}
               </Text>
               {it.count !== undefined ? (
@@ -79,11 +114,17 @@ export function Segmented<T extends string>({ items, value, onChange, scrollable
     </View>
   );
 
-  if (variant === 'pill') return <View style={style}>{content}</View>;
+  if (variant === 'pill') return <View style={[styles.pillOuter, style]}>{content}</View>;
   return (
     <View style={[styles.wrap, style]}>
-      {scrollable ? (
-        <ScrollView ref={scrollRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.margin - space.x3 }}>
+      {isScrollable ? (
+        <ScrollView
+          ref={scrollRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ flexGrow: 0 }}
+          contentContainerStyle={{ paddingHorizontal: space.margin - space.x3 }}
+        >
           {content}
         </ScrollView>
       ) : (
@@ -94,8 +135,16 @@ export function Segmented<T extends string>({ items, value, onChange, scrollable
 }
 
 const styles = StyleSheet.create({
-  wrap: { borderBottomWidth: 1, borderBottomColor: colors.borderSubtle },
-  row: { flexDirection: 'row', position: 'relative' },
+  wrap: {
+    flexShrink: 0,
+    minHeight: 45,
+    backgroundColor: colors.canvas,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSubtle,
+    zIndex: 2,
+  },
+  pillOuter: { flexShrink: 0, zIndex: 2 },
+  row: { flexDirection: 'row', position: 'relative', minHeight: 44 },
   tab: { paddingHorizontal: space.x3, height: 44, justifyContent: 'center' },
   labelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   indicator: { position: 'absolute', bottom: 0, height: 2, backgroundColor: colors.accent, borderRadius: 1 },

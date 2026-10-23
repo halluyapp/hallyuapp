@@ -15,7 +15,7 @@ import {
   type DownloadProgressSnapshot,
   getInstalledBuildCode,
   getInstalledVersionLabel,
-  getReleaseTrain,
+  openUnknownSourcesSettings,
   type UpdateCheckResult,
 } from '../../lib/appUpdater';
 import { haptic } from '../../lib/hooks';
@@ -48,7 +48,6 @@ export default function AppUpdatesScreen() {
   const [awaitingPermissionInstall, setAwaitingPermissionInstall] = useState(false);
 
   const installedCode = getInstalledBuildCode();
-  const installedTrain = getReleaseTrain(installedCode);
   const installedVersion = getInstalledVersionLabel();
 
   const runCheck = useCallback(
@@ -61,8 +60,10 @@ export default function AppUpdatesScreen() {
           haptic.light();
           toast.show({
             message: res.hasUpdate
-              ? `New release v${res.latest.versionName} is ready!`
-              : `Confirmed up to date — running latest v${res.installedVersion}`,
+              ? res.pendingInstall
+                ? `Still on v${res.installedVersion} — downloaded v${res.latest.versionName} is ready to install`
+                : `New release v${res.latest.versionName} is available`
+              : `Confirmed up to date — running v${res.installedVersion}`,
             tone: 'success',
           });
         }
@@ -99,6 +100,7 @@ export default function AppUpdatesScreen() {
         arm32ApkUrl: LATEST_ARM32_APK_CDN_URL,
         x86_64ApkUrl: LATEST_X86_64_APK_CDN_URL,
         versionCode: installedCode + 10,
+        versionName: installedVersion,
         fileSizeBytes: 34_306_457,
       };
       const outcome = await downloadAndInstallApk(target, (snap) => setDlSnap(snap));
@@ -108,14 +110,15 @@ export default function AppUpdatesScreen() {
       if (outcome.status === 'needs_unknown_sources_permission') {
         setAwaitingPermissionInstall(true);
         toast.show({
-          message: 'Allow "Install unknown apps", then tap Install Downloaded Update right here!',
-          tone: 'success',
+          message: 'Enable "Install unknown apps", then tap Install Downloaded Update right here!',
         });
-      } else if (outcome.status === 'installer_opened') {
+      } else if (outcome.status === 'not_installed_yet') {
         toast.show({
-          message: outcome.usedCachedApk
-            ? 'Opened instant cached APK in Android Package Installer!'
-            : 'Verified! Tap Update in Android Package Installer.',
+          message: `APK downloaded, not installed yet — your phone is still on v${installedVersion}.`,
+        });
+      } else if (outcome.status === 'awaiting_user_install') {
+        toast.show({
+          message: 'Installer opened — tap Update in Android’s prompt to finish installing.',
           tone: 'success',
         });
       }
@@ -139,21 +142,23 @@ export default function AppUpdatesScreen() {
     : null;
 
   const isUpToDate = info ? !info.hasUpdate : false;
-  const readyFromCache = Boolean(info?.cachedApkReady || awaitingPermissionInstall);
+  const pendingNotInstalled = Boolean(info?.hasUpdate && info?.pendingInstall);
+  const readyFromCache = Boolean(info?.cachedApkReady || awaitingPermissionInstall || pendingNotInstalled);
+  const abiIncompatible = Boolean(info && !info.selectedArtifact.ok);
 
   return (
     <Screen header={<TopBar mode="stack" title="App Updates" />}>
       <ScrollScreen padded column>
-        {/* Post-Upgrade Celebration Confirmation Banner */}
+        {/* Post-Upgrade Confirmation Banner (ONLY shown when actual native versionCode incremented) */}
         {info?.justUpdatedFromVersion ? (
           <View style={styles.upgradedBanner}>
             <Ionicons name="checkmark-done-circle" size={22} color="#10B981" />
             <View style={{ flex: 1 }}>
               <Text variant="label" style={{ color: '#10B981' }}>
-                Successfully updated from v{info.justUpdatedFromVersion} → v{installedVersion}
+                Verified Update Complete: v{info.justUpdatedFromVersion} → v{installedVersion}
               </Text>
               <Text variant="caption" tone="secondary">
-                Your phone installed the signed release cleanly with all your data preserved.
+                Confirmed running build {installedCode} with all your data preserved.
               </Text>
             </View>
           </View>
@@ -165,16 +170,22 @@ export default function AppUpdatesScreen() {
             styles.card,
             isUpToDate
               ? { borderColor: 'rgba(16,185,129,0.45)' }
-              : info?.hasUpdate
-                ? { borderColor: 'rgba(225,29,72,0.48)' }
-                : null,
+              : pendingNotInstalled
+                ? { borderColor: 'rgba(245,158,11,0.52)' }
+                : info?.hasUpdate
+                  ? { borderColor: 'rgba(225,29,72,0.48)' }
+                  : null,
           ]}
         >
           <View style={styles.badgeRow}>
             <View
               style={[
                 styles.iconCircle,
-                isUpToDate ? { backgroundColor: 'rgba(16,185,129,0.16)' } : null,
+                isUpToDate
+                  ? { backgroundColor: 'rgba(16,185,129,0.16)' }
+                  : pendingNotInstalled
+                    ? { backgroundColor: 'rgba(245,158,11,0.16)' }
+                    : null,
               ]}
             >
               <Ionicons
@@ -183,10 +194,12 @@ export default function AppUpdatesScreen() {
                     ? 'sync-outline'
                     : isUpToDate
                       ? 'shield-checkmark'
-                      : 'rocket-outline'
+                      : pendingNotInstalled
+                        ? 'alert-circle-outline'
+                        : 'rocket-outline'
                 }
                 size={24}
-                color={isUpToDate ? '#10B981' : colors.accent}
+                color={isUpToDate ? '#10B981' : pendingNotInstalled ? '#F59E0B' : colors.accent}
               />
             </View>
             <View style={{ flex: 1 }}>
@@ -195,14 +208,18 @@ export default function AppUpdatesScreen() {
                   ? 'Checking live release channel…'
                   : isUpToDate
                     ? 'Up to Date ✓'
-                    : `Update Ready · v${info?.latest.versionName}`}
+                    : pendingNotInstalled
+                      ? `Downloaded · Not Installed Yet`
+                      : `Update Available · v${info?.latest.versionName}`}
               </Text>
               <Text variant="caption" tone="secondary">
                 {isUpToDate
                   ? 'You are running the newest official signed build.'
-                  : info?.latest.gitCommit
-                    ? `Commit ${info.latest.gitCommit}${publishedTime ? ` · Published ${publishedTime}` : ''}`
-                    : 'Direct high-speed CDN package ready to install'}
+                  : pendingNotInstalled
+                    ? `Your device is still running v${installedVersion}. Tap below to confirm installation.`
+                    : info?.latest.gitCommit
+                      ? `Commit ${info.latest.gitCommit}${publishedTime ? ` · Published ${publishedTime}` : ''}`
+                      : 'Direct high-speed CDN package ready to install'}
               </Text>
             </View>
           </View>
@@ -211,13 +228,13 @@ export default function AppUpdatesScreen() {
           <View style={styles.versionCompareGrid}>
             <View style={styles.versionCell}>
               <Text variant="overline" tone="tertiary">
-                ON YOUR PHONE NOW
+                INSTALLED ON DEVICE
               </Text>
               <Text variant="titleSmall" style={{ marginTop: 4 }}>
                 v{installedVersion}
               </Text>
               <Text variant="caption" tone="secondary">
-                Release #{Math.max(1, installedTrain - 1000)} · Code {installedCode}
+                Build {installedCode} · {info?.deviceAbis[0] ?? 'android'}
               </Text>
             </View>
 
@@ -238,11 +255,40 @@ export default function AppUpdatesScreen() {
               </Text>
               <Text variant="caption" tone="secondary">
                 {info
-                  ? `Release #${Math.max(1, info.latest.releaseTrain - 1000)} · ${formatMb(info.latest.fileSizeBytes)}`
+                  ? `Build ${info.latest.versionCode} · ${formatMb(info.latest.fileSizeBytes)}`
                   : 'Checking…'}
               </Text>
             </View>
           </View>
+
+          {abiIncompatible && info && !info.selectedArtifact.ok ? (
+            <View style={styles.warningNotice}>
+              <Ionicons name="warning-outline" size={18} color={colors.accent} />
+              <Text variant="caption" style={{ flex: 1, color: colors.textPrimary }}>
+                {info.selectedArtifact.message}
+              </Text>
+            </View>
+          ) : null}
+
+          {pendingNotInstalled || awaitingPermissionInstall ? (
+            <View style={styles.warningNotice}>
+              <Ionicons name="information-circle-outline" size={18} color="#F59E0B" />
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text variant="caption" style={{ color: colors.textPrimary }}>
+                  v{info?.latest.versionName} is verified on device storage, not installed yet. If
+                  Android asked for “Install unknown apps” permission, make sure it is switched ON,
+                  then tap “Install Downloaded Update” below (no re-download needed).
+                </Text>
+                {Platform.OS === 'android' ? (
+                  <Pressable onPress={() => void openUnknownSourcesSettings()}>
+                    <Text variant="caption" style={{ color: '#F59E0B', fontFamily: fonts.semibold }}>
+                      Open “Install unknown apps” setting →
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
 
           {info?.latest.releaseNotes ? (
             <View style={styles.notesBox}>
@@ -251,17 +297,6 @@ export default function AppUpdatesScreen() {
               </Text>
               <Text variant="bodySmall" tone="secondary" style={{ marginTop: 4 }}>
                 {info.latest.releaseNotes}
-              </Text>
-            </View>
-          ) : null}
-
-          {awaitingPermissionInstall ? (
-            <View style={styles.permissionNotice}>
-              <Ionicons name="checkmark-circle" size={18} color="#10B981" />
-              <Text variant="caption" style={{ flex: 1, color: colors.textPrimary }}>
-                Update APK is already downloaded & cached on your phone! Once “Allow from this
-                source” is enabled, tap the button below to launch the installer immediately (zero
-                re-download).
               </Text>
             </View>
           ) : null}
@@ -284,7 +319,7 @@ export default function AppUpdatesScreen() {
 
           <View style={styles.actions}>
             {Platform.OS === 'android' ? (
-              info?.hasUpdate ? (
+              info?.hasUpdate && !abiIncompatible ? (
                 <Button
                   label={
                     downloading
@@ -319,7 +354,7 @@ export default function AppUpdatesScreen() {
 
             {Platform.OS === 'android' && info?.hasUpdate ? (
               <Button
-                label="Re-check Release Channel"
+                label="Re-check Installed Version"
                 variant="ghost"
                 size="sm"
                 icon="refresh-outline"
@@ -330,12 +365,12 @@ export default function AppUpdatesScreen() {
           </View>
         </View>
 
-        {/* Direct Public CDN Mirrors — Every Single Link Verified Public 200 OK */}
+        {/* Direct Public CDN Mirrors — Architecture-Matched Public 200 OK Binaries */}
         <View style={styles.card}>
-          <Text variant="titleSmall">Direct Public APK Mirrors & iPhone Link</Text>
+          <Text variant="titleSmall">Direct Architecture-Specific APK Mirrors</Text>
           <Text variant="caption" tone="secondary">
             Every APK below is served directly from Hallyu’s public global CDN and signed with the
-            same permanent key, so Android always updates cleanly over your existing install without
+            same permanent key, so Android updates cleanly over your existing install without
             touching your login or data.
           </Text>
 
@@ -345,9 +380,9 @@ export default function AppUpdatesScreen() {
           >
             <Ionicons name="phone-portrait-outline" size={20} color={colors.accent} />
             <View style={{ flex: 1 }}>
-              <Text variant="label">Android 64-bit Phone APK (Recommended · {formatMb(info?.latest.fileSizeBytes)})</Text>
+              <Text variant="label">Android 64-bit ARM APK (arm64-v8a · {formatMb(info?.latest.fileSizeBytes)})</Text>
               <Text variant="caption" tone="tertiary">
-                Fastest download · 99% of modern Samsung, Pixel, Xiaomi, Tecno, Infinix & OnePlus phones
+                Fastest download · Modern 64-bit Samsung, Pixel, Xiaomi, Tecno, Infinix & OnePlus phones
               </Text>
             </View>
             <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
@@ -361,21 +396,21 @@ export default function AppUpdatesScreen() {
           >
             <Ionicons name="hardware-chip-outline" size={20} color={colors.textPrimary} />
             <View style={{ flex: 1 }}>
-              <Text variant="label">Android 32-bit Legacy Phone APK (~24.5 MB)</Text>
+              <Text variant="label">Android 32-bit ARM APK (armeabi-v7a)</Text>
               <Text variant="caption" tone="tertiary">
-                For older 32-bit Android devices (armeabi-v7a) · Direct public CDN
+                For 32-bit ARM Android phones · Direct public CDN
               </Text>
             </View>
             <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
           </Pressable>
 
           <Pressable
-            onPress={() => void Linking.openURL(LATEST_X86_64_APK_CDN_URL)}
+            onPress={() => void Linking.openURL(info?.latest.x86_64ApkUrl ?? LATEST_X86_64_APK_CDN_URL)}
             style={styles.linkRow}
           >
             <Ionicons name="laptop-outline" size={20} color={colors.textPrimary} />
             <View style={{ flex: 1 }}>
-              <Text variant="label">Chromebook & Desktop Emulator APK (x86_64)</Text>
+              <Text variant="label">Chromebook & Emulator APK (x86_64)</Text>
               <Text variant="caption" tone="tertiary">
                 For ChromeOS laptops & PC Android emulators · Direct public CDN
               </Text>
@@ -469,15 +504,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.borderSubtle,
   },
-  permissionNotice: {
+  warningNotice: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: space.x2,
     padding: space.x3,
     borderRadius: radius.md,
-    backgroundColor: 'rgba(16,185,129,0.1)',
+    backgroundColor: 'rgba(245,158,11,0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(16,185,129,0.35)',
+    borderColor: 'rgba(245,158,11,0.4)',
   },
   progressTrack: {
     height: 8,
