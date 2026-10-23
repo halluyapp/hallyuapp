@@ -197,6 +197,12 @@ jobs:
           REL="app/build/outputs/apk/release"
           EXPECTED_HEX="6420be5bcfb5eab5d73a74ba06b79436fc68b2697e3e6336164b7451cb1531da"
 
+          {
+            echo "## Signed Android Release Artifact Matrix (\`${EXPO_PUBLIC_APP_VERSION}\`)"
+            echo "| Artifact | Size | SHA-256 | Native .so Packaging |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           for APK in \
             "$REL/app-x86-release.apk" \
             "$REL/app-armeabi-v7a-release.apk" \
@@ -205,39 +211,74 @@ jobs:
             "$REL/app-arm-universal-release.apk" \
             "$REL/app-universal-release.apk"
           do
-            echo "=== Verifying $APK ($(du -h "$APK" | cut -f1)) ==="
+            SIZE_HUMAN=$(du -h "$APK" | cut -f1)
+            SHA_HEX=$(sha256sum "$APK" | awk '{print $1}')
+            echo "=== Verifying $APK ($SIZE_HUMAN, sha256=$SHA_HEX) ==="
             "$BT/zipalign" -c -P 16 -v 4 "$APK" >/dev/null
             "$BT/apksigner" verify --verbose "$APK"
             CERTS=$("$BT/apksigner" verify --print-certs "$APK")
-            echo "$CERTS" | head -4
-            echo "$CERTS" | tr -d ':' | grep -iq "$EXPECTED_HEX" || {
-              echo "::error::APK signature fingerprint mismatch! Got: $CERTS"
+            printf '%s\n' "$CERTS" | sed -n '1,4p'
+            if ! printf '%s\n' "$CERTS" | tr -d ':' | grep -iq "$EXPECTED_HEX"; then
+              echo "::error::APK signature fingerprint mismatch in $APK! Got: $CERTS"
+              exit 1
+            fi
+
+            BADGING=$("$BT/aapt2" dump badging "$APK")
+            PKG_HEADER=$(printf '%s\n' "$BADGING" | sed -n '1,4p')
+            echo "$PKG_HEADER"
+            printf '%s\n' "$BADGING" | grep -q "name='com.hallyu.app'" || {
+              echo "::error::Wrong package name in $APK: $PKG_HEADER"
               exit 1
             }
-            BADGING=$("$BT/aapt2" dump badging "$APK" | head -n 6)
-            echo "$BADGING"
-            echo "$BADGING" | grep -q "name='com.hallyu.app'"
-            echo "$BADGING" | grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'"
-            echo "$BADGING" | grep -q "sdkVersion:'23'"
-            "$BT/aapt2" dump xmltree "$APK" --file AndroidManifest.xml | grep -q "extractNativeLibs.*true" || {
-              echo "::error::extractNativeLibs is NOT true in $APK — 16 KB page devices could fail!"
+            printf '%s\n' "$BADGING" | grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'" || {
+              echo "::error::Wrong versionName in $APK: $PKG_HEADER"
               exit 1
             }
-            unzip -l "$APK" | grep -q "assets/index.android.bundle"
+            printf '%s\n' "$BADGING" | grep -Eq "sdkVersion:'2[1-5]'" || {
+              echo "::error::Unexpected minSdkVersion in $APK: $PKG_HEADER"
+              exit 1
+            }
+
+            XML_MANIFEST=$("$BT/aapt2" dump xmltree "$APK" --file AndroidManifest.xml)
+            EXTRACT_LINE=$(printf '%s\n' "$XML_MANIFEST" | grep "extractNativeLibs" || true)
+            echo "Manifest extractNativeLibs: $EXTRACT_LINE"
+            if printf '%s\n' "$EXTRACT_LINE" | grep -Eq "\)0x0$|false"; then
+              echo "::error::extractNativeLibs evaluated to false in $APK: $EXTRACT_LINE"
+              exit 1
+            fi
+
+            ZIP_LIST=$(unzip -lv "$APK")
+            printf '%s\n' "$ZIP_LIST" | grep -q "assets/index.android.bundle" || {
+              echo "::error::Missing assets/index.android.bundle in $APK"
+              exit 1
+            }
+            HERMES_LINE=$(printf '%s\n' "$ZIP_LIST" | grep "libhermes.so" | sed -n '1p' || true)
+            echo "Hermes entry: $HERMES_LINE"
+            echo "| \`$(basename "$APK")\` | \`$SIZE_HUMAN\` | \`${SHA_HEX:0:16}…\` | \`$HERMES_LINE\` |" >> "$GITHUB_STEP_SUMMARY"
           done
 
-          # Exact native ABI folder assertions
-          unzip -l "$REL/app-arm64-v8a-release.apk" | grep -q "lib/arm64-v8a/libhermes.so"
-          unzip -l "$REL/app-armeabi-v7a-release.apk" | grep -q "lib/armeabi-v7a/libhermes.so"
-          unzip -l "$REL/app-x86_64-release.apk" | grep -q "lib/x86_64/libhermes.so"
-          unzip -l "$REL/app-x86-release.apk" | grep -q "lib/x86/libhermes.so"
-          unzip -l "$REL/app-arm-universal-release.apk" | grep -q "lib/arm64-v8a/libhermes.so"
-          unzip -l "$REL/app-arm-universal-release.apk" | grep -q "lib/armeabi-v7a/libhermes.so"
-          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/arm64-v8a/libhermes.so"
-          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/armeabi-v7a/libhermes.so"
-          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/x86_64/libhermes.so"
-          unzip -l "$REL/app-universal-release.apk" | grep -q "lib/x86/libhermes.so"
-          echo "All 6 APKs passed 16KB zipalign, v1/v2/v3 cert, SDK 23..34, extractNativeLibs=true & exact .so ABI verification!"
+          # Exact native ABI folder assertions (pipefail-safe via captured listing)
+          check_abi_so() {
+            local apk="$1"
+            local needle="$2"
+            local listing
+            listing=$(unzip -l "$apk")
+            if ! printf '%s\n' "$listing" | grep -q "$needle"; then
+              echo "::error::Missing $needle inside $apk"
+              exit 1
+            fi
+          }
+          check_abi_so "$REL/app-arm64-v8a-release.apk" "lib/arm64-v8a/libhermes.so"
+          check_abi_so "$REL/app-armeabi-v7a-release.apk" "lib/armeabi-v7a/libhermes.so"
+          check_abi_so "$REL/app-x86_64-release.apk" "lib/x86_64/libhermes.so"
+          check_abi_so "$REL/app-x86-release.apk" "lib/x86/libhermes.so"
+          check_abi_so "$REL/app-arm-universal-release.apk" "lib/arm64-v8a/libhermes.so"
+          check_abi_so "$REL/app-arm-universal-release.apk" "lib/armeabi-v7a/libhermes.so"
+          check_abi_so "$REL/app-universal-release.apk" "lib/arm64-v8a/libhermes.so"
+          check_abi_so "$REL/app-universal-release.apk" "lib/armeabi-v7a/libhermes.so"
+          check_abi_so "$REL/app-universal-release.apk" "lib/x86_64/libhermes.so"
+          check_abi_so "$REL/app-universal-release.apk" "lib/x86/libhermes.so"
+          echo "All 6 APKs passed 16KB zipalign, v1/v2/v3 cert, SDK, extractNativeLibs & exact .so ABI verification!"
 
       - name: Verify the APK's baked backend configuration
         run: node scripts/ci/verify-apk-config.mjs android/app/build/outputs/apk/release/app-release.apk

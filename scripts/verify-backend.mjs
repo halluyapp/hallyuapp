@@ -1284,13 +1284,24 @@ await test('A transient failure schedules a retry instead of losing the notifica
 });
 
 await test('A member cannot read or disable another member\'s token', async () => {
-  const { error: disableError } = await bob.rpc('disable_push_token', { p_token_id: '00000000-0000-0000-0000-000000000000' });
+  const ownedToken = `verification-owned-${suffix}-dddddddddddddddddddd`;
+  await alice.rpc('register_push_token', { p_token: ownedToken, p_platform: 'android' });
+
+  const { data: beforeRow } = await admin()
+    .from('push_tokens')
+    .select('id, user_id, disabled_at')
+    .eq('token', ownedToken)
+    .single();
+
+  const { error: disableError } = await bob.rpc('disable_push_token', {
+    p_token_id: beforeRow.id,
+  });
   assert(!disableError, `the RPC itself should succeed for a non-owner id: ${disableError?.message}`);
 
   const { data } = await admin()
     .from('push_tokens')
     .select('user_id, disabled_at')
-    .eq('token', `verification-flaky-${suffix}-cccccccccccccccccccc`)
+    .eq('id', beforeRow.id)
     .single();
   assert(data.user_id === aliceId, 'the token moved to another member');
   assert(data.disabled_at === null, 'a member disabled another member\'s token');

@@ -331,6 +331,13 @@ jobs:
                 if (errors.length > 0) {
                   throw new Error("Runtime JS errors on live site: " + JSON.stringify(errors));
                 }
+                const fs = require("fs");
+                if (process.env.GITHUB_STEP_SUMMARY) {
+                  fs.appendFileSync(
+                    process.env.GITHUB_STEP_SUMMARY,
+                    `## Live Web Deployment Verified\n- **URL**: ${base}\n- **Commit**: \`${liveVersion.commit}\`\n- **Version**: \`${liveVersion.version}\`\n- **SW Build ID**: \`${liveVersion.swBuildId}\`\n- **Hashed Entry Bundles**: \`${JSON.stringify(liveVersion.entryBundles)}\`\n`,
+                  );
+                }
                 console.log("LIVE WEB DEPLOYMENT 100% VERIFIED:", JSON.stringify(liveVersion));
               } finally {
                 await browser.close();
