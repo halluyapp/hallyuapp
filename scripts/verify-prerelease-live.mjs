@@ -110,14 +110,14 @@ try {
     assert.equal(insPost.error, null, insPost.error?.message);
 
     // Upload real bytes to private `media` bucket
+    const storagePath = `u/${owner.id}/${postId}-0.jpg`;
     const { data: uploadId, error: beginErr } = await owner.client.rpc('begin_media_upload', {
+      p_storage_path: storagePath,
       p_kind: 'image',
-      p_ext: 'jpg',
       p_byte_size: 64,
-      p_storage_path: `u/${owner.id}/${postId}-0.jpg`,
+      p_content_type: 'image/jpeg',
     });
     assert.equal(beginErr, null, beginErr?.message);
-    const storagePath = `u/${owner.id}/${postId}-0.jpg`;
     uploadedMediaPaths.push(storagePath);
 
     const upRes = await owner.client.storage
@@ -226,10 +226,36 @@ try {
     }
   });
 
-  await step('P1 #4: Live DM triggers exact 1 recipient notification, 0 sender copies, and blocks unauthorized DMs', async () => {
+  await step('P1 #4: Both handle & UUID send_direct_message overloads emit exact 1 recipient notification, 0 sender copies, and block private shared posts', async () => {
+    // Sharing an unreadable private post via DM MUST be rejected on server
+    const leakedShare = await stranger.client.rpc('send_direct_message', {
+      p_recipient_handle: follower.handle,
+      p_body: 'Attempt private post share',
+      p_shared_drama_id: null,
+      p_shared_post_id: owner.postId,
+    });
+    assert.notEqual(leakedShare.error, null, 'Sharing unreadable private post via DM must fail');
+
+    // Handle overload (used by Messages UI) -> exact 1 notification (0 duplicates!)
+    const dmHandleRes = await follower.client.rpc('send_direct_message', {
+      p_recipient_handle: stranger.handle,
+      p_body: `Live handle DM ${runTag}`,
+      p_shared_drama_id: null,
+      p_shared_post_id: null,
+    });
+    assert.equal(dmHandleRes.error, null, dmHandleRes.error?.message);
+
+    const { data: afterHandleNotifs } = await stranger.client
+      .from('notifications')
+      .select('id, dedupe_key')
+      .eq('recipient_id', stranger.id);
+    const handleDmNotifs = (afterHandleNotifs ?? []).filter((n) => String(n.dedupe_key ?? '').startsWith('dm:'));
+    assert.equal(handleDmNotifs.length, 1, `Expected exact 1 DM notification after handle DM, got ${handleDmNotifs.length}`);
+
+    // UUID overload -> exact 2 notifications total across 2 DMs
     const dmRes = await follower.client.rpc('send_direct_message', {
       p_recipient_id: stranger.id,
-      p_body: `Live pre-release verification DM ${runTag}`,
+      p_body: `Live UUID DM ${runTag}`,
     });
     assert.equal(dmRes.error, null, dmRes.error?.message);
 
@@ -238,7 +264,7 @@ try {
       .select('id, dedupe_key')
       .eq('recipient_id', stranger.id);
     const dmNotifs = (recipNotifs ?? []).filter((n) => String(n.dedupe_key ?? '').startsWith('dm:'));
-    assert.equal(dmNotifs.length, 1, `Expected exact 1 DM notification for recipient, got ${dmNotifs.length}`);
+    assert.equal(dmNotifs.length, 2, `Expected exact 2 DM notifications across 2 DMs, got ${dmNotifs.length}`);
 
     const { data: senderNotifs } = await follower.client
       .from('notifications')
@@ -433,16 +459,39 @@ try {
     assert.equal(unreadAfter?.length ?? 0, 0, 'Notifications must persist read_at across reload');
   });
 
-  await step('P1 #3: Account deletion purges DMs/posts/social graph and marks profile deleted with server confirmation', async () => {
+  await step('P1 #3: Account deletion purges DMs/uploads/posts/comments/social graph and marks profile deleted with server confirmation', async () => {
     const delPostId = crypto.randomUUID();
-    await deleter.client.from('posts').insert({
+    const insDisc = await deleter.client.from('posts').insert({
       id: delPostId,
       author_id: deleter.id,
-      type: 'post',
-      body: 'Temporary post before permanent deletion',
+      type: 'discussion',
+      title: 'Discussion before deletion',
+      kind: 'general',
+      body: 'Temporary discussion before permanent deletion',
       spoiler: 'none',
       visibility: 'public',
     });
+    assert.equal(insDisc.error, null, insDisc.error?.message);
+
+    const insDelComment = await deleter.client.from('comments').insert({
+      id: crypto.randomUUID(),
+      post_id: delPostId,
+      author_id: deleter.id,
+      body: 'Temporary comment before permanent deletion',
+      spoiler: 'none',
+    });
+    assert.equal(insDelComment.error, null, insDelComment.error?.message);
+
+    const delMediaPath = `u/${deleter.id}/${delPostId}-orphan.jpg`;
+    uploadedMediaPaths.push(delMediaPath);
+    const beginDelMedia = await deleter.client.rpc('begin_media_upload', {
+      p_storage_path: delMediaPath,
+      p_kind: 'image',
+      p_byte_size: 32,
+      p_content_type: 'image/jpeg',
+    });
+    assert.equal(beginDelMedia.error, null, beginDelMedia.error?.message);
+
     await deleter.client.rpc('send_direct_message', {
       p_recipient_id: follower.id,
       p_body: 'Temporary DM before permanent deletion',
@@ -451,6 +500,7 @@ try {
     const delRpc = await deleter.client.rpc('delete_account');
     assert.equal(delRpc.error, null, delRpc.error?.message);
     assert.equal(delRpc.data?.deleted, true);
+    assert.ok(Number(delRpc.data?.media_objects_queued ?? 0) >= 1, 'Expected >=1 queued media object on account deletion');
 
     const { data: activePosts } = await admin
       .from('posts')
@@ -458,6 +508,19 @@ try {
       .eq('author_id', deleter.id)
       .eq('state', 'active');
     assert.equal(activePosts?.length ?? 0, 0);
+
+    const { data: activeComments } = await admin
+      .from('comments')
+      .select('id')
+      .eq('author_id', deleter.id)
+      .eq('state', 'active');
+    assert.equal(activeComments?.length ?? 0, 0);
+
+    const { data: remainingUploads } = await admin
+      .from('media_uploads')
+      .select('id')
+      .eq('user_id', deleter.id);
+    assert.equal(remainingUploads?.length ?? 0, 0);
 
     const { data: remainingDms } = await admin
       .from('direct_messages')

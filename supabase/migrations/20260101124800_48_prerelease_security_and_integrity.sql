@@ -873,6 +873,7 @@ begin
     p_group := 'social',
     p_dedupe_key := 'dm:' || new.id::text,
     p_actor_ids := array[new.sender_id],
+    p_post_id := new.shared_post_id,
     p_title := coalesce(nullif(v_sender.display_name, ''), '@' || coalesce(v_sender.handle, 'member')) || ' sent you a message',
     p_body := left(coalesce(nullif(btrim(new.body), ''), 'Shared something with you on Hallyu'), 140),
     p_deep_link := case
@@ -890,6 +891,102 @@ create trigger direct_messages_notify_after_insert
   after insert on public.direct_messages
   for each row
   execute function public.on_direct_message_notify();
+
+create or replace function public.send_direct_message(
+  p_recipient_handle text,
+  p_body text,
+  p_shared_drama_id text default null,
+  p_shared_post_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_peer public.profiles%rowtype;
+  v_msg public.direct_messages%rowtype;
+  v_clean text := left(btrim(coalesce(p_body, '')), 2000);
+  v_drama text := nullif(btrim(coalesce(p_shared_drama_id, '')), '');
+begin
+  if v_uid is null then
+    raise exception 'authentication_required' using errcode = '42501';
+  end if;
+
+  if char_length(v_clean) < 1 and v_drama is null and p_shared_post_id is null then
+    raise exception 'empty_message' using errcode = '22023';
+  end if;
+
+  select * into v_peer
+  from public.profiles
+  where lower(handle) = lower(regexp_replace(btrim(coalesce(p_recipient_handle, '')), '^@', ''))
+    and account_status = 'active';
+
+  if not found then
+    raise exception 'recipient_not_found' using errcode = 'P0002';
+  end if;
+
+  if v_peer.id = v_uid then
+    raise exception 'cannot_message_self' using errcode = '22023';
+  end if;
+
+  if exists (
+    select 1
+    from public.blocks b
+    where (b.blocker_id = v_uid and b.blocked_id = v_peer.id)
+       or (b.blocker_id = v_peer.id and b.blocked_id = v_uid)
+  ) then
+    raise exception 'blocked_conversation' using errcode = '42501';
+  end if;
+
+  if p_shared_post_id is not null and not exists (
+    select 1
+    from public.posts p
+    where p.id = p_shared_post_id
+      and (
+        p.author_id = v_uid
+        or (
+          p.state = 'active'::public.content_state
+          and public.can_view_author_content(p.author_id, v_uid)
+        )
+      )
+  ) then
+    raise exception 'shared_post_not_visible' using errcode = '42501';
+  end if;
+
+  -- `direct_messages_notify_after_insert` emits the single deduplicated notification & push delivery.
+  insert into public.direct_messages (
+    sender_id,
+    recipient_id,
+    body,
+    shared_drama_id,
+    shared_post_id
+  )
+  values (
+    v_uid,
+    v_peer.id,
+    coalesce(nullif(v_clean, ''), 'Shared on Hallyu'),
+    v_drama,
+    p_shared_post_id
+  )
+  returning * into v_msg;
+
+  return jsonb_build_object(
+    'id', v_msg.id,
+    'sender_id', v_msg.sender_id,
+    'recipient_id', v_msg.recipient_id,
+    'body', v_msg.body,
+    'shared_drama_id', v_msg.shared_drama_id,
+    'shared_post_id', v_msg.shared_post_id,
+    'read_at', v_msg.read_at,
+    'created_at', v_msg.created_at
+  );
+end;
+$$;
+
+revoke all on function public.send_direct_message(text, text, text, uuid) from public, anon;
+grant execute on function public.send_direct_message(text, text, text, uuid) to authenticated, service_role;
 
 create or replace function public.send_direct_message(p_recipient_id uuid, p_body text)
 returns jsonb
@@ -1018,15 +1115,15 @@ begin
 
   update public.comments
      set state = 'deleted'::public.content_state,
-         deleted_at = now(),
-         body = ''
+         deleted_at = coalesce(deleted_at, now()),
+         body = '[deleted]'
    where author_id = actor;
 
   update public.posts
      set state = 'deleted'::public.content_state,
-         deleted_at = now(),
+         deleted_at = coalesce(deleted_at, now()),
          title = null,
-         body = '',
+         body = '[deleted]',
          verdict = null,
          hashtags = '{}',
          mentions = '{}'
