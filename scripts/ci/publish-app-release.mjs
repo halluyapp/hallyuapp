@@ -373,20 +373,6 @@ for (const [abi, entry] of Object.entries(perAbi)) {
 }
 await verifyLiveApkUrl('legacy-arm64-bridge', legacyBridgeUrl);
 
-const markOldRes = await fetch(`${SUPABASE_URL}/rest/v1/app_releases?is_latest=eq.true`, {
-  method: 'PATCH',
-  headers: {
-    apikey: SERVICE_KEY,
-    Authorization: `Bearer ${SERVICE_KEY}`,
-    'Content-Type': 'application/json',
-    Prefer: 'return=minimal',
-  },
-  body: JSON.stringify({ is_latest: false }),
-});
-if (!markOldRes.ok) {
-  console.warn('Warning clearing old is_latest flags:', await markOldRes.text());
-}
-
 const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/app_releases?on_conflict=version_code`, {
   method: 'POST',
   headers: {
@@ -399,14 +385,14 @@ const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/app_releases?on_conflict=
     version_code: artifacts.universal.versionCode,
     version_name: versionName,
     git_commit: gitCommit.slice(0, 7),
-    git_ref: gitRef,
     apk_url: legacyBridgeUrl,
     universal_apk_url: perAbi.universal.url,
     file_size_bytes: perAbi['arm64-v8a'].sizeBytes,
     sha256: bridgeArt.sha256,
-    signing_cert_sha256: SIGNING_SHA256,
     release_notes: releaseNotes,
-    is_latest: true,
+    is_mandatory: false,
+    min_supported_version: 10000,
+    published_at: new Date().toISOString(),
   }),
 });
 if (!insertRes.ok) {
@@ -425,8 +411,9 @@ if (membersRes.ok) {
   const members = await membersRes.json();
   if (Array.isArray(members) && members.length > 0) {
     const rows = members.map((m) => ({
-      user_id: m.id,
-      kind: 'system_release',
+      recipient_id: m.id,
+      kind: 'system',
+      group: 'system',
       title: notifyTitle,
       body: notifyBody,
       deep_link: '/settings/updates',

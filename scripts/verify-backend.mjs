@@ -1264,9 +1264,8 @@ await test('A rejected token is disabled and its other deliveries are failed', a
 });
 
 await test('A transient failure schedules a retry instead of losing the notification', async () => {
-  const token = `verification-flaky-${suffix}-cccccccccccccccccccc`;
-  await alice.rpc('register_push_token', { p_token: token, p_platform: 'android' });
-
+  // Enqueue FIRST before registering the synthetic token so the `notifications_fanout_and_wake`
+  // AFTER INSERT trigger does not dispatch `send-push` concurrently against Google FCM mid-test.
   const { data: notification } = await admin().rpc('enqueue_notification', {
     p_recipient: aliceId,
     p_kind: 'system',
@@ -1274,20 +1273,23 @@ await test('A transient failure schedules a retry instead of losing the notifica
     p_dedupe_key: `verify-flaky-${suffix}`,
     p_title: 'Flaky device',
   });
+
+  const token = `verification-flaky-${suffix}-cccccccccccccccccccc`;
+  await alice.rpc('register_push_token', { p_token: token, p_platform: 'android' });
+  const { data: flakyTok } = await admin()
+    .from('push_tokens')
+    .select('id')
+    .eq('token', token)
+    .single();
+
   await admin().rpc('fanout_notification', { p_notification_id: notification });
 
   const { data: delivery } = await admin()
     .from('notification_deliveries')
     .select('id')
     .eq('notification_id', notification)
-    .limit(1)
+    .eq('push_token_id', flakyTok.id)
     .single();
-
-  // Ensure row is in non-invalid state before exercising `report_delivery(..., p_invalid: false)`
-  await admin()
-    .from('notification_deliveries')
-    .update({ status: 'queued', attempt: 0 })
-    .eq('id', delivery.id);
 
   await admin().rpc('report_delivery', {
     p_delivery_id: delivery.id,
