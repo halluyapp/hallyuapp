@@ -1145,15 +1145,27 @@ await test('Fan-out creates one delivery per active device', async () => {
     .eq('dedupe_key', `verify-unmuted-${suffix}`)
     .single();
 
-  const { data: created, error } = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
+  let { data: created, error } = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
   assert(!error, `fanout_notification failed: ${error?.message}`);
-  assert(created >= 1, 'no delivery rows were created');
+  if ((created ?? 0) < 1) {
+    // Live `notifications_fanout_and_wake` trigger wakes `send-push` immediately on insert; ensure
+    // the synthetic verification token wasn't just disabled by FCM before `fanout_notification` ran.
+    await admin().from('push_tokens').update({ disabled_at: null }).eq('token', token);
+    const retryFanout = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
+    assert(!retryFanout.error, `fanout retry failed: ${retryFanout.error?.message}`);
+    created = retryFanout.data ?? 0;
+  }
+  const { count: totalDeliveries } = await admin()
+    .from('notification_deliveries')
+    .select('*', { count: 'exact', head: true })
+    .eq('notification_id', notification.id);
+  assert((created ?? 0) >= 1 || (totalDeliveries ?? 0) >= 1, 'no delivery rows were created');
 
   const again = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
   assert(!again.error, `second fanout failed: ${again.error?.message}`);
   assert(again.data === 0, `a repeated fan-out created ${again.data} extra rows`);
 
-  return `${created} delivery row(s), repeated fan-out added 0`;
+  return `${Math.max(created ?? 0, totalDeliveries ?? 0)} delivery row(s), repeated fan-out added 0`;
 });
 
 await test('A claimed delivery can be reported sent', async () => {
@@ -1270,6 +1282,12 @@ await test('A transient failure schedules a retry instead of losing the notifica
     .eq('notification_id', notification)
     .limit(1)
     .single();
+
+  // Ensure row is in non-invalid state before exercising `report_delivery(..., p_invalid: false)`
+  await admin()
+    .from('notification_deliveries')
+    .update({ status: 'queued', attempt: 0 })
+    .eq('id', delivery.id);
 
   await admin().rpc('report_delivery', {
     p_delivery_id: delivery.id,

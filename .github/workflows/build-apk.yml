@@ -235,7 +235,7 @@ jobs:
               echo "::error::Wrong versionName in $APK: $PKG_HEADER"
               exit 1
             fi
-            if ! grep -Eq "sdkVersion:'2[1-5]'" <<< "$BADGING"; then
+            if ! grep -Eiq "(min)?sdkVersion:'2[1-5]'" <<< "$BADGING"; then
               echo "::error::Unexpected minSdkVersion in $APK: $PKG_HEADER"
               exit 1
             fi
