@@ -1291,6 +1291,13 @@ await test('A transient failure schedules a retry instead of losing the notifica
     .eq('push_token_id', flakyTok.id)
     .single();
 
+  // Claim ownership (`status = 'sending'`) with a future `next_attempt_at` and ensure it wasn't
+  // touched by an active `send-push` drain loop before invoking `report_delivery(p_invalid: false)`.
+  await admin()
+    .from('notification_deliveries')
+    .update({ status: 'sending', attempt: 1, next_attempt_at: new Date(Date.now() + 600_000).toISOString() })
+    .eq('id', delivery.id);
+
   await admin().rpc('report_delivery', {
     p_delivery_id: delivery.id,
     p_sent: false,
