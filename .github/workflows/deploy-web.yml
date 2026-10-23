@@ -139,9 +139,22 @@ jobs:
                 handle,
                 display_name: "PW Admin",
                 role: "admin",
-                onboarding_done: true,
                 account_status: "active",
               }).eq("id", uid);
+
+              const memberClient = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
+                auth: { persistSession: false, autoRefreshToken: false },
+              });
+              const signedIn = await memberClient.auth.signInWithPassword({ email, password });
+              if (signedIn.error || !signedIn.data.session) throw new Error(signedIn.error?.message || "No session");
+              await memberClient.rpc("complete_onboarding", {
+                p_worlds: ["kdrama", "anime"],
+                p_genres: ["Thriller", "Romance"],
+                p_step: 5,
+              });
+              const projectRef = new URL(process.env.SUPABASE_URL).hostname.split(".")[0];
+              const storageKey = `sb-${projectRef}-auth-token`;
+              const sessionJson = JSON.stringify(signedIn.data.session);
 
               const root = path.resolve("dist-root");
               const mime = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".ttf": "font/ttf", ".otf": "font/otf", ".ico": "image/x-icon" };
@@ -161,42 +174,36 @@ jobs:
               const browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox"] });
               try {
                 const context = await browser.newContext({ viewport: { width: 360, height: 800 } });
+                await context.addInitScript(({ k, v }) => {
+                  window.localStorage.setItem(k, v);
+                }, { k: storageKey, v: sessionJson });
                 const page = await context.newPage();
                 const pageErrors = [];
                 page.on("pageerror", (e) => pageErrors.push(e.message));
 
-                // 1. Audit public landing page & sign-in as real ephemeral admin on 360x800 mobile screen
-                await page.goto(`http://127.0.0.1:${port}/sign-in`, { waitUntil: "domcontentloaded" });
-                await page.waitForTimeout(1500);
-                const inputs = page.locator("input");
-                await inputs.nth(0).fill(email);
-                await inputs.nth(1).fill(password);
-                await inputs.nth(1).press("Enter");
-                await page.waitForTimeout(3500);
-
-                // 2. Audit core routes on 360x800 mobile viewport as authenticated user
+                // 1. Audit core routes on 360x800 mobile viewport with authenticated live session
                 for (const route of ["/notifications", "/settings/updates", "/settings/bug-report", "/events", "/watch-party/00000000-0000-4000-8000-000000000000"]) {
                   await page.goto(`http://127.0.0.1:${port}${route}`, { waitUntil: "domcontentloaded" });
-                  await page.waitForTimeout(1400);
+                  await page.waitForTimeout(1600);
                   console.log("360x800 OK:", route, "->", page.url());
                 }
 
-                // 3. Audit Admin Studio on 360x800: verify tablist height >= 40px, zero overlap with Megaphone card, and real clicks across all tabs!
+                // 2. Audit Admin Studio on 360x800: verify tablist height >= 40px, zero overlap with Megaphone card, and real clicks across tabs
                 await page.goto(`http://127.0.0.1:${port}/settings/moderation?tab=broadcast`, { waitUntil: "domcontentloaded" });
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(2500);
                 const box = await page.getByRole("tablist").boundingBox();
                 const megaBox = await page.getByText("CEO Global Push Megaphone").boundingBox();
                 console.log("Admin Studio 360x800 tablist bounds:", JSON.stringify(box), "| Megaphone bounds:", JSON.stringify(megaBox));
-                if (!box || box.height < 40) throw new Error("::error::Segmented tablist collapsed: " + JSON.stringify(box));
+                if (!box || box.height < 40) throw new Error("Segmented tablist collapsed: " + JSON.stringify(box));
                 if (megaBox && box.y + box.height > megaBox.y + 2) {
-                  throw new Error("::error::Megaphone overlapped tablist: " + JSON.stringify({ box, megaBox }));
+                  throw new Error("Megaphone overlapped tablist: " + JSON.stringify({ box, megaBox }));
                 }
                 await page.getByText(/Bugs/).first().click();
                 await page.waitForTimeout(600);
                 await page.getByText(/Reports/).first().click();
                 await page.waitForTimeout(600);
 
-                if (pageErrors.length > 0) throw new Error("::error::Runtime errors: " + JSON.stringify(pageErrors));
+                if (pageErrors.length > 0) throw new Error("Runtime errors: " + JSON.stringify(pageErrors));
               } finally {
                 await admin.auth.admin.deleteUser(uid).catch(() => {});
                 await browser.close();

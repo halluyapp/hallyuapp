@@ -715,9 +715,27 @@ test('Notifications, Admin Studio, Bug Reports, Watch Party & Profile Stats end-
     args: { p_ids: ['11111111-1111-4111-8111-111111111111'], p_group: null },
   });
 
-  // 2. Notification routes & push-dispatch fallback targets
+  // 2. Notification routes, native App Link normalization & push-dispatch fallback targets
   assert.ok(fs.existsSync(path.resolve(ROOT, 'app/notifications.tsx')));
   assert.ok(fs.existsSync(path.resolve(ROOT, 'app/watch-party/[eventId].tsx')));
+  assert.ok(fs.existsSync(path.resolve(ROOT, 'app/+native-intent.tsx')));
+  const nativeIntent = loadTsModule('app/+native-intent.tsx');
+  assert.equal(
+    nativeIntent.normalizeIncomingNativePath('https://halluyapp.github.io/hallyuapp/settings/updates'),
+    '/settings/updates',
+  );
+  assert.equal(
+    nativeIntent.normalizeIncomingNativePath('hallyu:///hallyuapp/settings/moderation?tab=support'),
+    '/settings/moderation?tab=support',
+  );
+  assert.equal(
+    nativeIntent.normalizeIncomingNativePath('https://halluyapp.github.io/hallyuapp/u/ceohallyu'),
+    '/user/ceohallyu',
+  );
+  assert.equal(
+    nativeIntent.normalizeIncomingNativePath('hallyu://notifications'),
+    '/(tabs)/activity',
+  );
   const pushFn = fs.readFileSync(
     path.resolve(ROOT, 'supabase/functions/push-dispatch/index.ts'),
     'utf8',

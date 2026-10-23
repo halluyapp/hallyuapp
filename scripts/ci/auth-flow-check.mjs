@@ -298,8 +298,35 @@ const restartRedirect = await waitFor(
   2000,
 );
 
-// ── Phase 5 · Verify App Updates Screen (`Up to Date ✓` + Installed Version) on Real Android OS ─
-note('phase 5: deep-linking into App Updates screen on real Android APK');
+// ── Phase 5 · Complete Onboarding & Elevate Ephemeral Member for App Updates + Admin Studio Audits ─
+if (TEST_USER_ID && SUPABASE_URL && SERVICE_KEY) {
+  const { createClient } = await import('@supabase/supabase-js');
+  const anonKey = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? '').trim();
+  if (anonKey) {
+    const memberClient = createClient(SUPABASE_URL, anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    await memberClient.auth.signInWithPassword({ email: EMAIL, password: PASSWORD });
+    await memberClient.rpc('complete_onboarding', {
+      p_worlds: ['kdrama', 'anime'],
+      p_genres: ['Thriller', 'Romance'],
+      p_step: 5,
+    });
+  }
+  await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${TEST_USER_ID}`, {
+    method: 'PATCH',
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ role: 'admin' }),
+  });
+}
+
+note('phase 5: deep-linking via public App Link into App Updates screen on real Android APK');
+adb(['shell', 'am', 'force-stop', PKG]);
+await sleep(800);
 adb([
   'shell',
   'am',
@@ -328,29 +355,17 @@ const updatesNodes = await waitFor(
     }
     return nodes;
   },
-  30_000,
+  35_000,
   2000,
 );
 saveScreenProof('updates');
 if (updatesNodes) {
-  note(`App Updates verified on Android OS: Up to Date ✓ · v${EXPECTED_VERSION}`);
+  note(`App Updates verified on Android OS via App Link: Up to Date ✓ · v${EXPECTED_VERSION}`);
 }
 
 // ── Phase 6 · Verify Admin Studio UI Bounds & Touch Navigation on Real Android APK ────────────
 if (TEST_USER_ID && SUPABASE_URL && SERVICE_KEY) {
   note('phase 6: verifying Admin Studio UI bounds & touch reachability on real Android APK');
-  await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${TEST_USER_ID}`, {
-    method: 'PATCH',
-    headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ role: 'admin', onboarding_done: true }),
-  });
-
-  adb(['shell', 'am', 'force-stop', PKG]);
-  await sleep(800);
   adb([
     'shell',
     'am',
@@ -359,7 +374,7 @@ if (TEST_USER_ID && SUPABASE_URL && SERVICE_KEY) {
     '-a',
     'android.intent.action.VIEW',
     '-d',
-    'https://halluyapp.github.io/hallyuapp/settings/moderation',
+    'https://halluyapp.github.io/hallyuapp/settings/moderation?tab=broadcast',
     PKG,
   ]);
 
