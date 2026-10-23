@@ -1170,9 +1170,14 @@ await test('A claimed delivery can be reported sent', async () => {
       .single();
     if (notif?.id) {
       await admin()
+        .from('push_tokens')
+        .update({ disabled_at: null })
+        .eq('user_id', aliceId);
+      const { error: rearmErr } = await admin()
         .from('notification_deliveries')
-        .update({ status: 'pending', attempts: 0, next_attempt_at: new Date(Date.now() - 1000).toISOString() })
+        .update({ status: 'queued', attempt: 0, next_attempt_at: new Date(Date.now() - 1000).toISOString() })
         .eq('notification_id', notif.id);
+      assert(!rearmErr, `rearm delivery failed: ${rearmErr?.message}`);
       const retry = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
       assert(!retry.error, `claim_notification_deliveries retry failed: ${retry.error?.message}`);
       claimed = retry.data ?? [];

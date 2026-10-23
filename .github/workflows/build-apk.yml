@@ -149,6 +149,7 @@ jobs:
           GRADLE_OPTS: >-
             -Dorg.gradle.jvmargs=-Xmx4g
             -Dorg.gradle.daemon=false
+            -Dorg.gradle.caching=true
             -Dfile.encoding=UTF-8
         run: |
           set -euo pipefail
@@ -217,53 +218,53 @@ jobs:
             "$BT/zipalign" -c -P 16 -v 4 "$APK" >/dev/null
             "$BT/apksigner" verify --verbose "$APK"
             CERTS=$("$BT/apksigner" verify --print-certs "$APK")
-            printf '%s\n' "$CERTS" | sed -n '1,4p'
-            if ! printf '%s\n' "$CERTS" | tr -d ':' | grep -iq "$EXPECTED_HEX"; then
-              echo "::error::APK signature fingerprint mismatch in $APK! Got: $CERTS"
+            CERTS_FLAT=$(tr -d ':' <<< "$CERTS")
+            if ! grep -iq "$EXPECTED_HEX" <<< "$CERTS_FLAT"; then
+              echo "::error::APK signature fingerprint mismatch in $APK! Got: $(tr '\n' ' ' <<< "$CERTS")"
               exit 1
             fi
 
             BADGING=$("$BT/aapt2" dump badging "$APK")
-            PKG_HEADER=$(printf '%s\n' "$BADGING" | sed -n '1,4p')
+            PKG_HEADER=$(sed -n '1,4p' <<< "$BADGING" | tr '\n' ' ')
             echo "$PKG_HEADER"
-            printf '%s\n' "$BADGING" | grep -q "name='com.hallyu.app'" || {
+            if ! grep -q "name='com.hallyu.app'" <<< "$BADGING"; then
               echo "::error::Wrong package name in $APK: $PKG_HEADER"
               exit 1
-            }
-            printf '%s\n' "$BADGING" | grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'" || {
+            fi
+            if ! grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'" <<< "$BADGING"; then
               echo "::error::Wrong versionName in $APK: $PKG_HEADER"
               exit 1
-            }
-            printf '%s\n' "$BADGING" | grep -Eq "sdkVersion:'2[1-5]'" || {
+            fi
+            if ! grep -Eq "sdkVersion:'2[1-5]'" <<< "$BADGING"; then
               echo "::error::Unexpected minSdkVersion in $APK: $PKG_HEADER"
               exit 1
-            }
+            fi
 
             XML_MANIFEST=$("$BT/aapt2" dump xmltree "$APK" --file AndroidManifest.xml)
-            EXTRACT_LINE=$(printf '%s\n' "$XML_MANIFEST" | grep "extractNativeLibs" || true)
+            EXTRACT_LINE=$(grep "extractNativeLibs" <<< "$XML_MANIFEST" || true)
             echo "Manifest extractNativeLibs: $EXTRACT_LINE"
-            if printf '%s\n' "$EXTRACT_LINE" | grep -Eq "\)0x0$|false"; then
+            if grep -Eq "\)0x0$|false" <<< "$EXTRACT_LINE"; then
               echo "::error::extractNativeLibs evaluated to false in $APK: $EXTRACT_LINE"
               exit 1
             fi
 
             ZIP_LIST=$(unzip -lv "$APK")
-            printf '%s\n' "$ZIP_LIST" | grep -q "assets/index.android.bundle" || {
+            if ! grep -q "assets/index.android.bundle" <<< "$ZIP_LIST"; then
               echo "::error::Missing assets/index.android.bundle in $APK"
               exit 1
-            }
-            HERMES_LINE=$(printf '%s\n' "$ZIP_LIST" | grep "libhermes.so" | sed -n '1p' || true)
+            fi
+            HERMES_LINE=$(grep "libhermes.so" <<< "$ZIP_LIST" | sed -n '1p' || true)
             echo "Hermes entry: $HERMES_LINE"
             echo "| \`$(basename "$APK")\` | \`$SIZE_HUMAN\` | \`${SHA_HEX:0:16}…\` | \`$HERMES_LINE\` |" >> "$GITHUB_STEP_SUMMARY"
           done
 
-          # Exact native ABI folder assertions (pipefail-safe via captured listing)
+          # Exact native ABI folder assertions (here-string = zero SIGPIPE under pipefail)
           check_abi_so() {
             local apk="$1"
             local needle="$2"
             local listing
             listing=$(unzip -l "$apk")
-            if ! printf '%s\n' "$listing" | grep -q "$needle"; then
+            if ! grep -q "$needle" <<< "$listing"; then
               echo "::error::Missing $needle inside $apk"
               exit 1
             fi
