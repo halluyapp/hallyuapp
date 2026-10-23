@@ -1,4 +1,3 @@
-import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
@@ -10,6 +9,7 @@ import { EmptyState } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TextField } from '../../components/ui/TextField';
 import { TopBar } from '../../components/ui/TopBar';
+import { VerificationSeal } from '../../components/recognition/VerificationSeal';
 import { colors, fonts, radius, space } from '../../constants/theme';
 import { fetchConversations, subscribeDirectMessages } from '../../lib/api/features';
 import { useAuth } from '../../lib/auth';
@@ -152,7 +152,7 @@ export default function MessagesInboxScreen() {
                   <Text variant="titleSmall" numberOfLines={1}>
                     {item.displayName}
                   </Text>
-                  {item.verified ? <Ionicons name="checkmark-circle" size={14} color={colors.accentText} /> : null}
+                  <VerificationSeal tier={item.verificationTier} verified={item.verified} size={15} />
                 </View>
                 <Text variant="caption" tone="tertiary">
                   {timeAgo(item.lastAt)}

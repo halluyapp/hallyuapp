@@ -37,6 +37,62 @@ export const REACTIONS: { kind: ReactionKind; label: string; glyph: string }[] =
 export type ReactionCounts = Record<ReactionKind, number>;
 export const emptyReactions = (): ReactionCounts => ({ loved: 0, cried: 0, screamed: 0, swooned: 0, laughed: 0, furious: 0 });
 
+export type VerificationTier = 'none' | 'blue' | 'red';
+export type BadgeCategory = 'executive' | 'early_member' | 'participation' | 'content' | 'community';
+export type BadgeRarity = 'standard' | 'rare' | 'epic' | 'legendary' | 'mythic';
+
+export interface BadgeDefinition {
+  id: string;
+  name: string;
+  subtitle: string;
+  description: string;
+  category: BadgeCategory;
+  rarity: BadgeRarity;
+  iconKey: string;
+  accentHex: string;
+  maxSupply?: number | null;
+  isNumbered: boolean;
+  isAutomatic: boolean;
+  thresholdKind?: string | null;
+  thresholdValue?: number | null;
+  sortOrder: number;
+  claimedCount?: number;
+}
+
+export interface UserAward {
+  awardId: string;
+  badgeId: string;
+  serialNumber?: number | null;
+  source: string;
+  awardNote?: string | null;
+  awardedAt: string;
+  name: string;
+  subtitle: string;
+  description: string;
+  category: BadgeCategory;
+  rarity: BadgeRarity;
+  iconKey: string;
+  accentHex: string;
+  maxSupply?: number | null;
+  isNumbered: boolean;
+}
+
+/**
+ * Resolves the authoritative 2-tier verification seal for any user summary:
+ * - `'red'` -> Executive / Official Hallyu Authority (@ceohallyu & designated official accounts)
+ * - `'blue'` -> Authentic Verified Identity (verified creators, journalists, community leaders, figures)
+ * - `'none'` -> Unverified member
+ */
+export function resolveVerificationTier(
+  subject?: { verified?: boolean; verificationTier?: VerificationTier | string | null } | null,
+): VerificationTier {
+  if (!subject) return 'none';
+  if (subject.verificationTier === 'red') return 'red';
+  if (subject.verificationTier === 'blue') return 'blue';
+  if (subject.verificationTier === 'none') return 'none';
+  return subject.verified ? 'blue' : 'none';
+}
+
 export interface User {
   id: ID;
   handle: string;
@@ -54,6 +110,13 @@ export interface User {
   following: number;
   joinedAt: string;
   verified?: boolean;
+  verificationTier?: VerificationTier;
+  verificationNote?: string;
+  verifiedAt?: string;
+  isFounder?: boolean;
+  excludeFromCompetitions?: boolean;
+  featuredBadgeIds?: string[];
+  awards?: UserAward[];
   isPrivate?: boolean;
   role?: 'member' | 'moderator' | 'admin';
 }
@@ -193,6 +256,7 @@ export interface ConversationSummary {
   displayName: string;
   avatarUrl?: string;
   verified?: boolean;
+  verificationTier?: VerificationTier;
   lastMessageId: ID;
   lastSenderId: ID;
   lastBody: string;

@@ -152,6 +152,7 @@ interface RawConversation {
   display_name: string;
   avatar_path?: string | null;
   verified?: boolean;
+  verification_tier?: 'none' | 'blue' | 'red' | string | null;
   last_message_id: string;
   last_sender_id: string;
   last_body: string;
@@ -205,6 +206,12 @@ export async function fetchConversations(): Promise<ConversationSummary[]> {
     displayName: r.display_name,
     avatarUrl: r.avatar_path ? avatars.get(r.avatar_path) : undefined,
     verified: Boolean(r.verified),
+    verificationTier:
+      r.verification_tier === 'red' || r.verification_tier === 'blue' || r.verification_tier === 'none'
+        ? r.verification_tier
+        : r.verified
+          ? 'blue'
+          : 'none',
     lastMessageId: r.last_message_id,
     lastSenderId: r.last_sender_id,
     lastBody: r.last_body,

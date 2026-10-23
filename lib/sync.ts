@@ -39,6 +39,7 @@ import {
   type ServerTitleRow,
 } from './api/feed';
 import { signedUrls } from './api/media';
+import { syncMyRecognition } from './api/recognition';
 import * as social from './api/social';
 import { ensureBackendSessionToken, getBackendAccessToken, supabase } from './api/client';
 import type { AppState, Action, Prefs } from './store';
@@ -563,6 +564,7 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     const resolvedProfile = serverProfileToUser(boot.profile, {
       avatarUrl: resolvedAvatarUrl,
       favoriteDramaIds: favTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
+      awards: boot.my_awards ?? [],
     });
     const mergedMe: User = {
       ...current.profile,
@@ -864,6 +866,29 @@ export function subscribeBackendRealtime(
               body: row.body,
               deepLink: row.deep_link,
             });
+            if (row.group === 'system') {
+              void syncMyRecognition()
+                .then((res) => {
+                  if (!res) return;
+                  const snap = cb.getState();
+                  if (snap.profile.id !== userId) return;
+                  const patched: User = {
+                    ...snap.profile,
+                    verified: res.recognition.verificationTier !== 'none',
+                    verificationTier: res.recognition.verificationTier,
+                    verificationNote: res.recognition.verificationNote ?? undefined,
+                    verifiedAt: res.recognition.verifiedAt ?? undefined,
+                    isFounder: res.recognition.isFounder,
+                    featuredBadgeIds: res.recognition.featuredBadgeIds,
+                    awards: res.recognition.awards,
+                  };
+                  cb.apply({
+                    profile: patched,
+                    users: mergeUsers(snap.users, [patched]),
+                  });
+                })
+                .catch(() => {});
+            }
           }
         }
       },

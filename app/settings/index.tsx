@@ -9,6 +9,8 @@ import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
+import { VerificationApplySheet } from '../../components/recognition/VerificationApplyModal';
+import { VerificationSeal } from '../../components/recognition/VerificationSeal';
 import { space } from '../../constants/theme';
 import { getInstalledVersionLabel } from '../../lib/appUpdater';
 import { useAuth } from '../../lib/auth';
@@ -26,6 +28,7 @@ export default function Settings() {
   const { state, dispatch, me } = useApp();
   const [confirmOut, setConfirmOut] = useState(false);
   const [creatorSheet, setCreatorSheet] = useState(false);
+  const [verifSheet, setVerifSheet] = useState(false);
   const signedIn = auth.status === 'signedIn';
   const isStaff = me.role === 'admin' || me.role === 'moderator';
   const version = getInstalledVersionLabel();
@@ -46,8 +49,11 @@ export default function Settings() {
             }}
           >
             <Avatar uri={me.avatarUrl} name={me.displayName} size="lg" />
-            <View style={{ flex: 1 }}>
-              <Text variant="titleSmall">{me.displayName}</Text>
+            <View style={{ flex: 1, gap: 2 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <Text variant="titleSmall">{me.displayName}</Text>
+                <VerificationSeal tier={me.verificationTier} verified={me.verified} size={16} showPill />
+              </View>
               <Text variant="caption" tone="secondary">
                 @{me.handle} · Synced across Android, iOS & Web
               </Text>
@@ -63,7 +69,15 @@ export default function Settings() {
         )}
 
         {signedIn ? (
-          <SettingsGroup title={isStaff ? 'Creator & Staff Studio' : 'Community & Creators'}>
+          <SettingsGroup title={isStaff ? 'Executive & Staff Platform' : 'Community & Creators'}>
+            {isStaff ? (
+              <SettingsRow
+                icon="grid-outline"
+                label="Commercial Admin Console"
+                detail="Users, Launch & Founding Ten, Badges, Verification, Reports & Audit Log"
+                onPress={() => router.push('/admin')}
+              />
+            ) : null}
             {isStaff ? (
               <SettingsRow
                 icon="shield-half-outline"
@@ -72,6 +86,16 @@ export default function Settings() {
                 onPress={() => router.push('/settings/moderation')}
               />
             ) : null}
+            <SettingsRow
+              icon="checkmark-done-circle-outline"
+              label="Account Verification"
+              detail={
+                me.verificationTier && me.verificationTier !== 'none'
+                  ? `Active ${me.verificationTier.toUpperCase()} Verification · View record`
+                  : 'Apply for Blue Authentic Identity verification'
+              }
+              onPress={() => setVerifSheet(true)}
+            />
             <SettingsRow
               icon="flame-outline"
               label="Live Events & Watch Parties"
@@ -222,6 +246,7 @@ export default function Settings() {
       </ScrollScreen>
 
       <VideoAccessSheet visible={creatorSheet} onClose={() => setCreatorSheet(false)} />
+      <VerificationApplySheet open={verifSheet} onClose={() => setVerifSheet(false)} />
       <Dialog
         visible={confirmOut}
         title="Sign out?"

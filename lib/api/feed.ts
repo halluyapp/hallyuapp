@@ -6,10 +6,25 @@
  * server results into it on sign-in, on public cold start, and when screens pull to refresh.
  */
 import { fandomById } from '../fandoms';
-import type { Collection, Comment, Community, Drama, FandomId, MediaType, Notification, Post, PostType, SpoilerLevel, User } from '../model';
+import type {
+  Collection,
+  Comment,
+  Community,
+  Drama,
+  FandomId,
+  MediaType,
+  Notification,
+  Post,
+  PostType,
+  SpoilerLevel,
+  User,
+  UserAward,
+  VerificationTier,
+} from '../model';
 import type { ServerCollectionBundle } from './bootstrap';
 import { getBackendAccessToken, supabase } from './client';
 import { fetchPostMedia, signedUrls, type PostMedia } from './media';
+import { normalizeUserAward } from './recognition';
 
 function db() {
   if (!supabase) throw new Error('no backend configured');
@@ -114,6 +129,12 @@ interface ServerProfileRow {
   follower_count: number;
   following_count: number;
   verified: boolean;
+  verification_tier?: VerificationTier | string | null;
+  verification_note?: string | null;
+  verified_at?: string | null;
+  is_founder?: boolean;
+  exclude_from_competitions?: boolean;
+  featured_badge_ids?: string[] | null;
   is_private?: boolean;
   role?: 'member' | 'moderator' | 'admin';
   created_at?: string;
@@ -360,40 +381,112 @@ export function toComment(row: ServerComment): Comment {
   };
 }
 
-/** Sign avatar paths in batch and convert server profile rows + favorite titles to client Users. */
-export async function hydrateServerProfiles(rows: ServerProfileRow[]): Promise<{ users: User[]; dramas: Drama[] }> {
+/** Batch-fetch active public awards for a set of profile UUIDs in one query. */
+async function fetchActiveAwardsForUsers(userIds: string[]): Promise<Map<string, UserAward[]>> {
+  const out = new Map<string, UserAward[]>();
+  const uuids = [...new Set(userIds.filter(Boolean))];
+  if (!uuids.length || !supabase) return out;
+  try {
+    const { data, error } = await supabase
+      .from('user_awards')
+      .select(
+        'id, user_id, badge_id, serial_number, source, award_note, awarded_at, badge_definitions(id, name, subtitle, description, category, rarity, icon_key, accent_hex, max_supply, is_numbered, sort_order)',
+      )
+      .in('user_id', uuids)
+      .eq('status', 'active');
+    if (error || !Array.isArray(data)) return out;
+    const grouped = new Map<string, { order: number; award: UserAward }[]>();
+    for (const raw of data as Record<string, unknown>[]) {
+      const uid = String(raw.user_id ?? '');
+      const def = (raw.badge_definitions ?? {}) as Record<string, unknown>;
+      if (!uid || !def.id) continue;
+      const award = normalizeUserAward({
+        award_id: raw.id,
+        badge_id: raw.badge_id,
+        serial_number: raw.serial_number,
+        source: raw.source,
+        award_note: raw.award_note,
+        awarded_at: raw.awarded_at,
+        name: def.name,
+        subtitle: def.subtitle,
+        description: def.description,
+        category: def.category,
+        rarity: def.rarity,
+        icon_key: def.icon_key,
+        accent_hex: def.accent_hex,
+        max_supply: def.max_supply,
+        is_numbered: def.is_numbered,
+      });
+      const list = grouped.get(uid) ?? [];
+      list.push({ order: Number(def.sort_order ?? 100), award });
+      grouped.set(uid, list);
+    }
+    for (const [uid, list] of grouped.entries()) {
+      list.sort((a, b) => a.order - b.order);
+      out.set(uid, list.map((x) => x.award));
+    }
+  } catch {
+    return out;
+  }
+  return out;
+}
+
+/** Sign avatar paths in batch and convert server profile rows + favorite titles + active awards to client Users. */
+export async function hydrateServerProfiles(
+  rows: ServerProfileRow[],
+  preloadedAwards?: Map<string, UserAward[]>,
+): Promise<{ users: User[]; dramas: Drama[] }> {
   if (!rows.length) return { users: [], dramas: [] };
   const avatarPaths = rows.map((r) => r.avatar_path).filter((p): p is string => Boolean(p));
   const favTitleUuids = rows.flatMap((r) => r.favorite_title_ids ?? []).filter(Boolean);
+  const missingAwardUserIds = rows
+    .map((r) => r.id)
+    .filter((id) => !preloadedAwards || !preloadedAwards.has(id));
 
-  let avatars = new Map<string, string>();
-  if (avatarPaths.length) {
-    try {
-      avatars = await signedUrls(avatarPaths);
-    } catch {
-      avatars = new Map();
-    }
-  }
-  const { dramas, idMap } = await fetchDramasByUuids(favTitleUuids);
+  const [avatars, { dramas, idMap }, fetchedAwards] = await Promise.all([
+    avatarPaths.length
+      ? signedUrls(avatarPaths).catch(() => new Map<string, string>())
+      : Promise.resolve(new Map<string, string>()),
+    fetchDramasByUuids(favTitleUuids),
+    missingAwardUserIds.length
+      ? fetchActiveAwardsForUsers(missingAwardUserIds)
+      : Promise.resolve(new Map<string, UserAward[]>()),
+  ]);
 
-  const users: User[] = rows.map((r) => ({
-    id: r.id,
-    handle: r.handle,
-    displayName: r.display_name,
-    avatarUrl: r.avatar_path ? avatars.get(r.avatar_path) : undefined,
-    avatarPath: r.avatar_path ?? undefined,
-    bannerUrl: r.banner_url ?? undefined,
-    bio: r.bio ?? undefined,
-    fandoms: (r.worlds ?? []) as User['fandoms'],
-    favoriteGenres: r.favorite_genres ?? [],
-    favoriteDramaIds: (r.favorite_title_ids ?? []).map((id) => idMap.get(id)).filter((id): id is string => Boolean(id)),
-    followers: r.follower_count ?? 0,
-    following: r.following_count ?? 0,
-    joinedAt: r.created_at ?? new Date().toISOString(),
-    verified: r.verified,
-    isPrivate: Boolean(r.is_private),
-    role: r.role ?? undefined,
-  }));
+  const users: User[] = rows.map((r) => {
+    const tier: VerificationTier =
+      r.verification_tier === 'red' || r.verification_tier === 'blue' || r.verification_tier === 'none'
+        ? r.verification_tier
+        : r.verified
+          ? 'blue'
+          : 'none';
+    const awards = preloadedAwards?.get(r.id) ?? fetchedAwards.get(r.id) ?? [];
+    return {
+      id: r.id,
+      handle: r.handle,
+      displayName: r.display_name,
+      avatarUrl: r.avatar_path ? avatars.get(r.avatar_path) : undefined,
+      avatarPath: r.avatar_path ?? undefined,
+      bannerUrl: r.banner_url ?? undefined,
+      bio: r.bio ?? undefined,
+      fandoms: (r.worlds ?? []) as User['fandoms'],
+      favoriteGenres: r.favorite_genres ?? [],
+      favoriteDramaIds: (r.favorite_title_ids ?? []).map((id) => idMap.get(id)).filter((id): id is string => Boolean(id)),
+      followers: r.follower_count ?? 0,
+      following: r.following_count ?? 0,
+      joinedAt: r.created_at ?? new Date().toISOString(),
+      verified: tier !== 'none' || Boolean(r.verified),
+      verificationTier: tier,
+      verificationNote: r.verification_note ?? undefined,
+      verifiedAt: r.verified_at ?? undefined,
+      isFounder: Boolean(r.is_founder),
+      excludeFromCompetitions: Boolean(r.exclude_from_competitions),
+      featuredBadgeIds: Array.isArray(r.featured_badge_ids) ? r.featured_badge_ids : [],
+      awards,
+      isPrivate: Boolean(r.is_private),
+      role: r.role ?? undefined,
+    };
+  });
   return { users, dramas };
 }
 
@@ -419,6 +512,8 @@ export async function hydrateCollectionBundles(
       follower_count: 0,
       following_count: 0,
       verified: o.verified,
+      verification_tier: o.verification_tier,
+      is_founder: o.is_founder,
     }));
   const { users: owners } = await hydrateServerProfiles(ownerRows);
 
@@ -583,7 +678,9 @@ export async function fetchProfiles(ids: string[]): Promise<User[]> {
   if (!uuids.length) return [];
   const { data, error } = await db()
     .from('profiles')
-    .select('id, handle, display_name, avatar_path, banner_url, bio, worlds, favorite_genres, favorite_title_ids, follower_count, following_count, verified, is_private, role, created_at')
+    .select(
+      'id, handle, display_name, avatar_path, banner_url, bio, worlds, favorite_genres, favorite_title_ids, follower_count, following_count, verified, verification_tier, verification_note, verified_at, is_founder, exclude_from_competitions, featured_badge_ids, is_private, role, created_at',
+    )
     .in('id', uuids);
   if (error) throw new Error(`profile lookup failed: ${error.message}`);
   const { users } = await hydrateServerProfiles((data ?? []) as ServerProfileRow[]);
@@ -600,6 +697,7 @@ export async function fetchProfileByHandle(
   if (error || !data) return null;
   const raw = data as {
     profile: ServerProfileRow | null;
+    awards?: Record<string, unknown>[];
     favorites?: ServerTitleRow[];
     watching?: { item?: unknown; title?: ServerTitleRow | null }[];
     posts?: (
@@ -613,7 +711,11 @@ export async function fetchProfileByHandle(
     collections?: ServerCollectionBundle[];
   };
   if (!raw.profile) return null;
-  const { users, dramas: favDramas } = await hydrateServerProfiles([raw.profile]);
+  const preloadedAwards = new Map<string, UserAward[]>();
+  if (Array.isArray(raw.awards)) {
+    preloadedAwards.set(raw.profile.id, raw.awards.map(normalizeUserAward));
+  }
+  const { users, dramas: favDramas } = await hydrateServerProfiles([raw.profile], preloadedAwards);
   const user = users[0];
   if (!user) return null;
 

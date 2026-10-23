@@ -20,6 +20,7 @@ import { FeedVideo } from '../media/FeedVideo';
 import { ImageCarousel } from '../media/ImageCarousel';
 import { SpoilerBlock, SpoilerTag } from './SpoilerBlock';
 import { RichText } from './RichText';
+import { VerificationSeal } from '../recognition/VerificationSeal';
 import * as Clipboard from 'expo-clipboard';
 import { localDone, saveImage, saveVideo, MediaError } from '../../lib/media';
 import { videoUrl } from '../../lib/video';
@@ -282,7 +283,14 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
               <Text variant="titleSmall" numberOfLines={1} onPress={() => author && router.push(`/user/${author.handle}`)}>
                 {author?.displayName ?? 'Unknown'}
               </Text>
-              {author?.verified ? <Ionicons name="checkmark-circle" size={14} color={colors.accentText} /> : null}
+              <VerificationSeal tier={author?.verificationTier} verified={author?.verified} size={15} />
+              {author?.awards?.some((a) => a.serialNumber != null && a.badgeId === 'founding_ten') ? (
+                <View style={{ paddingHorizontal: 5, paddingVertical: 1, borderRadius: 999, backgroundColor: 'rgba(245, 158, 11, 0.14)', borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.38)' }}>
+                  <Text style={{ fontSize: 10, fontWeight: '800', color: '#FDE68A' }} numeric>
+                    #{author.awards.find((a) => a.badgeId === 'founding_ten')?.serialNumber}
+                  </Text>
+                </View>
+              ) : null}
               <Text variant="caption" tone="tertiary">
                 @{author?.handle} · {timeAgo(post.createdAt)}
                 {post.editedAt ? ' · edited' : ''}

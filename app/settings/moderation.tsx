@@ -1,8 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
-import { Avatar } from '../../components/ui/Avatar';
+import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Button } from '../../components/ui/Button';
 import { Chip, ChipRow } from '../../components/ui/Chip';
 import { Screen } from '../../components/ui/Screen';
@@ -52,7 +51,7 @@ function formatMb(bytes: number): string {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
-function resolveStudioTab(raw?: string): StudioTab {
+export function resolveStudioTab(raw?: string): StudioTab {
   if (raw === 'support' || raw === 'tickets' || raw === 'bugs') return 'support';
   if (raw === 'creators') return 'creators';
   if (raw === 'reports') return 'reports';
@@ -72,6 +71,7 @@ export default function ModerationStudioScreen() {
       setTab(resolveStudioTab(params.tab));
     }
   }, [params.tab]);
+
   const [data, setData] = useState<StaffOverviewPayload | null>(null);
   const [tickets, setTickets] = useState<SupportTicketRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,7 +80,6 @@ export default function ModerationStudioScreen() {
   const [quotaMb, setQuotaMb] = useState(2048);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // CEO Megaphone state
   const [bcTitle, setBcTitle] = useState('');
   const [bcBody, setBcBody] = useState('');
   const [bcPath, setBcPath] = useState('/events');
@@ -269,11 +268,11 @@ export default function ModerationStudioScreen() {
           title="Admin & CEO Studio"
           right={
             <Button
-              label="Report Bug"
+              label="Full Console"
               variant="ghost"
               size="sm"
-              icon="bug-outline"
-              onPress={() => router.push('/settings/bug-report')}
+              icon="grid-outline"
+              onPress={() => router.push('/admin')}
             />
           }
         />
@@ -313,7 +312,6 @@ export default function ModerationStudioScreen() {
           refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.accent} />}
           contentContainerStyle={styles.content}
         >
-          {/* Compact Quick-Switch Strip — every Admin tool visible & 1-tap reachable on mobile */}
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
             <Chip
               label={`Bugs · ${openTickets.length}`}
@@ -344,11 +342,10 @@ export default function ModerationStudioScreen() {
               onPress={() => setTab('communities')}
             />
             <Chip
-              label="Megaphone"
-              icon="megaphone-outline"
+              label="Admin Console"
+              icon="stats-chart-outline"
               size="sm"
-              selected={tab === 'broadcast'}
-              onPress={() => setTab('broadcast')}
+              onPress={() => router.push('/admin')}
             />
           </View>
 
@@ -365,13 +362,13 @@ export default function ModerationStudioScreen() {
                 </Text>
                 <TextField
                   label="Push Headline"
-                  placeholder="e.g. 🔴 LIVE NOW: Doctor X Finale Watch Party!"
+                  placeholder="e.g. Hallyu Founding Ten Launch Opens at 9:00 PM!"
                   value={bcTitle}
                   onChangeText={setBcTitle}
                 />
                 <TextField
                   label="Message Body"
-                  placeholder="Jump into the synchronized room now & vote before the twist drops..."
+                  placeholder="Jump into the synchronized room now & claim your place..."
                   multiline
                   value={bcBody}
                   onChangeText={setBcBody}
@@ -401,15 +398,15 @@ export default function ModerationStudioScreen() {
               </View>
 
               <View style={styles.card}>
-                <Text variant="titleSmall">Host a Scheduled Watch Party</Text>
+                <Text variant="titleSmall">Commercial Admin Platform</Text>
                 <Text variant="caption" tone="secondary">
-                  Create countdown Watch Parties & Episode Prediction Polls on the Live Events Hub.
+                  Manage Launch & Founding Ten (#1–#10), Blue/Red Verification, Member Directory, Badges & Audit Ledger.
                 </Text>
                 <Button
-                  label="Open Live Events Hub"
+                  label="Open Commercial Admin Console"
                   variant="secondary"
-                  icon="flame-outline"
-                  onPress={() => router.push('/events')}
+                  icon="stats-chart-outline"
+                  onPress={() => router.push('/admin')}
                   block
                 />
               </View>
@@ -500,134 +497,90 @@ export default function ModerationStudioScreen() {
                   ))}
                 </ChipRow>
                 <Button
-                  label="Grant Video Creator Access"
-                  icon="videocam-outline"
-                  onPress={handleGrantByHandle}
+                  label="Approve Creator"
+                  icon="videocam"
                   loading={busyId === 'grant-handle'}
                   disabled={!grantHandle.trim()}
+                  onPress={() => void handleGrantByHandle()}
                   block
                 />
               </View>
 
-              <Text variant="overline" tone="secondary" style={styles.sectionHeader}>
-                PENDING ACCESS REQUESTS · {pendingRequests.length}
-              </Text>
-              {pendingRequests.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Ionicons name="checkmark-done-circle-outline" size={24} color={colors.success} />
-                  <Text variant="bodySmall" tone="secondary">
-                    No pending video access requests right now.
+              {pendingRequests.map((req) => (
+                <View key={req.id} style={styles.card}>
+                  <Text variant="titleSmall">
+                    {req.displayName} (@{req.handle})
                   </Text>
-                </View>
-              ) : (
-                pendingRequests.map((req) => (
-                  <View key={req.id} style={styles.card}>
-                    <Pressable
-                      onPress={() => router.push(`/user/${req.handle}`)}
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: space.x3 }}
-                    >
-                      <Avatar uri={req.avatarUrl} name={req.displayName} size="md" />
-                      <View style={{ flex: 1 }}>
-                        <Text variant="label">{req.displayName}</Text>
-                        <Text variant="caption" tone="secondary">
-                          @{req.handle} · {timeAgo(req.createdAt)}
-                        </Text>
-                      </View>
-                    </Pressable>
-                    {req.note ? (
-                      <Text variant="bodySmall" tone="secondary">
-                        “{req.note}”
-                      </Text>
-                    ) : null}
-                    <View style={{ flexDirection: 'row', gap: space.x2 }}>
-                      <Button
-                        label="Approve"
-                        size="sm"
-                        icon="checkmark"
-                        onPress={() => handleReviewRequest(req.id, req.handle, true)}
-                        loading={busyId === req.id}
-                        style={{ flex: 1 }}
-                      />
-                      <Button
-                        label="Decline"
-                        variant="secondary"
-                        size="sm"
-                        onPress={() => handleReviewRequest(req.id, req.handle, false)}
-                        disabled={busyId === req.id}
-                        style={{ flex: 1 }}
-                      />
-                    </View>
-                  </View>
-                ))
-              )}
-
-              <Text variant="overline" tone="secondary" style={styles.sectionHeader}>
-                ACTIVE VIDEO CREATORS · {data?.creators.length ?? 0}
-              </Text>
-              {(data?.creators ?? []).map((creator) => (
-                <Pressable
-                  key={creator.userId}
-                  onPress={() => router.push(`/user/${creator.handle}`)}
-                  style={styles.creatorRow}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text variant="label">
-                      {creator.displayName}{' '}
-                      <Text variant="caption" tone="secondary">
-                        @{creator.handle}
-                      </Text>
-                    </Text>
-                    <Text variant="caption" tone="tertiary">
-                      {formatMb(creator.usedThisMonth)} used of {formatMb(creator.budget)} monthly quota
-                    </Text>
-                  </View>
-                  <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-                </Pressable>
-              ))}
-            </>
-          ) : tab === 'reports' ? (
-            (data?.reports.length ?? 0) === 0 ? (
-              <EmptyState
-                icon="shield-checkmark-outline"
-                title="Moderation queue clear"
-                body="Open community reports on posts, comments, or profiles will appear here for review."
-              />
-            ) : (
-              data!.reports.map((rep) => (
-                <View key={rep.id} style={styles.card}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text variant="overline" tone="accent">
-                      {rep.targetType.toUpperCase()} · {rep.reason.toUpperCase()}
-                    </Text>
-                    <Text variant="caption" tone="tertiary">
-                      {timeAgo(rep.createdAt)}
-                    </Text>
-                  </View>
-                  {rep.postBody ? (
-                    <Text variant="bodySmall" numberOfLines={3}>
-                      “{rep.postBody}”
-                    </Text>
-                  ) : null}
-                  {rep.detail ? (
-                    <Text variant="caption" tone="secondary">
-                      Reporter note: {rep.detail}
+                  {req.note ? (
+                    <Text variant="bodySmall" tone="secondary">
+                      {req.note}
                     </Text>
                   ) : null}
                   <View style={{ flexDirection: 'row', gap: space.x2 }}>
                     <Button
-                      label="Hide & Resolve"
+                      label="Approve"
                       size="sm"
-                      icon="eye-off-outline"
-                      onPress={() => handleReportDecision(rep.id, rep.targetType, rep.targetId, true)}
+                      loading={busyId === req.id}
+                      onPress={() => void handleReviewRequest(req.id, req.handle, true)}
+                      style={{ flex: 1 }}
+                    />
+                    <Button
+                      label="Decline"
+                      variant="secondary"
+                      size="sm"
+                      loading={busyId === req.id}
+                      onPress={() => void handleReviewRequest(req.id, req.handle, false)}
+                      style={{ flex: 1 }}
+                    />
+                  </View>
+                </View>
+              ))}
+
+              {(data?.creators ?? []).map((c) => (
+                <View key={c.userId} style={styles.card}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text variant="titleSmall">
+                      {c.displayName} (@{c.handle})
+                    </Text>
+                    <Text variant="caption" tone="accent" numeric>
+                      {formatMb(c.usedThisMonth)} / {formatMb(c.budget)}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </>
+          ) : tab === 'reports' ? (
+            (data?.reports ?? []).length === 0 ? (
+              <EmptyState
+                icon="shield-checkmark-outline"
+                title="Zero open reports"
+                body="Flagged posts, comments, and member profiles appear here for staff action."
+              />
+            ) : (
+              (data?.reports ?? []).map((rep) => (
+                <View key={rep.id} style={styles.card}>
+                  <Text variant="overline" style={{ color: colors.danger }}>
+                    {rep.targetType.toUpperCase()} · {rep.reason.toUpperCase()}
+                  </Text>
+                  {rep.postBody ? (
+                    <Text variant="bodySmall" tone="secondary">
+                      “{rep.postBody}”
+                    </Text>
+                  ) : null}
+                  <View style={{ flexDirection: 'row', gap: space.x2 }}>
+                    <Button
+                      label="Hide Content"
+                      size="sm"
                       loading={busyId === rep.id}
+                      onPress={() => void handleReportDecision(rep.id, rep.targetType, rep.targetId, true)}
                       style={{ flex: 1 }}
                     />
                     <Button
                       label="Dismiss"
                       variant="secondary"
                       size="sm"
-                      onPress={() => handleReportDecision(rep.id, rep.targetType, rep.targetId, false)}
-                      disabled={busyId === rep.id}
+                      loading={busyId === rep.id}
+                      onPress={() => void handleReportDecision(rep.id, rep.targetType, rep.targetId, false)}
                       style={{ flex: 1 }}
                     />
                   </View>
@@ -635,30 +588,21 @@ export default function ModerationStudioScreen() {
               ))
             )
           ) : (
-            (data?.communities ?? []).map((comm) => (
-              <View key={comm.id} style={styles.card}>
-                <Pressable onPress={() => router.push(`/community/${comm.id}`)}>
-                  <Text variant="titleSmall">{comm.name}</Text>
-                  <Text variant="caption" tone="secondary" style={{ marginTop: 2 }}>
-                    {comm.fandom.toUpperCase()} · {comm.memberCount} members · {comm.postCount} posts ·{' '}
-                    {comm.joinPolicy}
-                  </Text>
-                </Pressable>
-                <View style={{ flexDirection: 'row', gap: space.x2 }}>
+            (data?.communities ?? []).map((c) => (
+              <View key={c.id} style={styles.card}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="titleSmall">{c.name}</Text>
+                    <Text variant="caption" tone="secondary">
+                      {c.memberCount} members · {c.postCount} posts
+                    </Text>
+                  </View>
                   <Button
-                    label="Open Room"
-                    variant="secondary"
+                    label={c.isLocked ? 'Unlock' : 'Lock'}
+                    variant={c.isLocked ? 'primary' : 'secondary'}
                     size="sm"
-                    onPress={() => router.push(`/community/${comm.id}`)}
-                    style={{ flex: 1 }}
-                  />
-                  <Button
-                    label={comm.isLocked ? 'Unlock Room' : 'Lock Room'}
-                    variant="ghost"
-                    size="sm"
-                    icon={comm.isLocked ? 'lock-open-outline' : 'lock-closed-outline'}
-                    onPress={() => handleToggleLock(comm.id, !comm.isLocked)}
-                    loading={busyId === comm.id}
+                    loading={busyId === c.id}
+                    onPress={() => void handleToggleLock(c.id, !c.isLocked)}
                   />
                 </View>
               </View>
@@ -676,34 +620,12 @@ const styles = StyleSheet.create({
     gap: space.x3,
     paddingBottom: space.x8,
   },
-  sectionHeader: {
-    marginTop: space.x3,
-  },
   card: {
-    backgroundColor: colors.surface2,
-    borderRadius: radius.md,
-    padding: space.x4,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderStrong,
-    gap: space.x3,
-  },
-  emptyCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.x3,
     backgroundColor: colors.surface1,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
     padding: space.x4,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
-  },
-  creatorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface1,
-    borderRadius: radius.md,
-    padding: space.x3,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
+    gap: space.x3,
   },
 });

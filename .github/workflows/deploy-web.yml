@@ -209,6 +209,35 @@ jobs:
                 await page.getByText(/Reports/).first().click();
                 await page.waitForTimeout(600);
 
+                // 3. Audit Commercial Admin Console (/admin) at 360x800 Mobile + 1280x800 Desktop & @ceohallyu Recognition Profile
+                await page.goto(`http://127.0.0.1:${port}/admin`, { waitUntil: "domcontentloaded" });
+                await page.getByText("Hallyu Admin Console").first().waitFor({ timeout: 20000 });
+                const adminMobTablist = await page.getByRole("tablist").first().boundingBox();
+                console.log("Commercial Admin 360x800 tablist bounds:", JSON.stringify(adminMobTablist));
+                if (!adminMobTablist || adminMobTablist.height < 40) {
+                  throw new Error("Admin mobile tablist collapsed: " + JSON.stringify(adminMobTablist));
+                }
+
+                await page.setViewportSize({ width: 1280, height: 800 });
+                await page.goto(`http://127.0.0.1:${port}/admin`, { waitUntil: "domcontentloaded" });
+                await page.getByText("COMMAND").first().waitFor({ timeout: 20000 });
+                await page.getByText("Launch & Founding Ten").first().click();
+                await page.waitForTimeout(600);
+                await page.getByText("Verification").first().click();
+                await page.waitForTimeout(600);
+                await page.getByText("Badges & Catalog").first().click();
+                await page.waitForTimeout(600);
+                await page.getByText("Audit Log").first().click();
+                await page.waitForTimeout(600);
+
+                await page.goto(`http://127.0.0.1:${port}/user/ceohallyu`, { waitUntil: "domcontentloaded" });
+                await page.getByText("Architect of Hallyu").first().waitFor({ timeout: 20000 });
+                const sealCount = await page.locator("svg").count();
+                console.log("Desktop 1280x800 @ceohallyu SVG elements rendered:", sealCount);
+                if (sealCount < 2) {
+                  throw new Error("Expected SVG verification seal + badge crest on @ceohallyu profile, found: " + sealCount);
+                }
+
                 if (pageErrors.length > 0) throw new Error("Runtime errors: " + JSON.stringify(pageErrors));
               } finally {
                 await admin.auth.admin.deleteUser(uid).catch(() => {});

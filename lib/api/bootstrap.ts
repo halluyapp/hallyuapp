@@ -3,9 +3,10 @@
  * profile, preferences, follows, saves, reactions, collections, communities, blocks/mutes,
  * alerts, watchlist and notification inbox.
  */
-import type { ReactionKind, User } from '../model';
+import type { ReactionKind, User, UserAward, VerificationTier } from '../model';
 import { ensureBackendSessionToken, supabase } from './client';
 import type { ServerPost } from './feed';
+import { normalizeUserAward } from './recognition';
 
 export interface BootstrapProfile {
   id: string;
@@ -18,6 +19,12 @@ export interface BootstrapProfile {
   favorite_genres: string[];
   favorite_title_ids?: string[];
   verified: boolean;
+  verification_tier?: VerificationTier | string | null;
+  verification_note?: string | null;
+  verified_at?: string | null;
+  is_founder?: boolean;
+  exclude_from_competitions?: boolean;
+  featured_badge_ids?: string[] | null;
   is_private: boolean;
   role?: 'member' | 'moderator' | 'admin';
   follower_count: number;
@@ -46,6 +53,8 @@ export interface ServerCollectionBundle {
     display_name: string;
     avatar_path: string | null;
     verified: boolean;
+    verification_tier?: VerificationTier | string | null;
+    is_founder?: boolean;
     worlds: string[] | null;
   };
   items: {
@@ -59,6 +68,7 @@ export interface ServerCollectionBundle {
 
 export interface BootstrapPayload {
   profile: BootstrapProfile;
+  my_awards?: UserAward[];
   prefs: Record<string, unknown> | null;
   unread_count: number;
   follows: { users: string[]; titles: string[]; people: string[]; collections: string[] };
@@ -97,6 +107,7 @@ interface RawBootstrapResponse {
   alerts?: BootstrapPayload['alerts'];
   notifications?: unknown[];
   my_posts?: ServerPost[];
+  my_awards?: Record<string, unknown>[];
   titles?: unknown[];
 }
 
@@ -132,8 +143,11 @@ export async function fetchBootstrap(): Promise<BootstrapPayload> {
       episodes: true,
     }));
 
+  const myAwards = Array.isArray(raw.my_awards) ? raw.my_awards.map(normalizeUserAward) : [];
+
   return {
     profile,
+    my_awards: myAwards,
     prefs: raw.prefs ?? raw.preferences ?? null,
     unread_count: raw.unread_count ?? raw.unread_notifications ?? 0,
     follows: raw.follows ?? { users: [], titles: [], people: [], collections: [] },
@@ -155,8 +169,14 @@ export async function fetchBootstrap(): Promise<BootstrapPayload> {
 /** Maps the server profile row onto the client `User` shape (partial patch). */
 export function serverProfileToUser(
   p: BootstrapProfile,
-  resolved?: { avatarUrl?: string; favoriteDramaIds?: string[] },
+  resolved?: { avatarUrl?: string; favoriteDramaIds?: string[]; awards?: UserAward[] },
 ): Partial<User> & Pick<User, 'id'> {
+  const tier: VerificationTier =
+    p.verification_tier === 'red' || p.verification_tier === 'blue' || p.verification_tier === 'none'
+      ? p.verification_tier
+      : p.verified
+        ? 'blue'
+        : 'none';
   return {
     id: p.id,
     handle: p.handle,
@@ -170,7 +190,14 @@ export function serverProfileToUser(
     favoriteDramaIds: resolved?.favoriteDramaIds ?? [],
     followers: p.follower_count ?? 0,
     following: p.following_count ?? 0,
-    verified: p.verified,
+    verified: tier !== 'none' || Boolean(p.verified),
+    verificationTier: tier,
+    verificationNote: p.verification_note ?? undefined,
+    verifiedAt: p.verified_at ?? undefined,
+    isFounder: Boolean(p.is_founder),
+    excludeFromCompetitions: Boolean(p.exclude_from_competitions),
+    featuredBadgeIds: Array.isArray(p.featured_badge_ids) ? p.featured_badge_ids : [],
+    ...(resolved?.awards ? { awards: resolved.awards } : {}),
     isPrivate: p.is_private,
     role: p.role ?? 'member',
     joinedAt: p.created_at,

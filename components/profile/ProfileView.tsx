@@ -28,6 +28,8 @@ import { Sheet, SheetRow } from '../ui/Sheet';
 import { EmptyState } from '../ui/States';
 import { Text } from '../ui/Text';
 import { useToast } from '../ui/Toast';
+import { AwardsShelf } from '../recognition/AwardsShelf';
+import { VerificationSeal } from '../recognition/VerificationSeal';
 
 type Tab = 'posts' | 'shorts' | 'reviews' | 'collections';
 
@@ -153,11 +155,19 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
           <Avatar uri={user.avatarUrl} avatarPath={user.avatarPath} name={user.displayName} size={sizes.avatar.xl} />
         </View>
         <View style={{ flex: 1, paddingTop: 28 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             <Text variant="titleLarge" numberOfLines={1} style={{ flexShrink: 1 }}>
               {user.displayName}
             </Text>
-            {user.verified ? <Ionicons name="checkmark-circle" size={18} color={colors.accentText} /> : null}
+            <VerificationSeal
+              tier={user.verificationTier}
+              verified={user.verified}
+              size={19}
+              showPill
+              interactive
+              note={user.verificationNote}
+              handle={user.handle}
+            />
             {user.isPrivate ? <Ionicons name="lock-closed" size={14} color={colors.textTertiary} /> : null}
           </View>
           <Text variant="bodySmall" tone="secondary">
@@ -217,7 +227,11 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
         {isMe ? (
           <>
             <Button label="Edit profile" variant="secondary" size="sm" icon="create-outline" onPress={() => router.push('/edit-profile')} />
-            <Button label="Messages" variant="secondary" size="sm" icon="chatbubble-ellipses-outline" onPress={() => router.push('/messages')} />
+            {user.role === 'admin' || user.role === 'moderator' ? (
+              <Button label="Admin" variant="primary" size="sm" icon="shield-half-outline" onPress={() => router.push('/admin')} />
+            ) : (
+              <Button label="Messages" variant="secondary" size="sm" icon="chatbubble-ellipses-outline" onPress={() => router.push('/messages')} />
+            )}
             <Button label="Share card" variant="secondary" size="sm" icon="share-social-outline" onPress={share} />
           </>
         ) : blocked ? (
@@ -249,6 +263,9 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
 
       {!isPrivate && !blocked ? (
         <>
+          {/* Member Recognition & Pinned Badges Showcase */}
+          <AwardsShelf user={user} isMe={isMe} />
+
           {/* Watch DNA Identity Card */}
           {(isMe || watchDna.segments.length > 0) ? (
             <View style={styles.dnaCard}>

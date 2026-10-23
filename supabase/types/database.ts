@@ -61,6 +61,63 @@ export type Database = {
         };
         Relationships: [];
       };
+      badge_definitions: {
+        Row: {
+          accent_hex: string;
+          category: string;
+          created_at: string;
+          description: string;
+          icon_key: string;
+          id: string;
+          is_active: boolean;
+          is_automatic: boolean;
+          is_numbered: boolean;
+          max_supply: number | null;
+          name: string;
+          rarity: string;
+          sort_order: number;
+          subtitle: string;
+          threshold_kind: string;
+          threshold_value: number;
+        };
+        Insert: {
+          accent_hex?: string;
+          category: string;
+          created_at?: string;
+          description: string;
+          icon_key?: string;
+          id: string;
+          is_active?: boolean;
+          is_automatic?: boolean;
+          is_numbered?: boolean;
+          max_supply?: number | null;
+          name: string;
+          rarity?: string;
+          sort_order?: number;
+          subtitle?: string;
+          threshold_kind?: string;
+          threshold_value?: number;
+        };
+        Update: {
+          accent_hex?: string;
+          category?: string;
+          created_at?: string;
+          description?: string;
+          icon_key?: string;
+          id?: string;
+          is_active?: boolean;
+          is_automatic?: boolean;
+          is_numbered?: boolean;
+          max_supply?: number | null;
+          name?: string;
+          rarity?: string;
+          sort_order?: number;
+          subtitle?: string;
+          threshold_kind?: string;
+          threshold_value?: number;
+        };
+        Relationships: [];
+      };
       ci_build_vault: {
         Row: {
           key: string;
@@ -1693,12 +1750,15 @@ export type Database = {
           created_at: string;
           deleted_at: string | null;
           display_name: string;
+          exclude_from_competitions: boolean;
           favorite_genres: string[];
           favorite_title_ids: string[];
+          featured_badge_ids: string[];
           follower_count: number;
           following_count: number;
           handle: string;
           id: string;
+          is_founder: boolean;
           is_private: boolean;
           onboarding_completed: boolean;
           onboarding_genres: string[];
@@ -1707,7 +1767,11 @@ export type Database = {
           post_count: number;
           role: Database['public']['Enums']['profile_role'];
           updated_at: string;
+          verification_note: string | null;
+          verification_tier: string;
           verified: boolean;
+          verified_at: string | null;
+          verified_by: string | null;
           worlds: string[];
         };
         Insert: {
@@ -1719,12 +1783,15 @@ export type Database = {
           created_at?: string;
           deleted_at?: string | null;
           display_name: string;
+          exclude_from_competitions?: boolean;
           favorite_genres?: string[];
           favorite_title_ids?: string[];
+          featured_badge_ids?: string[];
           follower_count?: number;
           following_count?: number;
           handle: string;
           id: string;
+          is_founder?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -1733,7 +1800,11 @@ export type Database = {
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
           updated_at?: string;
+          verification_note?: string | null;
+          verification_tier?: string;
           verified?: boolean;
+          verified_at?: string | null;
+          verified_by?: string | null;
           worlds?: string[];
         };
         Update: {
@@ -1745,12 +1816,15 @@ export type Database = {
           created_at?: string;
           deleted_at?: string | null;
           display_name?: string;
+          exclude_from_competitions?: boolean;
           favorite_genres?: string[];
           favorite_title_ids?: string[];
+          featured_badge_ids?: string[];
           follower_count?: number;
           following_count?: number;
           handle?: string;
           id?: string;
+          is_founder?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -1759,8 +1833,183 @@ export type Database = {
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
           updated_at?: string;
+          verification_note?: string | null;
+          verification_tier?: string;
           verified?: boolean;
+          verified_at?: string | null;
+          verified_by?: string | null;
           worlds?: string[];
+        };
+        Relationships: [];
+      };
+      recognition_audit_log: {
+        Row: {
+          action: string;
+          actor_id: string | null;
+          badge_id: string | null;
+          created_at: string;
+          domain: string;
+          id: string;
+          new_state: Json;
+          previous_state: Json;
+          reason: string;
+          serial_number: number | null;
+          target_user_id: string | null;
+        };
+        Insert: {
+          action: string;
+          actor_id?: string | null;
+          badge_id?: string | null;
+          created_at?: string;
+          domain: string;
+          id?: string;
+          new_state?: Json;
+          previous_state?: Json;
+          reason: string;
+          serial_number?: number | null;
+          target_user_id?: string | null;
+        };
+        Update: {
+          action?: string;
+          actor_id?: string | null;
+          badge_id?: string | null;
+          created_at?: string;
+          domain?: string;
+          id?: string;
+          new_state?: Json;
+          previous_state?: Json;
+          reason?: string;
+          serial_number?: number | null;
+          target_user_id?: string | null;
+        };
+        Relationships: [];
+      };
+      recognition_config: {
+        Row: {
+          awards_enabled: boolean;
+          day_one_window_hours: number;
+          founding_member_cap: number;
+          founding_member_window_days: number;
+          founding_ten_cap: number;
+          id: number;
+          launch_starts_at: string;
+          updated_at: string;
+          updated_by: string | null;
+        };
+        Insert: {
+          awards_enabled?: boolean;
+          day_one_window_hours?: number;
+          founding_member_cap?: number;
+          founding_member_window_days?: number;
+          founding_ten_cap?: number;
+          id?: number;
+          launch_starts_at?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Update: {
+          awards_enabled?: boolean;
+          day_one_window_hours?: number;
+          founding_member_cap?: number;
+          founding_member_window_days?: number;
+          founding_ten_cap?: number;
+          id?: number;
+          launch_starts_at?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Relationships: [];
+      };
+      user_awards: {
+        Row: {
+          award_note: string | null;
+          awarded_at: string;
+          awarded_by: string | null;
+          badge_id: string;
+          id: string;
+          metadata: Json;
+          revoke_reason: string | null;
+          revoked_at: string | null;
+          revoked_by: string | null;
+          serial_number: number | null;
+          source: string;
+          status: string;
+          user_id: string;
+        };
+        Insert: {
+          award_note?: string | null;
+          awarded_at?: string;
+          awarded_by?: string | null;
+          badge_id: string;
+          id?: string;
+          metadata?: Json;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          serial_number?: number | null;
+          source?: string;
+          status?: string;
+          user_id: string;
+        };
+        Update: {
+          award_note?: string | null;
+          awarded_at?: string;
+          awarded_by?: string | null;
+          badge_id?: string;
+          id?: string;
+          metadata?: Json;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          serial_number?: number | null;
+          source?: string;
+          status?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      verification_requests: {
+        Row: {
+          category: string;
+          created_at: string;
+          evidence_links: string[];
+          id: string;
+          requested_tier: string;
+          review_reason: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          statement: string;
+          status: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          category?: string;
+          created_at?: string;
+          evidence_links?: string[];
+          id?: string;
+          requested_tier?: string;
+          review_reason?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          statement: string;
+          status?: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          category?: string;
+          created_at?: string;
+          evidence_links?: string[];
+          id?: string;
+          requested_tier?: string;
+          review_reason?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          statement?: string;
+          status?: string;
+          updated_at?: string;
+          user_id?: string;
         };
         Relationships: [];
       };
@@ -3324,6 +3573,143 @@ export type Database = {
           p_version_code: number;
           p_version_name: string;
         };
+        Returns: Json;
+      };
+      admin_dashboard_metrics: {
+        Args: Record<PropertyKey, never>;
+        Returns: Json;
+      };
+      admin_grant_badge: {
+        Args: {
+          p_badge_id: string;
+          p_reason: string;
+          p_serial_number?: number | null;
+          p_target_user_id: string;
+        };
+        Returns: Json;
+      };
+      admin_list_audit_log: {
+        Args: {
+          p_domain?: string | null;
+          p_limit?: number;
+        };
+        Returns: Json;
+      };
+      admin_list_verification_requests: {
+        Args: {
+          p_limit?: number;
+          p_status?: string;
+        };
+        Returns: Json;
+      };
+      admin_manage_user_account: {
+        Args: {
+          p_account_status?: string | null;
+          p_exclude_from_competitions?: boolean | null;
+          p_reason?: string;
+          p_role?: string | null;
+          p_target_user_id: string;
+        };
+        Returns: Json;
+      };
+      admin_review_verification_request: {
+        Args: {
+          p_decision: string;
+          p_reason: string;
+          p_request_id: string;
+          p_tier: string;
+        };
+        Returns: Json;
+      };
+      admin_revoke_badge: {
+        Args: {
+          p_award_id: string;
+          p_reason: string;
+          p_release_slot?: boolean;
+        };
+        Returns: Json;
+      };
+      admin_search_users: {
+        Args: {
+          p_filter?: string;
+          p_limit?: number;
+          p_offset?: number;
+          p_query?: string;
+        };
+        Returns: Json;
+      };
+      admin_set_verification: {
+        Args: {
+          p_reason: string;
+          p_target_user_id: string;
+          p_tier: string;
+        };
+        Returns: Json;
+      };
+      admin_update_recognition_config: {
+        Args: {
+          p_awards_enabled: boolean;
+          p_day_one_window_hours: number;
+          p_founding_member_cap: number;
+          p_founding_member_window_days: number;
+          p_launch_starts_at: string;
+          p_reason: string;
+        };
+        Returns: Json;
+      };
+      admin_upsert_badge_definition: {
+        Args: {
+          p_accent_hex: string;
+          p_category: string;
+          p_description: string;
+          p_icon_key: string;
+          p_id: string;
+          p_is_active?: boolean;
+          p_is_automatic?: boolean;
+          p_is_numbered?: boolean;
+          p_max_supply?: number | null;
+          p_name: string;
+          p_rarity: string;
+          p_sort_order?: number;
+          p_subtitle: string;
+        };
+        Returns: Json;
+      };
+      evaluate_early_member_awards: {
+        Args: { p_user_id: string };
+        Returns: Json;
+      };
+      evaluate_member_achievements: {
+        Args: { p_user_id: string };
+        Returns: Json;
+      };
+      get_user_recognition: {
+        Args: { p_user_id?: string | null };
+        Returns: Json;
+      };
+      my_verification_status: {
+        Args: Record<PropertyKey, never>;
+        Returns: Json;
+      };
+      profile_awards_json: {
+        Args: { p_user_id: string };
+        Returns: Json;
+      };
+      set_featured_badges: {
+        Args: { p_badge_ids: string[] };
+        Returns: string[];
+      };
+      submit_verification_request: {
+        Args: {
+          p_category?: string;
+          p_evidence_links?: string[];
+          p_requested_tier?: string;
+          p_statement?: string;
+        };
+        Returns: string;
+      };
+      sync_my_recognition: {
+        Args: Record<PropertyKey, never>;
         Returns: Json;
       };
       list_direct_messages: {
