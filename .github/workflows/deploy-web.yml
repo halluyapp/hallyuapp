@@ -42,7 +42,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
@@ -106,14 +106,43 @@ jobs:
           node scripts/ci/enhance-web-html.mjs dist-root
 
       - name: Audit 360x800 mobile viewport routes, Admin Studio bounds & zero runtime errors
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           mkdir -p /tmp/pw-ci && npm --prefix /tmp/pw-ci install --no-save playwright-core >/dev/null
           NODE_PATH="/tmp/pw-ci/node_modules" node -e '
             const http = require("http");
             const fs = require("fs");
             const path = require("path");
+            const crypto = require("crypto");
             const { chromium } = require("playwright-core");
+            const { createClient } = require("./node_modules/@supabase/supabase-js");
             (async () => {
+              const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+                auth: { persistSession: false, autoRefreshToken: false },
+              });
+              const tag = crypto.randomBytes(3).toString("hex");
+              const email = `pw.admin.${tag}@example.invalid`;
+              const password = `PwAudit!${tag}#9a`;
+              const handle = `pw_adm_${tag}`;
+              const created = await admin.auth.admin.createUser({
+                email,
+                password,
+                email_confirm: true,
+                user_metadata: { handle, display_name: "PW Admin" },
+              });
+              if (created.error) throw new Error(created.error.message);
+              const uid = created.data.user.id;
+              await admin.from("profiles").update({
+                handle,
+                display_name: "PW Admin",
+                role: "admin",
+                onboarding_done: true,
+                account_status: "active",
+              }).eq("id", uid);
+
               const root = path.resolve("dist-root");
               const mime = { ".html": "text/html", ".js": "application/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".ttf": "font/ttf", ".otf": "font/otf", ".ico": "image/x-icon" };
               const srv = http.createServer((req, res) => {
@@ -130,31 +159,53 @@ jobs:
               await new Promise((r) => srv.listen(0, "127.0.0.1", r));
               const port = srv.address().port;
               const browser = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox"] });
-              const context = await browser.newContext({ viewport: { width: 360, height: 800 } });
-              const page = await context.newPage();
-              const pageErrors = [];
-              page.on("pageerror", (e) => pageErrors.push(e.message));
-              for (const route of ["/", "/notifications", "/settings/updates", "/settings/bug-report", "/events", "/watch-party/00000000-0000-4000-8000-000000000000"]) {
-                await page.goto(`http://127.0.0.1:${port}${route}`, { waitUntil: "domcontentloaded" });
-                await page.waitForTimeout(900);
-                console.log("360x800 OK:", route, "->", page.url());
+              try {
+                const context = await browser.newContext({ viewport: { width: 360, height: 800 } });
+                const page = await context.newPage();
+                const pageErrors = [];
+                page.on("pageerror", (e) => pageErrors.push(e.message));
+
+                // 1. Audit public landing page & sign-in as real ephemeral admin on 360x800 mobile screen
+                await page.goto(`http://127.0.0.1:${port}/sign-in`, { waitUntil: "domcontentloaded" });
+                await page.waitForTimeout(1500);
+                const inputs = page.locator("input");
+                await inputs.nth(0).fill(email);
+                await inputs.nth(1).fill(password);
+                await inputs.nth(1).press("Enter");
+                await page.waitForTimeout(3500);
+
+                // 2. Audit core routes on 360x800 mobile viewport as authenticated user
+                for (const route of ["/notifications", "/settings/updates", "/settings/bug-report", "/events", "/watch-party/00000000-0000-4000-8000-000000000000"]) {
+                  await page.goto(`http://127.0.0.1:${port}${route}`, { waitUntil: "domcontentloaded" });
+                  await page.waitForTimeout(1400);
+                  console.log("360x800 OK:", route, "->", page.url());
+                }
+
+                // 3. Audit Admin Studio on 360x800: verify tablist height >= 40px, zero overlap with Megaphone card, and real clicks across all tabs!
+                await page.goto(`http://127.0.0.1:${port}/settings/moderation?tab=broadcast`, { waitUntil: "domcontentloaded" });
+                await page.waitForTimeout(2000);
+                const box = await page.getByRole("tablist").boundingBox();
+                const megaBox = await page.getByText("CEO Global Push Megaphone").boundingBox();
+                console.log("Admin Studio 360x800 tablist bounds:", JSON.stringify(box), "| Megaphone bounds:", JSON.stringify(megaBox));
+                if (!box || box.height < 40) throw new Error("::error::Segmented tablist collapsed: " + JSON.stringify(box));
+                if (megaBox && box.y + box.height > megaBox.y + 2) {
+                  throw new Error("::error::Megaphone overlapped tablist: " + JSON.stringify({ box, megaBox }));
+                }
+                await page.getByText(/Bugs/).first().click();
+                await page.waitForTimeout(600);
+                await page.getByText(/Reports/).first().click();
+                await page.waitForTimeout(600);
+
+                if (pageErrors.length > 0) throw new Error("::error::Runtime errors: " + JSON.stringify(pageErrors));
+              } finally {
+                await admin.auth.admin.deleteUser(uid).catch(() => {});
+                await browser.close();
+                srv.close();
               }
-              await page.evaluate(() => {
-                const raw = localStorage.getItem("hallyu:state:v1");
-                const base = raw ? JSON.parse(raw) : {};
-                base.profile = { ...(base.profile || { id: "u1", worlds: ["kdrama"], followers: 1, following: 1, bio: "", joinedAt: "2026-01-01T00:00:00Z" }), role: "admin", handle: "ceohallyu", displayName: "CEO Hallyu" };
-                base.onboarding = { done: true, step: 5 };
-                localStorage.setItem("hallyu:state:v1", JSON.stringify(base));
-              });
-              await page.goto(`http://127.0.0.1:${port}/settings/moderation?tab=broadcast`, { waitUntil: "domcontentloaded" });
-              await page.waitForTimeout(900);
-              const box = await page.getByRole("tablist").boundingBox();
-              console.log("Admin Studio 360x800 tablist bounds:", JSON.stringify(box));
-              if (!box || box.height < 40) throw new Error("Segmented tablist collapsed: " + JSON.stringify(box));
-              if (pageErrors.length > 0) throw new Error("Runtime errors: " + JSON.stringify(pageErrors));
-              await browser.close();
-              srv.close();
-            })();
+            })().catch((err) => {
+              console.error("::error::" + (err && err.stack ? err.stack : String(err)));
+              process.exit(1);
+            });
           '
 
       - name: Upload root hallyuapp.github.io static bundle artifact
