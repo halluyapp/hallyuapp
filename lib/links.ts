@@ -5,8 +5,8 @@ import { Platform } from 'react-native';
  *
  * Works seamlessly across:
  *   - Native Android APK (`com.hallyu.app`)
- *   - Apple iPhone / iPad Full-Screen Home-Screen Web App (`https://hallyuapp.github.io`)
- *   - Desktop & Mobile Web (`https://hallyuapp.github.io` or any custom domain)
+ *   - Apple iPhone / iPad Full-Screen Home-Screen Web App (`https://halluyapp.github.io/hallyuapp`)
+ *   - Desktop & Mobile Web (`https://halluyapp.github.io/hallyuapp` or `https://hallyuapp.github.io`)
  *
  * Note: Only public, non-secret constants live here. All server signing and push keys stay
  * strictly inside server vaults and CI secrets — never in client source.
@@ -15,7 +15,7 @@ import { Platform } from 'react-native';
 export const SUPPORT_EMAIL = 'fixhallyu@gmail.com';
 export const ADMIN_CONTACT_EMAIL = 'jgdevv10@gmail.com';
 
-export const DEFAULT_WEB_BASE_URL = 'https://hallyuapp.github.io';
+export const DEFAULT_WEB_BASE_URL = 'https://halluyapp.github.io/hallyuapp';
 export const SUPABASE_PUBLIC_STORAGE_BASE =
   'https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases';
 

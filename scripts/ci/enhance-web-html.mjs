@@ -13,8 +13,9 @@ const distDir = path.resolve(process.argv[2] || 'dist');
 const indexPath = path.join(distDir, 'index.html');
 const basePath = (process.env.EXPO_PUBLIC_BASE_PATH || '').trim().replace(/\/$/, '');
 const assetPrefix = basePath || '';
+const ghOwner = (process.env.GITHUB_REPOSITORY_OWNER || 'halluyapp').trim().toLowerCase();
 const canonicalSiteUrl = basePath
-  ? `https://macaulay-spec.github.io${basePath}`
+  ? `https://${ghOwner}.github.io${basePath}`
   : 'https://hallyuapp.github.io';
 
 if (!fs.existsSync(indexPath)) {

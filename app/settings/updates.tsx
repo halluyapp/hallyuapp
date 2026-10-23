@@ -96,6 +96,8 @@ export default function AppUpdatesScreen() {
     try {
       const target = info?.latest ?? {
         apkUrl: LATEST_SLIM_APK_CDN_URL,
+        arm32ApkUrl: LATEST_ARM32_APK_CDN_URL,
+        x86_64ApkUrl: LATEST_X86_64_APK_CDN_URL,
         versionCode: installedCode + 10,
         fileSizeBytes: 34_306_457,
       };

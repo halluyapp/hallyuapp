@@ -250,21 +250,23 @@ async function withMedia(posts: Post[], media: Map<string, PostMedia[]>): Promis
     }
   }
   if (!wanted.size) return posts;
-  let urls: Map<string, string>;
+  let urls = new Map<string, string>();
   try {
     urls = await signedUrls([...wanted]);
   } catch {
-    return posts;
+    // Transient signing outage: keep `storagePath` entries intact on each post so components can
+    // re-sign on mount or user retry instead of permanently dropping media from the post.
+    urls = new Map();
   }
   return posts.map((post) => {
     const rows = media.get(post.id);
     if (!rows?.length) return post;
     const imageRows = rows.filter((m) => m.kind === 'image');
-    const images = imageRows.map((m) => urls.get(m.storagePath)).filter((u): u is string => Boolean(u));
     const imagePaths = imageRows.map((m) => m.storagePath);
+    const images = imageRows.map((m) => urls.get(m.storagePath) ?? m.storagePath);
     const clip = rows.find((m) => m.kind === 'video');
-    const videoUrl = clip ? urls.get(clip.storagePath) : undefined;
-    if (clip && videoUrl) {
+    if (clip) {
+      const videoUrl = urls.get(clip.storagePath) ?? clip.storagePath;
       const poster = clip.posterPath ? urls.get(clip.posterPath) : undefined;
       return {
         ...post,

@@ -29,6 +29,21 @@ export function Avatar({ uri, avatarPath, name, size = 'md', ring, style }: Avat
     setLiveUri(resolvedInput);
     setRetried(false);
     setFailed(false);
+    if (!resolvedInput && avatarPath) {
+      let alive = true;
+      void refreshSignedUrl(avatarPath).then((fresh) => {
+        if (!alive) return;
+        if (fresh) {
+          setLiveUri(fresh);
+          setFailed(false);
+        } else {
+          setFailed(true);
+        }
+      });
+      return () => {
+        alive = false;
+      };
+    }
   }, [resolvedInput, avatarPath]);
 
   const handleError = () => {

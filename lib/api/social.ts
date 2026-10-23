@@ -226,21 +226,67 @@ export async function insertPost(post: Post, authorId: string, world?: string | 
         p_options: cleanOptions,
         p_hours: 168,
       });
-      if (pollError) fail('poll insert', pollError.message);
+      if (pollError) {
+        await client.from('posts').delete().eq('id', post.id).then(() => undefined, () => undefined);
+        fail('poll insert', pollError.message);
+      }
     }
   }
 }
 
-/** Edit by its author. Only the fields the compose surface can change, plus `edited_at`. */
-export async function updatePost(id: string, patch: Partial<Post>): Promise<void> {
+/**
+ * Removes an incomplete post row created during an aborted publish attempt before media or poll
+ * verification succeeded. RLS (`posts_delete_own`) strictly confines deletion to `author_id = auth.uid()`.
+ */
+export async function cleanupUnpublishedPost(postId: string): Promise<void> {
+  if (!isUuid(postId)) return;
+  const client = await dbSession();
+  const { error } = await client.from('posts').delete().eq('id', postId);
+  if (error) fail('post rollback', error.message);
+}
+
+/** Edit by its author: persists every mutable composer field cleanly and verifies row update. */
+export async function updatePost(
+  id: string,
+  patch: Partial<Post>,
+  world?: string | null,
+): Promise<void> {
   const client = await dbSession();
   const row: Record<string, unknown> = { edited_at: new Date().toISOString() };
-  if (patch.body !== undefined) row.body = patch.body;
-  if (patch.title !== undefined) row.title = patch.title;
-  if (patch.spoiler !== undefined) row.spoiler = patch.spoiler;
-  if (patch.verdict !== undefined) row.verdict = patch.verdict;
-  const { error } = await client.from('posts').update(row).eq('id', id);
-  if (error) fail('post update', error.message);
+  if ('body' in patch && patch.body !== undefined) row.body = patch.body;
+  if ('title' in patch) row.title = patch.title?.trim() ? patch.title.trim() : null;
+  if ('kind' in patch) row.kind = patch.kind ?? null;
+  if ('rating' in patch) row.rating = typeof patch.rating === 'number' ? patch.rating : null;
+  if ('verdict' in patch) row.verdict = patch.verdict?.trim() ? patch.verdict.trim() : null;
+  if ('spoiler' in patch && patch.spoiler !== undefined) row.spoiler = patch.spoiler;
+  if ('hashtags' in patch && Array.isArray(patch.hashtags)) row.hashtags = patch.hashtags;
+  if ('mentions' in patch && Array.isArray(patch.mentions)) {
+    row.mentions = patch.mentions.filter((m): m is string => isUuid(m));
+  }
+  if ('context' in patch && patch.context) {
+    const [primaryUuid, secondaryUuid] = await Promise.all([
+      patch.context.dramaId ? resolveTitleUuid(patch.context.dramaId) : Promise.resolve(null),
+      patch.context.secondaryDramaId
+        ? resolveTitleUuid(patch.context.secondaryDramaId)
+        : Promise.resolve(null),
+    ]);
+    row.title_id = primaryUuid;
+    row.secondary_title_id = secondaryUuid;
+    row.season = patch.context.season ?? null;
+    row.episode = patch.context.episode ?? null;
+    if (world !== undefined) {
+      row.world = world;
+    }
+  }
+  const { data, error } = await client
+    .from('posts')
+    .update(row)
+    .eq('id', id)
+    .select('id')
+    .single();
+  if (error || !data) {
+    fail('post update', error?.message ?? 'Post not found or permission denied');
+  }
 }
 
 /** Soft delete: the row stays (comment threads intact), its state becomes `deleted`. */
@@ -400,7 +446,10 @@ export async function updateProfile(userId: string, patch: Partial<User>): Promi
   const row: Record<string, unknown> = {};
   if (patch.displayName !== undefined) row.display_name = patch.displayName;
   if (patch.handle !== undefined) row.handle = patch.handle.trim().toLowerCase().replace(/^@/, '');
-  if (patch.bio !== undefined) row.bio = patch.bio ?? null;
+  if ('bio' in patch) {
+    const cleanBio = typeof patch.bio === 'string' ? patch.bio.trim() : '';
+    row.bio = cleanBio.length > 0 ? cleanBio : null;
+  }
   if (patch.bannerUrl !== undefined) row.banner_url = patch.bannerUrl ?? null;
   if (patch.favoriteGenres !== undefined) row.favorite_genres = patch.favoriteGenres;
   if (patch.isPrivate !== undefined) row.is_private = patch.isPrivate;

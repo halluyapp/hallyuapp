@@ -90,6 +90,16 @@ function FeedVideoBase({ post, width, onOpen, detail }: Props) {
   };
   const play = () => {
     haptic.light();
+    if (failed) {
+      void refreshSignedUrl(video.storagePath ?? videoUri, true).then((fresh) => {
+        if (fresh) {
+          setVideoUri(fresh);
+        }
+        setFailed(false);
+        setManual(true);
+      });
+      return;
+    }
     setFailed(false);
     setManual(true);
   };

@@ -192,7 +192,7 @@ export function mirrorAction(action: Action, prev: AppState, next: AppState): vo
       write(action, prev, 'addPost', social.insertPost(action.post, action.post.authorId ?? me, worldOf(next, action.post.context.dramaId)));
       return;
     case 'editPost':
-      write(action, prev, 'editPost', social.updatePost(action.id, action.patch));
+      write(action, prev, 'editPost', social.updatePost(action.id, action.patch, worldOf(next, action.patch.context?.dramaId)));
       return;
     case 'deletePost':
       write(action, prev, 'deletePost', social.deletePost(action.id));

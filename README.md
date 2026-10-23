@@ -8,14 +8,16 @@
 
 | Platform / Surface | Live URL | Details |
 |---|---|---|
-| **Web App & Premiere Landing Page** | **[https://hallyuapp.github.io](https://hallyuapp.github.io)** | Clean root domain web app, interactive screen previews, smart deep links & iOS installer |
+| **Web App & Premiere Landing Page** | **[https://halluyapp.github.io/hallyuapp/](https://halluyapp.github.io/hallyuapp/)** | Live web app, interactive screen previews, smart deep links & iOS Home-Screen PWA installer |
 | **Android Phone APK — Slim (`arm64-v8a`, Recommended)** | **[Direct Download (`hallyu-arm64.apk` · ~32.7 MB)](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/hallyu-arm64.apk)** | Hosted on public Supabase Global CDN (`app-releases`), signed with Hallyu's permanent 4096-bit RSA release certificate |
-| **Android Universal APK (`arm64-v8a` + `armeabi-v7a` + `x86_64`)** | **[Latest Signed Release (`hallyu.apk`)](https://github.com/hallyuapp/hallyuapp.github.io/releases/latest)** | Multi-architecture build for all Android devices, tablets, Chromebooks & emulators |
-| **Self-Updater Release Manifest** | **[latest/manifest.json](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/manifest.json)** | Live SHA-256 checksums, `versionCode`, release notes & binary URLs consumed by the in-app updater |
-| **iPhone / iPad (iOS 16.4+)** | Open **[https://hallyuapp.github.io](https://hallyuapp.github.io)** in **Safari** → tap **Share** → **Add to Home Screen** | Full-screen standalone black status-bar launch + native Apple Web Push notifications (`VAPID`) |
+| **Android Legacy 32-bit APK (`armeabi-v7a`)** | **[Direct Download (`hallyu-armeabi-v7a.apk` · ~27.8 MB)](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/hallyu-armeabi-v7a.apk)** | Signed ARMv7 split for 32-bit Android phones |
+| **Android Desktop / Emulator APK (`x86_64`)** | **[Direct Download (`hallyu-x86_64.apk` · ~34.0 MB)](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/hallyu-x86_64.apk)** | Signed x86_64 split for Chromebooks, Google Play Games PC & Android emulators |
+| **Android Universal Release Archive** | **[Latest GitHub Releases (`hallyu.apk`)](https://github.com/halluyapp/hallyuapp/releases/latest)** | Full multi-architecture release archive |
+| **Self-Updater Release Manifest** | **[latest/manifest.json](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/manifest.json)** | Per-ABI URLs, SHA-256 checksums, `versionCode`, release notes & sizes consumed by the in-app updater |
+| **iPhone / iPad (iOS 16.4+)** | Open **[https://halluyapp.github.io/hallyuapp/](https://halluyapp.github.io/hallyuapp/)** in **Safari** → tap **Share** → **Add to Home Screen** | Full-screen standalone black status-bar launch + native Apple Web Push notifications (`VAPID`) |
 | **Official Support & Inquiries** | **`fixhallyu@gmail.com`** | In-app bug reports & show requests route directly to the `@ceohallyu` Admin Studio |
 
-> **Architecture note (Private Codebase + Public `hallyuapp.github.io`):** `.github/workflows/deploy-web.yml` compiles the clean root-path production web & PWA bundle (`EXPO_PUBLIC_BASE_PATH=""`) and deploys only the compiled static output directly to **`hallyuapp/hallyuapp.github.io`** (plus mirrors `hallyu-slim.apk` & `hallyu.apk` releases there and on public Supabase Storage `app-releases`), allowing the source repository (`macaulay-spec/Grok-hallyu`) to be set to **Private** at any time without breaking the website, share links, or self-updates.
+> **Deployment Architecture:** `.github/workflows/deploy-web.yml` compiles the production web & PWA bundle (`EXPO_PUBLIC_BASE_PATH="/hallyuapp"`) to **`https://halluyapp.github.io/hallyuapp/`** (plus builds clean root bundles for custom domains), while `.github/workflows/build-apk.yml` compiles, verifies, emulator-boots, and publishes signed CPU split APKs (`arm64-v8a`, `armeabi-v7a`, `x86_64`) + `latest/manifest.json` directly to public Supabase Storage `app-releases`.
 
 ---
 

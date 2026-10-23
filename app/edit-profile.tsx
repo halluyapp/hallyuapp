@@ -108,7 +108,7 @@ export default function EditProfile() {
         patch: {
           displayName: displayName.trim(),
           handle: handleClean,
-          bio: bio.trim() || undefined,
+          bio: bio.trim(),
           avatarUrl: persistedAvatarUrl,
           avatarPath: persistedAvatarPath,
           bannerUrl,

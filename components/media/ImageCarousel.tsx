@@ -30,14 +30,41 @@ function SlideImage({
   width: number;
   height: number;
 }) {
-  const initialUri = typeof source === 'string' ? normalizeMediaUrl(source) : undefined;
+  const isRawStoragePath = typeof source === 'string' && /^(u|avatars|catalog)\//.test(source);
+  const initialUri =
+    typeof source === 'string' && !isRawStoragePath ? normalizeMediaUrl(source) : undefined;
   const [liveUri, setLiveUri] = useState<string | undefined>(initialUri);
   const [retried, setRetried] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const attemptRefresh = useCallback(
+    (force = false) => {
+      const target = storagePath ?? (typeof source === 'string' ? source : null);
+      if (!target) {
+        setFailed(true);
+        return;
+      }
+      void refreshSignedUrl(target, force).then((fresh) => {
+        if (fresh) {
+          setLiveUri(fresh);
+          setFailed(false);
+        } else {
+          setFailed(true);
+        }
+      });
+    },
+    [storagePath, source],
+  );
 
   useEffect(() => {
     setLiveUri(initialUri);
     setRetried(false);
-  }, [initialUri, storagePath]);
+    setFailed(false);
+    if (!initialUri && (isRawStoragePath || storagePath)) {
+      setRetried(true);
+      attemptRefresh(false);
+    }
+  }, [initialUri, isRawStoragePath, storagePath, attemptRefresh]);
 
   if (typeof source !== 'string') {
     return (
@@ -50,20 +77,46 @@ function SlideImage({
     );
   }
 
+  if (failed || !liveUri) {
+    return (
+      <Pressable
+        onPress={() => {
+          setFailed(false);
+          attemptRefresh(true);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Image couldn't load — tap to retry"
+        style={{
+          width,
+          height,
+          backgroundColor: colors.surface2,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: space.x4,
+        }}
+      >
+        <Text variant="caption" tone="secondary" align="center">
+          {failed ? 'Image couldn’t load · Tap to retry' : 'Loading media…'}
+        </Text>
+      </Pressable>
+    );
+  }
+
   return (
     <Image
-      source={{ uri: liveUri ?? source }}
+      source={{ uri: liveUri }}
       style={{ width, height, backgroundColor: colors.surface2 }}
       contentFit="cover"
       transition={200}
       cachePolicy="memory-disk"
-      recyclingKey={liveUri ?? source}
+      recyclingKey={liveUri}
       onError={() => {
-        if (retried) return;
+        if (retried) {
+          setFailed(true);
+          return;
+        }
         setRetried(true);
-        void refreshSignedUrl(storagePath ?? initialUri ?? source).then((fresh) => {
-          if (fresh) setLiveUri(fresh);
-        });
+        attemptRefresh(false);
       }}
     />
   );

@@ -33,7 +33,10 @@ export default function DeleteAccount() {
       toast.show({ message: 'Account permanently deleted.' });
       router.replace('/');
     } catch (e) {
-      setError((e as AuthError).message ?? 'Something went wrong. Please try again.');
+      setError(
+        (e as AuthError).message ??
+          'Could not confirm deletion with the server. Your account is still active — please try again.',
+      );
     } finally {
       setBusy(false);
     }

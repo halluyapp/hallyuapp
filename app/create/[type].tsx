@@ -5,7 +5,9 @@ import { makePoster } from '../../lib/media';
 import { attachAsset, discardAssets, MediaPipelineError, uploadAsset, uploadPoster, verifyPostMedia } from '../../lib/api/media';
 import type { UploadProgress } from '../../lib/api/media';
 import { fetchPosts } from '../../lib/api/feed';
-import { insertPost } from '../../lib/api/social';
+import { cleanupUnpublishedPost, insertPost, isUuid, updatePost } from '../../lib/api/social';
+import { supabase } from '../../lib/api/client';
+import { runAtomicPostPublishPipeline } from '../../lib/publishPipeline';
 import { adoptLocal, worldOf } from '../../lib/sync';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -190,6 +192,7 @@ export default function Composer() {
   const [stage, setStage] = useState<{ step: 'upload' | 'create' | 'attach' | 'verify'; detail: string; sent?: number; total?: number } | null>(null);
   const bodyRef = useRef<TextInput>(null);
   const draftId = useRef(draft?.id ?? uid('d'));
+  const pendingPostIdRef = useRef<string>(draft?.id && isUuid(draft.id) ? draft.id : uid(''));
 
   const drama = getDrama(dramaId);
   const secondary = getDrama(secondaryId);
@@ -378,13 +381,39 @@ export default function Composer() {
       video: video ? { url: video.uri, duration: video.duration, poster: video.poster, width: video.width, height: video.height } : undefined,
     };
     if (editing) {
-      dispatch({ type: 'editPost', id: editing.id, patch: { ...common, editedAt: new Date().toISOString() } });
+      const editPatch: Partial<Post> = {
+        ...common,
+        editedAt: new Date().toISOString(),
+      };
+      if (supabase && isUuid(editing.id)) {
+        void (async () => {
+          setPosting(true);
+          try {
+            await updatePost(editing.id, editPatch, worldOf(state, context.dramaId));
+            adoptLocal({ type: 'editPost', id: editing.id, patch: editPatch });
+            haptic.success();
+            toast.show({ message: 'Post updated', icon: 'checkmark-circle', tone: 'success' });
+            goBack();
+          } catch (e) {
+            setPosting(false);
+            toast.show({
+              message: `Could not update post — ${(e as Error)?.message ?? 'please try again'}`,
+              tone: 'danger',
+            });
+          }
+        })();
+        return;
+      }
+      dispatch({ type: 'editPost', id: editing.id, patch: editPatch });
       haptic.success();
       toast.show({ message: 'Post updated', icon: 'checkmark-circle', tone: 'success' });
       goBack();
       return;
     }
     const post = newPost(me.id, { type, ...common });
+    if (pendingPostIdRef.current) {
+      post.id = pendingPostIdRef.current;
+    }
     if (type === 'reaction') post.reactions = { ...post.reactions, [reactionKind]: 1 };
     track('post.publish', { type, spoiler, hasDrama: !!dramaId, images: images.length, video: !!video });
 
@@ -403,90 +432,100 @@ export default function Composer() {
   };
 
   /**
-   * The media pipeline, in the order the backend requires it.
+   * Atomic / safely recoverable media pipeline:
+   *   upload bytes → create post row → attach each upload → verify `post_media` → read back post
    *
-   *   reserve path → send bytes → create the server post → attach each upload → read post_media back
-   *
-   * The last step is what makes "posted" honest: `complete_media_upload` returning a media id is
-   * not proof on its own, so the composer re-reads `post_media` and refuses to claim success
-   * unless the server really holds a row for every file it sent. Any failure throws, and this
-   * function's catch turns that into "not posted, here's why, retry" with the draft intact — the
-   * member never keeps a "Posted" toast for media the backend does not have.
+   * If any step fails AFTER `insertPost` succeeds, BOTH the incomplete `posts` row AND all objects
+   * uploaded during this attempt are immediately cleaned up — leaving zero media-less orphan posts
+   * on the server and preserving `pendingPostIdRef` + local draft so retrying never duplicates.
    */
   const publishWithMedia = async (post: Post) => {
-    const uploaded: string[] = [];
     try {
-      const assets: { uploadId: string; posterPath?: string; width?: number | null; height?: number | null; durationMs?: number | null }[] = [];
+      const onProgress = (detail: string) => (p: UploadProgress) =>
+        setStage({ step: 'upload', detail, sent: p.sent, total: p.total });
 
-      const onProgress = (detail: string) => (p: UploadProgress) => setStage({ step: 'upload', detail, sent: p.sent, total: p.total });
+      const serverPost = await runAtomicPostPublishPipeline(
+        {
+          post,
+          userId: me.id,
+          world: worldOf(state, post.context.dramaId),
+          poll: post.poll,
+          imageUris: images,
+          videoInput: video
+            ? {
+                url: video.uri,
+                poster: video.poster,
+                durationSec: video.duration,
+              }
+            : null,
+          onPhase: (phase) => {
+            if (phase === 'insert') setStage({ step: 'create', detail: 'Creating your post' });
+            else if (phase === 'attach') {
+              const totalFiles = images.length + (video ? 1 : 0);
+              setStage({
+                step: 'attach',
+                detail: totalFiles > 1 ? `Attaching ${totalFiles} files` : 'Attaching your file',
+              });
+            } else if (phase === 'verify') {
+              setStage({ step: 'verify', detail: 'Confirming with the server' });
+            }
+          },
+        },
+        {
+          uploadImage: async (uidParam, postId, uri, i) => {
+            const detail = images.length > 1 ? `Image ${i + 1} of ${images.length}` : 'Your image';
+            setStage({ step: 'upload', detail });
+            const asset = await uploadAsset({
+              userId: uidParam,
+              uri,
+              kind: 'image',
+              unique: `${postId}-${i}`,
+              onProgress: onProgress(detail),
+            });
+            return {
+              uploadId: asset.uploadId,
+              storagePath: asset.storagePath,
+              width: asset.width ?? 1080,
+              height: asset.height ?? 1350,
+            };
+          },
+          uploadVideo: async (uidParam, postId, uri, durationMs) => {
+            setStage({ step: 'upload', detail: 'Your video' });
+            const asset = await uploadAsset({
+              userId: uidParam,
+              uri,
+              kind: 'video',
+              unique: postId,
+              onProgress: onProgress('Your video'),
+            });
+            return {
+              uploadId: asset.uploadId,
+              storagePath: asset.storagePath,
+              width: video?.width ?? null,
+              height: video?.height ?? null,
+              durationMs,
+            };
+          },
+          uploadPoster: async (uidParam, postId, posterUri) => {
+            setStage({ step: 'upload', detail: 'Your video’s cover frame' });
+            return uploadPoster({ userId: uidParam, posterUri, unique: postId });
+          },
+          insertPost: (p, uidParam, w) => insertPost(p, uidParam, w),
+          attachAsset: (opts) => attachAsset(opts),
+          verifyPostMedia: (postId, expected) => verifyPostMedia(postId, expected),
+          fetchPosts: (ids) => fetchPosts(ids),
+          cleanupUnpublishedPost: (postId) => cleanupUnpublishedPost(postId),
+          discardAssets: (paths) => discardAssets(paths),
+        },
+      );
 
-      for (const [i, uri] of images.entries()) {
-        const detail = images.length > 1 ? `Image ${i + 1} of ${images.length}` : 'Your image';
-        setStage({ step: 'upload', detail });
-        const asset = await uploadAsset({ userId: me.id, uri, kind: 'image', unique: `${post.id}-${i}`, onProgress: onProgress(detail) });
-        uploaded.push(asset.storagePath);
-        assets.push({ uploadId: asset.uploadId, width: asset.width ?? null, height: asset.height ?? null });
-      }
-
-      if (video) {
-        // The poster is its own object; `complete_media_upload` records its path on the video row.
-        setStage({ step: 'upload', detail: 'Your video’s cover frame' });
-        const posterPath = video.poster
-          ? await uploadPoster({ userId: me.id, posterUri: video.poster, unique: post.id }).catch(() => undefined)
-          : undefined;
-        if (posterPath) uploaded.push(posterPath);
-        setStage({ step: 'upload', detail: 'Your video' });
-        const asset = await uploadAsset({ userId: me.id, uri: video.uri, kind: 'video', unique: post.id, onProgress: onProgress('Your video') });
-        asset.posterPath = posterPath;
-        uploaded.push(asset.storagePath);
-        assets.push({
-          uploadId: asset.uploadId,
-          posterPath,
-          width: video.width ?? null,
-          height: video.height ?? null,
-          durationMs: Math.round(video.duration * 1000),
-        });
-      }
-
-      // The post row must exist before media can be attached to it. The client id IS the server
-      // id (social.insertPost inserts it explicitly), so the local post and the server post are
-      // the same row — which is what lets the media be attached before anything is cached.
-      setStage({ step: 'create', detail: 'Creating your post' });
-      await insertPost(post, me.id, worldOf(state, post.context.dramaId));
-
-      setStage({ step: 'attach', detail: assets.length > 1 ? `Attaching ${assets.length} files` : 'Attaching your file' });
-      let position = 0;
-      for (const asset of assets) {
-        await attachAsset({
-          uploadId: asset.uploadId,
-          postId: post.id,
-          position: position++,
-          width: asset.width,
-          height: asset.height,
-          durationMs: asset.durationMs,
-          posterPath: asset.posterPath ?? null,
-        });
-      }
-
-      setStage({ step: 'verify', detail: 'Confirming with the server' });
-      await verifyPostMedia(post.id, uploaded);
-
-      // Adopt what the server actually stored (including signed media URLs) rather than the local
-      // device URIs, so the cache and the backend agree on what this post contains.
-      const [serverPost] = await fetchPosts([post.id]);
-      if (!serverPost) throw new MediaPipelineError('verify', 'The post could not be read back after publishing, so it is not confirmed saved.');
       adoptLocal({ type: 'addPost', post: serverPost });
-
       track('post.publish.media', { images: images.length, video: !!video });
       if (draft) dispatch({ type: 'deleteDraft', id: draft.id });
       haptic.success();
       setStage(null);
       landOnPost(post.id, video ? (type === 'short' ? 'Short posted' : 'Posted with your video') : 'Posted');
     } catch (e) {
-      // The bytes are not referenced by a post the member can see; take them out of the bucket so
-      // an abandoned upload does not sit there until retention collects it.
-      await discardAssets(uploaded);
-      // Keep everything the member wrote, and let them try again from the same screen.
       saveDraft();
       setPosting(false);
       setStage(null);
@@ -562,7 +601,7 @@ export default function Composer() {
           <Text variant="label">{ep?.episode ? `${drama.seasons.length > 1 ? `S${ep.season} ` : ''}Ep ${ep.episode}` : ep ? `Season ${ep.season}` : 'Episode'}</Text>
         </Pressable>
       ) : null}
-      {type !== 'reaction' ? (
+      {!editing && type !== 'reaction' ? (
         <Pressable
           onPress={() => setSheet('actors')}
           style={[styles.attach, actorIds.length ? styles.attachOn : null]}
@@ -642,7 +681,7 @@ export default function Composer() {
           ) : null}
 
           <View style={styles.authorRow}>
-            <Avatar uri={me.avatarUrl} name={me.displayName} size="md" />
+            <Avatar uri={me.avatarUrl} avatarPath={me.avatarPath} name={me.displayName} size="md" />
             <View>
               <Text variant="label">{me.displayName}</Text>
               <Text variant="caption" tone="secondary">
@@ -1032,7 +1071,7 @@ export default function Composer() {
             {attachRow}
           </View>
           <View pointerEvents={posting ? 'none' : 'auto'} style={[posting ? styles.inert : undefined, { flexDirection: 'row', alignItems: 'center', gap: space.x1 }]}>
-            {type !== 'short' && type !== 'reaction' ? (
+            {!editing && type !== 'short' && type !== 'reaction' ? (
               <Pressable
                 onPress={pickImages}
                 disabled={images.length >= LIMITS.images}
@@ -1043,12 +1082,12 @@ export default function Composer() {
                 <Ionicons name="image-outline" size={22} color={images.length >= LIMITS.images ? colors.textDisabled : colors.textPrimary} />
               </Pressable>
             ) : null}
-            {type === 'post' || type === 'discussion' ? (
+            {!editing && (type === 'post' || type === 'discussion') ? (
               <Pressable onPress={pickVideo} style={styles.tool} accessibilityRole="button" accessibilityLabel={video ? 'Replace video' : 'Add a video'}>
                 <Ionicons name={video ? 'videocam' : 'videocam-outline'} size={22} color={video ? colors.accentText : colors.textPrimary} />
               </Pressable>
             ) : null}
-            {type === 'post' || type === 'discussion' ? (
+            {!editing && (type === 'post' || type === 'discussion') ? (
               <Pressable
                 onPress={() => {
                   haptic.select();
@@ -1060,6 +1099,11 @@ export default function Composer() {
               >
                 <Ionicons name={pollOpen ? 'stats-chart' : 'stats-chart-outline'} size={21} color={pollOpen ? colors.accent : colors.textPrimary} />
               </Pressable>
+            ) : null}
+            {editing ? (
+              <Text variant="caption" tone="tertiary" style={{ paddingHorizontal: space.x2 }}>
+                Media &amp; polls stay fixed once published
+              </Text>
             ) : null}
             <Pressable onPress={() => setBody((b) => `${b}${b.endsWith(' ') || !b ? '' : ' '}#`)} style={styles.tool} accessibilityRole="button" accessibilityLabel="Add hashtag">
               <Text variant="titleSmall">#</Text>

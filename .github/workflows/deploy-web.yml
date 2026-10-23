@@ -57,9 +57,10 @@ jobs:
             ln -s ../../schema-utils/node_modules/ajv node_modules/ajv-keywords/node_modules/ajv
           fi
 
-      - name: Export Live GitHub Pages Bundle (/Grok-hallyu)
+      - name: Export Live GitHub Pages Bundle (/hallyuapp)
         env:
           EXPO_PUBLIC_BASE_PATH: "/${{ github.event.repository.name }}"
+          GITHUB_REPOSITORY_OWNER: "${{ github.repository_owner }}"
         run: |
           set -euo pipefail
           npx expo export --platform web --output-dir dist-pages --clear

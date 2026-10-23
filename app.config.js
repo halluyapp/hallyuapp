@@ -44,7 +44,7 @@ module.exports = ({ config }) => {
     version: appVersion,
     ios: {
       ...config.ios,
-      associatedDomains: ['applinks:hallyuapp.github.io'],
+      associatedDomains: ['applinks:halluyapp.github.io', 'applinks:hallyuapp.github.io'],
     },
     android: {
       ...config.android,
@@ -59,12 +59,12 @@ module.exports = ({ config }) => {
           data: [
             {
               scheme: 'https',
-              host: 'hallyuapp.github.io',
+              host: 'halluyapp.github.io',
+              pathPrefix: '/hallyuapp',
             },
             {
               scheme: 'https',
-              host: 'macaulay-spec.github.io',
-              pathPrefix: '/Grok-hallyu',
+              host: 'hallyuapp.github.io',
             },
           ],
           category: ['BROWSABLE', 'DEFAULT'],

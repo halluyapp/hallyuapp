@@ -211,7 +211,12 @@ function reducer(s: AppState, a: Action): AppState {
     case 'prefs':
       return { ...s, prefs: { ...s.prefs, ...a.patch } };
     case 'profile': {
-      const nextProfile: User = { ...s.profile, ...a.patch };
+      const normalizedPatch: Partial<User> = { ...a.patch };
+      if ('bio' in a.patch) {
+        const cleanBio = typeof a.patch.bio === 'string' ? a.patch.bio.trim() : '';
+        normalizedPatch.bio = cleanBio.length > 0 ? cleanBio : undefined;
+      }
+      const nextProfile: User = { ...s.profile, ...normalizedPatch };
       return {
         ...s,
         profile: nextProfile,

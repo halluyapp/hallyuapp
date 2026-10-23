@@ -248,15 +248,17 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" = "0" ]; then
             echo "OVERALL STATUS: PASS — the live backend behaves as this repository describes it."
-            exit 0
-          fi
-          if [ "$code" = "2" ]; then
+          elif [ "$code" = "2" ]; then
             echo "::error title=Configuration failure::verify-backend.mjs reports NOT CONFIGURED — the mapped secrets did not reach the environment."
             exit 1
+          else
+            echo "::error title=Backend failure::The live suite FAILED (exit $code) — failing checks are listed in the job summary."
+            grep -E "(✗|⊘)" backend-verification.log | head -25 | while IFS= read -r line; do echo "::error title=Check failed::$line"; done
+            exit 1
           fi
-          echo "::error title=Backend failure::The live suite FAILED (exit $code) — failing checks are listed in the job summary."
-          grep -E "(✗|⊘)" backend-verification.log | head -25 | while IFS= read -r line; do echo "::error title=Check failed::$line"; done
-          exit 1
+
+      - name: Run pre-release multi-account privacy, media, DM, follow-request & CDN verification
+        run: node scripts/verify-prerelease-live.mjs | tee -a backend-verification.log
 
       # Why the suite failed, stated in terms the repository can answer: which function the project
       # does not have. Runs even when the suite failed, because a project provisioned from an older

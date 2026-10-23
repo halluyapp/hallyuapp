@@ -432,7 +432,20 @@ export async function fetchPostMedia(postIds: string[]): Promise<Map<string, Pos
 
 /** 7-day TTL so persisted local cache never goes blank between background sessions. */
 const SIGNED_TTL_SECONDS = 60 * 60 * 24 * 7;
+const SIGN_FAILURE_COOLDOWN_MS = 15_000;
 const signedCache = new Map<string, { url: string; expiresAt: number }>();
+const recentSignFailures = new Map<string, number>();
+
+export type SignedUrlBatchRow = {
+  path: string | null;
+  signedUrl?: string | null;
+  signedURL?: string | null;
+};
+
+export function resetMediaSignCacheForTests(): void {
+  signedCache.clear();
+  recentSignFailures.clear();
+}
 
 /**
  * Extracts the bucket-internal object path (`u/<uid>/...`) from an existing signed or relative URL
@@ -451,14 +464,16 @@ export function extractStoragePathFromUrl(url?: string | null): string | null {
 }
 
 /**
- * Storage paths → full HTTPS signed URLs.
- *
- * Uses `row.signedUrl` (the full `https://<project>.supabase.co/storage/v1/object/sign/...` URL)
- * and explicitly normalises relative `/object/sign/...` strings as a belt-and-suspenders guard.
+ * Pure, testable signed-URL resolver with 1 bounded automatic retry on transient failure and zero
+ * public-URL fallback for private media paths.
  */
-export async function signedUrls(paths: string[]): Promise<Map<string, string>> {
+export async function resolveSignedUrlsWithSigner(
+  paths: string[],
+  signer: (wanted: string[]) => Promise<{ data: SignedUrlBatchRow[] | null; error: { message: string } | null }>,
+  retryDelayMs = 200,
+): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  if (!paths.length || !supabase) return out;
+  if (!paths.length) return out;
   const now = Date.now();
   const wanted: string[] = [];
   for (const rawPath of paths) {
@@ -468,35 +483,72 @@ export async function signedUrls(paths: string[]): Promise<Map<string, string>> 
     if (hit && hit.expiresAt > now) out.set(rawPath, hit.url);
     else wanted.push(path);
   }
-  if (wanted.length) {
-    const uniqueWanted = [...new Set(wanted)];
-    const { data, error } = await supabase.storage.from(MEDIA_BUCKET).createSignedUrls(uniqueWanted, SIGNED_TTL_SECONDS);
-    if (error) throw new MediaPipelineError('verify', `Media could not be signed for display. ${error.message}`);
-    const byPath = new Map<string, string>();
-    for (const row of (data ?? []) as { path: string | null; signedUrl?: string | null; signedURL?: string | null }[]) {
-      const fullUrl = normalizeMediaUrl(row.signedUrl ?? row.signedURL ?? null);
-      if (!row.path || !fullUrl) continue;
-      signedCache.set(row.path, { url: fullUrl, expiresAt: now + (SIGNED_TTL_SECONDS - 300) * 1000 });
-      byPath.set(row.path, fullUrl);
+  if (!wanted.length) return out;
+
+  const uniqueWanted = [...new Set(wanted)];
+  let attempt = await signer(uniqueWanted);
+  if (attempt.error) {
+    if (retryDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, retryDelayMs));
     }
-    for (const rawPath of paths) {
-      const path = extractStoragePathFromUrl(rawPath) ?? rawPath;
-      const resolved = byPath.get(path) ?? signedCache.get(path)?.url;
-      if (resolved) out.set(rawPath, resolved);
-    }
+    attempt = await signer(uniqueWanted);
+  }
+  if (attempt.error) {
+    throw new MediaPipelineError('verify', `Media could not be signed for display. ${attempt.error.message}`);
+  }
+
+  const byPath = new Map<string, string>();
+  for (const row of attempt.data ?? []) {
+    const fullUrl = normalizeMediaUrl(row.signedUrl ?? row.signedURL ?? null);
+    if (!row.path || !fullUrl) continue;
+    signedCache.set(row.path, { url: fullUrl, expiresAt: now + (SIGNED_TTL_SECONDS - 300) * 1000 });
+    recentSignFailures.delete(row.path);
+    byPath.set(row.path, fullUrl);
+  }
+  for (const rawPath of paths) {
+    const path = extractStoragePathFromUrl(rawPath) ?? rawPath;
+    const resolved = byPath.get(path) ?? signedCache.get(path)?.url;
+    if (resolved) out.set(rawPath, resolved);
   }
   return out;
 }
 
-/** Invalidates cache and mints a fresh HTTPS signed URL for an expired storage path or signed URL. */
-export async function refreshSignedUrl(pathOrUrl?: string | null): Promise<string | null> {
+/**
+ * Storage paths → full HTTPS signed URLs.
+ */
+export async function signedUrls(paths: string[]): Promise<Map<string, string>> {
+  if (!paths.length || !supabase) return new Map();
+  return resolveSignedUrlsWithSigner(paths, (wanted) =>
+    supabase!.storage.from(MEDIA_BUCKET).createSignedUrls(wanted, SIGNED_TTL_SECONDS),
+  );
+}
+
+/**
+ * Invalidates cache and mints a fresh HTTPS signed URL for an expired or transiently failed storage
+ * path. Enforces a 15s per-path cooldown (unless `force === true`) so broken/unauthorized media
+ * never triggers infinite retry loops.
+ */
+export async function refreshSignedUrl(
+  pathOrUrl?: string | null,
+  force = false,
+): Promise<string | null> {
   const path = extractStoragePathFromUrl(pathOrUrl);
   if (!path || !supabase) return null;
+  const now = Date.now();
+  const lastFail = recentSignFailures.get(path) ?? 0;
+  if (!force && now - lastFail < SIGN_FAILURE_COOLDOWN_MS) {
+    return null;
+  }
   signedCache.delete(path);
   try {
     const map = await signedUrls([path]);
-    return map.get(path) ?? null;
+    const resolved = map.get(path) ?? null;
+    if (!resolved) {
+      recentSignFailures.set(path, Date.now());
+    }
+    return resolved;
   } catch {
+    recentSignFailures.set(path, Date.now());
     return null;
   }
 }
