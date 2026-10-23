@@ -281,8 +281,7 @@ create policy media_read_own
   to authenticated
   using (
     bucket_id = 'media'
-    and (storage.foldername(name))[1] = 'u'
-    and (storage.foldername(name))[2] = auth.uid()::text
+    and public.storage_owner(name) = auth.uid()
   );
 
 create policy media_read_authorized
@@ -292,7 +291,7 @@ create policy media_read_authorized
   using (
     bucket_id = 'media'
     and (
-      (storage.foldername(name))[1] = 'catalog'
+      name like 'catalog/%'
       or exists (
         select 1
         from public.profiles pr
@@ -950,7 +949,8 @@ set search_path = public, pg_temp
 as $$
 declare
   actor uuid := auth.uid();
-  v_deleted_handle text;
+  removed_paths text[] := '{}';
+  removed_count integer := 0;
 begin
   if actor is null then
     raise exception 'authentication required' using errcode = 'insufficient_privilege';
@@ -960,7 +960,33 @@ begin
     raise exception 'account profile not found' using errcode = 'no_data_found';
   end if;
 
-  v_deleted_handle := 'deleted_' || replace(actor::text, '-', '');
+  -- Queue every member-owned Storage object before removing DB metadata rows so nothing outlives the account.
+  select coalesce(array_agg(path), '{}') into removed_paths
+  from (
+    select m.storage_path as path
+    from public.post_media m
+    join public.posts p on p.id = m.post_id
+    where p.author_id = actor
+    union
+    select m.poster_path
+    from public.post_media m
+    join public.posts p on p.id = m.post_id
+    where p.author_id = actor and m.poster_path is not null
+    union
+    select u.storage_path
+    from public.media_uploads u
+    where u.user_id = actor
+    union
+    select u.poster_path
+    from public.media_uploads u
+    where u.user_id = actor and u.poster_path is not null
+    union
+    select avatar_path from public.profiles where id = actor and avatar_path is not null
+    union
+    select name from storage.objects where bucket_id = 'media' and public.storage_owner(name) = actor
+  ) paths;
+
+  removed_count := public.queue_media_removal(removed_paths, 'account_deleted', actor);
 
   delete from public.direct_messages where sender_id = actor or recipient_id = actor;
   delete from public.follow_requests where requester_id = actor or target_id = actor;
@@ -968,18 +994,26 @@ begin
   delete from public.title_ratings where user_id = actor;
   delete from public.post_poll_votes where user_id = actor;
   delete from public.notifications where recipient_id = actor;
+  delete from public.notification_deliveries d
+    where not exists (select 1 from public.notifications n where n.id = d.notification_id);
   delete from public.push_tokens where user_id = actor;
+  delete from public.title_alerts where user_id = actor;
   delete from public.watchlist_items where user_id = actor;
   delete from public.saves where user_id = actor;
   delete from public.reactions where user_id = actor;
-  delete from public.follows where follower_id = actor or target_id = actor;
-  delete from public.title_follows where user_id = actor;
-  delete from public.person_follows where user_id = actor;
+  delete from public.community_members where user_id = actor;
   delete from public.collection_follows where user_id = actor;
+  delete from public.person_follows where user_id = actor;
+  delete from public.title_follows where user_id = actor;
+  delete from public.follows where follower_id = actor or target_id = actor;
   delete from public.blocks where blocker_id = actor or blocked_id = actor;
   delete from public.mutes where user_id = actor or muted_user_id = actor;
-  delete from public.community_members where user_id = actor;
+  delete from public.reports where reporter_id = actor;
+  delete from public.user_preferences where user_id = actor;
   delete from public.collections where owner_id = actor;
+  delete from public.analytics_events where user_id = actor;
+  delete from public.media_uploads where user_id = actor;
+  delete from public.post_shares where user_id = actor;
   delete from public.post_media where post_id in (select id from public.posts where author_id = actor);
 
   update public.comments
@@ -1004,8 +1038,8 @@ begin
 
   update public.profiles
      set account_status = 'deleted',
-         deleted_at = now(),
-         handle = left(v_deleted_handle, 30),
+         deleted_at = coalesce(deleted_at, now()),
+         handle = 'deleted_' || substr(replace(actor::text, '-', ''), 1, 16),
          display_name = 'Deleted member',
          bio = null,
          avatar_path = null,
@@ -1013,6 +1047,7 @@ begin
          is_private = true,
          worlds = '{}',
          favorite_genres = '{}',
+         onboarding_genres = '{}',
          favorite_title_ids = '{}'
    where id = actor;
 
@@ -1020,7 +1055,12 @@ begin
     raise exception 'account deletion failed to update profile' using errcode = 'no_data_found';
   end if;
 
-  return jsonb_build_object('deleted', true, 'user_id', actor);
+  return jsonb_build_object(
+    'deleted', true,
+    'user_id', actor,
+    'media_objects_queued', removed_count,
+    'deleted_at', now()
+  );
 end;
 $$;
 
