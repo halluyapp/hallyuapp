@@ -603,7 +603,15 @@ begin
   if current_user not in ('anon', 'authenticated')
      or auth.role() = 'service_role'
      or public.is_admin() then
-    new.verified := (coalesce(new.verification_tier, 'none') <> 'none');
+    if new.verification_tier is distinct from old.verification_tier then
+      new.verified := (coalesce(new.verification_tier, 'none') <> 'none');
+    elsif new.verified is distinct from old.verified then
+      if coalesce(new.verified, false) and coalesce(new.verification_tier, 'none') = 'none' then
+        new.verification_tier := 'blue';
+      elsif not coalesce(new.verified, false) then
+        new.verification_tier := 'none';
+      end if;
+    end if;
     return new;
   end if;
 

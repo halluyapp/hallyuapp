@@ -221,13 +221,13 @@ jobs:
                 await page.setViewportSize({ width: 1280, height: 800 });
                 await page.goto(`http://127.0.0.1:${port}/admin`, { waitUntil: "domcontentloaded" });
                 await page.getByText("COMMAND").first().waitFor({ timeout: 20000 });
-                await page.getByText("Launch & Founding Ten").first().click();
+                await page.getByText("Launch & Founding 10").first().click();
                 await page.waitForTimeout(600);
-                await page.getByText("Verification").first().click();
+                await page.getByText("Verification Queue").first().click();
                 await page.waitForTimeout(600);
-                await page.getByText("Badges & Catalog").first().click();
+                await page.getByText("Badges & Awards").first().click();
                 await page.waitForTimeout(600);
-                await page.getByText("Audit Log").first().click();
+                await page.getByText("Audit Ledger").first().click();
                 await page.waitForTimeout(600);
 
                 await page.goto(`http://127.0.0.1:${port}/user/ceohallyu`, { waitUntil: "domcontentloaded" });
