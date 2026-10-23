@@ -736,6 +736,11 @@ test('Notifications, Admin Studio, Bug Reports, Watch Party & Profile Stats end-
     nativeIntent.normalizeIncomingNativePath('hallyu://notifications'),
     '/(tabs)/activity',
   );
+  const indexSrc = fs.readFileSync(path.resolve(ROOT, 'app/index.tsx'), 'utf8');
+  assert.ok(
+    indexSrc.includes('usePathname') && indexSrc.includes('index:deep-link'),
+    'app/index.tsx must preserve cold-start deep links & push notification taps instead of overwriting them with /(tabs)',
+  );
   const pushFn = fs.readFileSync(
     path.resolve(ROOT, 'supabase/functions/push-dispatch/index.ts'),
     'utf8',
