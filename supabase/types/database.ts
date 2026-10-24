@@ -16,6 +16,434 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type Database = {
   public: {
     Tables: {
+      book_titles: {
+        Row: {
+          authors: string[];
+          client_key: string | null;
+          cover_url: string | null;
+          created_at: string;
+          external_id: string;
+          first_publish_year: number | null;
+          id: string;
+          isbn13: string | null;
+          owner_id: string | null;
+          page_count: number | null;
+          source: string;
+          title: string;
+        };
+        Insert: {
+          authors?: string[];
+          client_key?: string | null;
+          cover_url?: string | null;
+          created_at?: string;
+          external_id: string;
+          first_publish_year?: number | null;
+          id?: string;
+          isbn13?: string | null;
+          owner_id?: string | null;
+          page_count?: number | null;
+          source?: string;
+          title: string;
+        };
+        Update: {
+          authors?: string[];
+          client_key?: string | null;
+          cover_url?: string | null;
+          created_at?: string;
+          external_id?: string;
+          first_publish_year?: number | null;
+          id?: string;
+          isbn13?: string | null;
+          owner_id?: string | null;
+          page_count?: number | null;
+          source?: string;
+          title?: string;
+        };
+        Relationships: [];
+      };
+      shelf_items: {
+        Row: {
+          added_at: string;
+          book_id: string;
+          current_page: number;
+          finished_on: string | null;
+          note: string | null;
+          rating: number | null;
+          shelf: string;
+          started_on: string | null;
+          total_pages_override: number | null;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          added_at?: string;
+          book_id: string;
+          current_page?: number;
+          finished_on?: string | null;
+          note?: string | null;
+          rating?: number | null;
+          shelf?: string;
+          started_on?: string | null;
+          total_pages_override?: number | null;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          added_at?: string;
+          book_id?: string;
+          current_page?: number;
+          finished_on?: string | null;
+          note?: string | null;
+          rating?: number | null;
+          shelf?: string;
+          started_on?: string | null;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      reading_logs: {
+        Row: {
+          book_id: string;
+          client_key: string | null;
+          created_at: string;
+          id: string;
+          pages: number;
+          read_on: string;
+          user_id: string;
+        };
+        Insert: {
+          book_id: string;
+          client_key?: string | null;
+          created_at?: string;
+          id?: string;
+          pages: number;
+          read_on: string;
+          user_id: string;
+        };
+        Update: {
+          book_id?: string;
+          client_key?: string | null;
+          created_at?: string;
+          id?: string;
+          pages?: number;
+          read_on?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      track_entries: {
+        Row: {
+          client_key: string | null;
+          created_at: string;
+          episode: number | null;
+          id: string;
+          is_rewatch: boolean;
+          note: string | null;
+          rating: number | null;
+          season: number | null;
+          source: string;
+          title_id: string;
+          unit: string;
+          user_id: string;
+          visibility: string;
+          watched_at: string;
+          watched_on: string;
+        };
+        Insert: {
+          client_key?: string | null;
+          created_at?: string;
+          episode?: number | null;
+          id?: string;
+          is_rewatch?: boolean;
+          note?: string | null;
+          rating?: number | null;
+          season?: number | null;
+          source?: string;
+          title_id: string;
+          unit?: string;
+          user_id: string;
+          visibility?: string;
+          watched_at?: string;
+          watched_on: string;
+        };
+        Update: {
+          client_key?: string | null;
+          created_at?: string;
+          episode?: number | null;
+          id?: string;
+          is_rewatch?: boolean;
+          note?: string | null;
+          rating?: number | null;
+          season?: number | null;
+          source?: string;
+          title_id?: string;
+          unit?: string;
+          user_id?: string;
+          visibility?: string;
+          watched_at?: string;
+          watched_on?: string;
+        };
+        Relationships: [];
+      };
+      app_releases: {
+        Row: {
+          apk_url: string;
+          file_size_bytes: number | null;
+          git_commit: string | null;
+          id: string;
+          is_mandatory: boolean;
+          min_supported_version: number;
+          published_at: string;
+          release_notes: string;
+          sha256: string | null;
+          universal_apk_url: string | null;
+          version_code: number;
+          version_name: string;
+        };
+        Insert: {
+          apk_url: string;
+          file_size_bytes?: number | null;
+          git_commit?: string | null;
+          id?: string;
+          is_mandatory?: boolean;
+          min_supported_version?: number;
+          published_at?: string;
+          release_notes?: string;
+          sha256?: string | null;
+          universal_apk_url?: string | null;
+          version_code: number;
+          version_name: string;
+        };
+        Update: {
+          apk_url?: string;
+          file_size_bytes?: number | null;
+          git_commit?: string | null;
+          id?: string;
+          is_mandatory?: boolean;
+          min_supported_version?: number;
+          published_at?: string;
+          release_notes?: string;
+          sha256?: string | null;
+          universal_apk_url?: string | null;
+          version_code?: number;
+          version_name?: string;
+        };
+        Relationships: [];
+      };
+      badge_definitions: {
+        Row: {
+          accent_hex: string;
+          category: string;
+          created_at: string;
+          description: string;
+          icon_key: string;
+          id: string;
+          is_active: boolean;
+          is_automatic: boolean;
+          is_numbered: boolean;
+          max_supply: number | null;
+          name: string;
+          rarity: string;
+          sort_order: number;
+          subtitle: string;
+          threshold_kind: string;
+          threshold_value: number;
+        };
+        Insert: {
+          accent_hex?: string;
+          category: string;
+          created_at?: string;
+          description: string;
+          icon_key?: string;
+          id: string;
+          is_active?: boolean;
+          is_automatic?: boolean;
+          is_numbered?: boolean;
+          max_supply?: number | null;
+          name: string;
+          rarity?: string;
+          sort_order?: number;
+          subtitle?: string;
+          threshold_kind?: string;
+          threshold_value?: number;
+        };
+        Update: {
+          accent_hex?: string;
+          category?: string;
+          created_at?: string;
+          description?: string;
+          icon_key?: string;
+          id?: string;
+          is_active?: boolean;
+          is_automatic?: boolean;
+          is_numbered?: boolean;
+          max_supply?: number | null;
+          name?: string;
+          rarity?: string;
+          sort_order?: number;
+          subtitle?: string;
+          threshold_kind?: string;
+          threshold_value?: number;
+        };
+        Relationships: [];
+      };
+      ci_build_vault: {
+        Row: {
+          key: string;
+          updated_at: string;
+          value: string;
+        };
+        Insert: {
+          key: string;
+          updated_at?: string;
+          value: string;
+        };
+        Update: {
+          key?: string;
+          updated_at?: string;
+          value?: string;
+        };
+        Relationships: [];
+      };
+      hallyu_event_rsvps: {
+        Row: {
+          created_at: string;
+          event_id: string;
+          prediction_choice: number | null;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          event_id: string;
+          prediction_choice?: number | null;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          event_id?: string;
+          prediction_choice?: number | null;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      hallyu_events: {
+        Row: {
+          cover_url: string | null;
+          created_at: string;
+          description: string;
+          ends_at: string;
+          episode: number | null;
+          event_kind: string;
+          host_id: string | null;
+          id: string;
+          is_featured: boolean;
+          prediction_options: Json;
+          prediction_question: string | null;
+          rsvp_count: number;
+          season: number | null;
+          starts_at: string;
+          subtitle: string | null;
+          title: string;
+          title_id: string | null;
+          world: string;
+        };
+        Insert: {
+          cover_url?: string | null;
+          created_at?: string;
+          description?: string;
+          ends_at: string;
+          episode?: number | null;
+          event_kind?: string;
+          host_id?: string | null;
+          id?: string;
+          is_featured?: boolean;
+          prediction_options?: Json;
+          prediction_question?: string | null;
+          rsvp_count?: number;
+          season?: number | null;
+          starts_at: string;
+          subtitle?: string | null;
+          title: string;
+          title_id?: string | null;
+          world?: string;
+        };
+        Update: {
+          cover_url?: string | null;
+          created_at?: string;
+          description?: string;
+          ends_at?: string;
+          episode?: number | null;
+          event_kind?: string;
+          host_id?: string | null;
+          id?: string;
+          is_featured?: boolean;
+          prediction_options?: Json;
+          prediction_question?: string | null;
+          rsvp_count?: number;
+          season?: number | null;
+          starts_at?: string;
+          subtitle?: string | null;
+          title?: string;
+          title_id?: string | null;
+          world?: string;
+        };
+        Relationships: [];
+      };
+      support_tickets: {
+        Row: {
+          app_version: string | null;
+          category: string;
+          created_at: string;
+          description: string;
+          diagnostics: Json;
+          id: string;
+          platform: string | null;
+          reporter_email: string | null;
+          reporter_id: string | null;
+          route_name: string | null;
+          screenshot_url: string | null;
+          staff_note: string | null;
+          status: string;
+          subject: string;
+          updated_at: string;
+        };
+        Insert: {
+          app_version?: string | null;
+          category?: string;
+          created_at?: string;
+          description: string;
+          diagnostics?: Json;
+          id?: string;
+          platform?: string | null;
+          reporter_email?: string | null;
+          reporter_id?: string | null;
+          route_name?: string | null;
+          screenshot_url?: string | null;
+          staff_note?: string | null;
+          status?: string;
+          subject: string;
+          updated_at?: string;
+        };
+        Update: {
+          app_version?: string | null;
+          category?: string;
+          created_at?: string;
+          description?: string;
+          diagnostics?: Json;
+          id?: string;
+          platform?: string | null;
+          reporter_email?: string | null;
+          reporter_id?: string | null;
+          route_name?: string | null;
+          screenshot_url?: string | null;
+          staff_note?: string | null;
+          status?: string;
+          subject?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       catalog_provider_state: {
         Row: {
           consecutive_failures: number;
@@ -1123,6 +1551,48 @@ export type Database = {
           },
         ];
       };
+      follow_requests: {
+        Row: {
+          created_at: string;
+          decided_at: string | null;
+          id: string;
+          requester_id: string;
+          status: string;
+          target_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          decided_at?: string | null;
+          id?: string;
+          requester_id: string;
+          status?: string;
+          target_id: string;
+        };
+        Update: {
+          created_at?: string;
+          decided_at?: string | null;
+          id?: string;
+          requester_id?: string;
+          status?: string;
+          target_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'follow_requests_requester_id_fkey';
+            columns: ['requester_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'follow_requests_target_id_fkey';
+            columns: ['target_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       post_media: {
         Row: {
           created_at: string;
@@ -1317,20 +1787,148 @@ export type Database = {
           },
         ];
       };
+      direct_messages: {
+        Row: {
+          body: string;
+          created_at: string;
+          id: string;
+          read_at: string | null;
+          recipient_id: string;
+          sender_id: string;
+          shared_drama_id: string | null;
+          shared_post_id: string | null;
+        };
+        Insert: {
+          body: string;
+          created_at?: string;
+          id?: string;
+          read_at?: string | null;
+          recipient_id: string;
+          sender_id: string;
+          shared_drama_id?: string | null;
+          shared_post_id?: string | null;
+        };
+        Update: {
+          body?: string;
+          created_at?: string;
+          id?: string;
+          read_at?: string | null;
+          recipient_id?: string;
+          sender_id?: string;
+          shared_drama_id?: string | null;
+          shared_post_id?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'direct_messages_sender_id_fkey';
+            columns: ['sender_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'direct_messages_recipient_id_fkey';
+            columns: ['recipient_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'direct_messages_shared_post_id_fkey';
+            columns: ['shared_post_id'];
+            isOneToOne: false;
+            referencedRelation: 'posts';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      post_poll_votes: {
+        Row: {
+          created_at: string;
+          option_index: number;
+          post_id: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          option_index: number;
+          post_id: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          option_index?: number;
+          post_id?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'post_poll_votes_post_id_fkey';
+            columns: ['post_id'];
+            isOneToOne: false;
+            referencedRelation: 'post_polls';
+            referencedColumns: ['post_id'];
+          },
+          {
+            foreignKeyName: 'post_poll_votes_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      post_polls: {
+        Row: {
+          closes_at: string | null;
+          created_at: string;
+          options: string[];
+          post_id: string;
+          question: string;
+        };
+        Insert: {
+          closes_at?: string | null;
+          created_at?: string;
+          options: string[];
+          post_id: string;
+          question: string;
+        };
+        Update: {
+          closes_at?: string | null;
+          created_at?: string;
+          options?: string[];
+          post_id?: string;
+          question?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'post_polls_post_id_fkey';
+            columns: ['post_id'];
+            isOneToOne: true;
+            referencedRelation: 'posts';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       profiles: {
         Row: {
           account_status: Database['public']['Enums']['account_status'];
           avatar_path: string | null;
+          banner_url: string | null;
           bio: string | null;
           comment_count: number;
           created_at: string;
           deleted_at: string | null;
           display_name: string;
+          exclude_from_competitions: boolean;
           favorite_genres: string[];
+          favorite_title_ids: string[];
+          featured_badge_ids: string[];
           follower_count: number;
           following_count: number;
           handle: string;
           id: string;
+          is_founder: boolean;
           is_private: boolean;
           onboarding_completed: boolean;
           onboarding_genres: string[];
@@ -1339,22 +1937,31 @@ export type Database = {
           post_count: number;
           role: Database['public']['Enums']['profile_role'];
           updated_at: string;
+          verification_note: string | null;
+          verification_tier: string;
           verified: boolean;
+          verified_at: string | null;
+          verified_by: string | null;
           worlds: string[];
         };
         Insert: {
           account_status?: Database['public']['Enums']['account_status'];
           avatar_path?: string | null;
+          banner_url?: string | null;
           bio?: string | null;
           comment_count?: number;
           created_at?: string;
           deleted_at?: string | null;
           display_name: string;
+          exclude_from_competitions?: boolean;
           favorite_genres?: string[];
+          favorite_title_ids?: string[];
+          featured_badge_ids?: string[];
           follower_count?: number;
           following_count?: number;
           handle: string;
           id: string;
+          is_founder?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -1363,22 +1970,31 @@ export type Database = {
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
           updated_at?: string;
+          verification_note?: string | null;
+          verification_tier?: string;
           verified?: boolean;
+          verified_at?: string | null;
+          verified_by?: string | null;
           worlds?: string[];
         };
         Update: {
           account_status?: Database['public']['Enums']['account_status'];
           avatar_path?: string | null;
+          banner_url?: string | null;
           bio?: string | null;
           comment_count?: number;
           created_at?: string;
           deleted_at?: string | null;
           display_name?: string;
+          exclude_from_competitions?: boolean;
           favorite_genres?: string[];
+          favorite_title_ids?: string[];
+          featured_badge_ids?: string[];
           follower_count?: number;
           following_count?: number;
           handle?: string;
           id?: string;
+          is_founder?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -1387,8 +2003,183 @@ export type Database = {
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
           updated_at?: string;
+          verification_note?: string | null;
+          verification_tier?: string;
           verified?: boolean;
+          verified_at?: string | null;
+          verified_by?: string | null;
           worlds?: string[];
+        };
+        Relationships: [];
+      };
+      recognition_audit_log: {
+        Row: {
+          action: string;
+          actor_id: string | null;
+          badge_id: string | null;
+          created_at: string;
+          domain: string;
+          id: string;
+          new_state: Json;
+          previous_state: Json;
+          reason: string;
+          serial_number: number | null;
+          target_user_id: string | null;
+        };
+        Insert: {
+          action: string;
+          actor_id?: string | null;
+          badge_id?: string | null;
+          created_at?: string;
+          domain: string;
+          id?: string;
+          new_state?: Json;
+          previous_state?: Json;
+          reason: string;
+          serial_number?: number | null;
+          target_user_id?: string | null;
+        };
+        Update: {
+          action?: string;
+          actor_id?: string | null;
+          badge_id?: string | null;
+          created_at?: string;
+          domain?: string;
+          id?: string;
+          new_state?: Json;
+          previous_state?: Json;
+          reason?: string;
+          serial_number?: number | null;
+          target_user_id?: string | null;
+        };
+        Relationships: [];
+      };
+      recognition_config: {
+        Row: {
+          awards_enabled: boolean;
+          day_one_window_hours: number;
+          founding_member_cap: number;
+          founding_member_window_days: number;
+          founding_ten_cap: number;
+          id: number;
+          launch_starts_at: string;
+          updated_at: string;
+          updated_by: string | null;
+        };
+        Insert: {
+          awards_enabled?: boolean;
+          day_one_window_hours?: number;
+          founding_member_cap?: number;
+          founding_member_window_days?: number;
+          founding_ten_cap?: number;
+          id?: number;
+          launch_starts_at?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Update: {
+          awards_enabled?: boolean;
+          day_one_window_hours?: number;
+          founding_member_cap?: number;
+          founding_member_window_days?: number;
+          founding_ten_cap?: number;
+          id?: number;
+          launch_starts_at?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Relationships: [];
+      };
+      user_awards: {
+        Row: {
+          award_note: string | null;
+          awarded_at: string;
+          awarded_by: string | null;
+          badge_id: string;
+          id: string;
+          metadata: Json;
+          revoke_reason: string | null;
+          revoked_at: string | null;
+          revoked_by: string | null;
+          serial_number: number | null;
+          source: string;
+          status: string;
+          user_id: string;
+        };
+        Insert: {
+          award_note?: string | null;
+          awarded_at?: string;
+          awarded_by?: string | null;
+          badge_id: string;
+          id?: string;
+          metadata?: Json;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          serial_number?: number | null;
+          source?: string;
+          status?: string;
+          user_id: string;
+        };
+        Update: {
+          award_note?: string | null;
+          awarded_at?: string;
+          awarded_by?: string | null;
+          badge_id?: string;
+          id?: string;
+          metadata?: Json;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          serial_number?: number | null;
+          source?: string;
+          status?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      verification_requests: {
+        Row: {
+          category: string;
+          created_at: string;
+          evidence_links: string[];
+          id: string;
+          requested_tier: string;
+          review_reason: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          statement: string;
+          status: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          category?: string;
+          created_at?: string;
+          evidence_links?: string[];
+          id?: string;
+          requested_tier?: string;
+          review_reason?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          statement: string;
+          status?: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          category?: string;
+          created_at?: string;
+          evidence_links?: string[];
+          id?: string;
+          requested_tier?: string;
+          review_reason?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          statement?: string;
+          status?: string;
+          updated_at?: string;
+          user_id?: string;
         };
         Relationships: [];
       };
@@ -1426,10 +2217,12 @@ export type Database = {
           last_seen_at: string;
           locale: string | null;
           platform: Database['public']['Enums']['push_platform'];
+          time_zone: string | null;
           token: string;
           user_id: string;
         };
         Insert: {
+          time_zone?: string | null;
           app_version?: string | null;
           created_at?: string;
           device_name?: string | null;
@@ -1442,6 +2235,7 @@ export type Database = {
           user_id: string;
         };
         Update: {
+          time_zone?: string | null;
           app_version?: string | null;
           created_at?: string;
           device_name?: string | null;
@@ -1952,6 +2746,154 @@ export type Database = {
             foreignKeyName: 'user_preferences_user_id_fkey';
             columns: ['user_id'];
             isOneToOne: true;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      title_ratings: {
+        Row: {
+          created_at: string;
+          score: number;
+          title_id: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          score: number;
+          title_id: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          score?: number;
+          title_id?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'title_ratings_title_id_fkey';
+            columns: ['title_id'];
+            isOneToOne: false;
+            referencedRelation: 'titles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'title_ratings_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      video_access_requests: {
+        Row: {
+          created_at: string;
+          decided_at: string | null;
+          decided_by: string | null;
+          decision_note: string | null;
+          id: string;
+          note: string | null;
+          status: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          decided_at?: string | null;
+          decided_by?: string | null;
+          decision_note?: string | null;
+          id?: string;
+          note?: string | null;
+          status?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          decided_at?: string | null;
+          decided_by?: string | null;
+          decision_note?: string | null;
+          id?: string;
+          note?: string | null;
+          status?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'video_access_requests_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'video_access_requests_decided_by_fkey';
+            columns: ['decided_by'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      video_creators: {
+        Row: {
+          created_at: string;
+          granted_at: string;
+          granted_by: string | null;
+          monthly_byte_budget: number;
+          note: string | null;
+          revoke_reason: string | null;
+          revoked_at: string | null;
+          revoked_by: string | null;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          granted_at?: string;
+          granted_by?: string | null;
+          monthly_byte_budget?: number;
+          note?: string | null;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          granted_at?: string;
+          granted_by?: string | null;
+          monthly_byte_budget?: number;
+          note?: string | null;
+          revoke_reason?: string | null;
+          revoked_at?: string | null;
+          revoked_by?: string | null;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'video_creators_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: true;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'video_creators_granted_by_fkey';
+            columns: ['granted_by'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'video_creators_revoked_by_fkey';
+            columns: ['revoked_by'];
+            isOneToOne: false;
             referencedRelation: 'profiles';
             referencedColumns: ['id'];
           },
@@ -2493,6 +3435,52 @@ export type Database = {
         };
         Returns: Database['public']['Tables']['titles']['Row'][];
       };
+      catalog_is_valid_world: {
+        Args: {
+          p_genres: string[];
+          p_media_type: string;
+          p_origin_country: string[];
+          p_original_language: string;
+          p_world: string;
+        };
+        Returns: boolean;
+      };
+      send_test_notification: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      top_rated_titles: {
+        Args: {
+          p_limit?: number;
+          p_world?: string;
+        };
+        Returns: Database['public']['Tables']['titles']['Row'][];
+      };
+      world_leaders: {
+        Args: Record<string, never>;
+        Returns: {
+          backdrop_url: string | null;
+          episode_count: number;
+          first_air_date: string | null;
+          follower_count: number;
+          genres: string[];
+          id: string;
+          lifecycle: Database['public']['Enums']['catalog_lifecycle'];
+          media_type: Database['public']['Enums']['media_type'];
+          network: string | null;
+          next_episode_at: string | null;
+          original_title: string | null;
+          poster_url: string | null;
+          score: number;
+          season_count: number;
+          status: Database['public']['Enums']['title_status'];
+          synopsis: string | null;
+          title: string;
+          vote_average: number | null;
+          world: string;
+          year: number;
+        }[];
+      };
       trending_titles: {
         Args: {
           p_genre?: string;
@@ -2549,6 +3537,74 @@ export type Database = {
         Args: Record<never, never>;
         Returns: Json;
       };
+      create_community_room: {
+        Args: {
+          p_cover_tone?: string;
+          p_description?: string;
+          p_fandom: string;
+          p_name: string;
+        };
+        Returns: Json;
+      };
+      get_community_detail: {
+        Args: { p_community_id: string };
+        Returns: Json;
+      };
+      get_staff_overview: {
+        Args: Record<never, never>;
+        Returns: Json;
+      };
+      list_follow_requests: {
+        Args: Record<never, never>;
+        Returns: Json;
+      };
+      my_video_access_status: {
+        Args: Record<never, never>;
+        Returns: Json;
+      };
+      respond_follow_request: {
+        Args: { p_accept: boolean; p_requester_id: string };
+        Returns: Json;
+      };
+      staff_grant_video_by_handle: {
+        Args: { p_budget_mb?: number; p_handle: string; p_note?: string };
+        Returns: Json;
+      };
+      get_community_pulse: {
+        Args: { p_limit?: number; p_world?: string };
+        Returns: Json;
+      };
+      get_feed_bundle: {
+        Args: {
+          p_community_id?: string;
+          p_cursor?: string;
+          p_limit?: number;
+          p_scope?: string;
+          p_title_id?: string;
+          p_world?: string;
+        };
+        Returns: Json;
+      };
+      get_person_detail: {
+        Args: { p_person_id: string };
+        Returns: Json;
+      };
+      get_post_thread: {
+        Args: { p_comment_limit?: number; p_post_id: string };
+        Returns: Json;
+      };
+      get_profile_by_handle: {
+        Args: { p_handle: string };
+        Returns: Json;
+      };
+      get_public_collections: {
+        Args: { p_limit?: number };
+        Returns: Json;
+      };
+      grant_video_access: {
+        Args: { p_monthly_byte_budget?: number; p_note?: string; p_user: string };
+        Returns: Database['public']['Tables']['video_creators']['Row'];
+      };
       handle_is_available: {
         Args: { p_handle: string };
         Returns: boolean;
@@ -2586,13 +3642,34 @@ export type Database = {
           p_device_name?: string;
           p_locale?: string;
           p_platform: Database['public']['Enums']['push_platform'];
+          p_time_zone?: string;
           p_token: string;
         };
+        Returns: string;
+      };
+      is_valid_time_zone: {
+        Args: { p_zone: string };
+        Returns: boolean;
+      };
+      member_time_zone: {
+        Args: { p_user_id: string };
         Returns: string;
       };
       report_content: {
         Args: { p_detail?: string; p_reason: string; p_target_id: string; p_target_type: string };
         Returns: string;
+      };
+      request_video_access: {
+        Args: { p_note?: string };
+        Returns: string;
+      };
+      review_video_access_request: {
+        Args: { p_approve: boolean; p_monthly_byte_budget?: number; p_note?: string; p_request_id: string };
+        Returns: Database['public']['Tables']['video_access_requests']['Row'];
+      };
+      revoke_video_access: {
+        Args: { p_reason?: string; p_user: string };
+        Returns: Database['public']['Tables']['video_creators']['Row'];
       };
       search_titles: {
         Args: { p_limit?: number; p_offset?: number; p_query: string; p_world?: string };
@@ -2610,9 +3687,17 @@ export type Database = {
         Args: { p_kind: string; p_on: boolean; p_target_id: string };
         Returns: boolean;
       };
+      set_title_alert: {
+        Args: { p_on?: boolean; p_title_id: string };
+        Returns: boolean;
+      };
       storage_owner: {
         Args: { name: string };
         Returns: string | null;
+      };
+      toggle_favorite_title: {
+        Args: { p_on?: boolean; p_title_id: string };
+        Returns: Json;
       };
       toggle_reaction: {
         Args: { p_kind: Database['public']['Enums']['reaction_kind']; p_target_id: string; p_target_type: string };
@@ -2632,6 +3717,223 @@ export type Database = {
           p_total?: number;
         };
         Returns: Database['public']['Tables']['watchlist_items']['Row'];
+      };
+      create_post_poll: {
+        Args: {
+          p_hours?: number;
+          p_options: string[];
+          p_post_id: string;
+          p_question: string;
+        };
+        Returns: Json;
+      };
+      discover_catalog: {
+        Args: {
+          p_genre?: string | null;
+          p_limit?: number;
+          p_min_rating?: number | null;
+          p_min_year?: number | null;
+          p_offset?: number;
+          p_provider?: string | null;
+          p_sort?: string;
+          p_status?: string | null;
+          p_world?: string | null;
+        };
+        Returns: Database['public']['Tables']['titles']['Row'][];
+      };
+      get_post_polls: {
+        Args: { p_post_ids: string[] };
+        Returns: Json;
+      };
+      list_conversations: {
+        Args: { p_limit?: number };
+        Returns: Json;
+      };
+      announce_app_release: {
+        Args: {
+          p_release_notes?: string | null;
+          p_version_code: number;
+          p_version_name: string;
+        };
+        Returns: Json;
+      };
+      admin_dashboard_metrics: {
+        Args: Record<PropertyKey, never>;
+        Returns: Json;
+      };
+      admin_grant_badge: {
+        Args: {
+          p_badge_id: string;
+          p_reason: string;
+          p_serial_number?: number | null;
+          p_target_user_id: string;
+        };
+        Returns: Json;
+      };
+      admin_list_audit_log: {
+        Args: {
+          p_domain?: string | null;
+          p_limit?: number;
+        };
+        Returns: Json;
+      };
+      admin_list_verification_requests: {
+        Args: {
+          p_limit?: number;
+          p_status?: string;
+        };
+        Returns: Json;
+      };
+      admin_manage_user_account: {
+        Args: {
+          p_account_status?: string | null;
+          p_exclude_from_competitions?: boolean | null;
+          p_reason?: string;
+          p_role?: string | null;
+          p_target_user_id: string;
+        };
+        Returns: Json;
+      };
+      admin_review_verification_request: {
+        Args: {
+          p_decision: string;
+          p_reason: string;
+          p_request_id: string;
+          p_tier: string;
+        };
+        Returns: Json;
+      };
+      admin_revoke_badge: {
+        Args: {
+          p_award_id: string;
+          p_reason: string;
+          p_release_slot?: boolean;
+        };
+        Returns: Json;
+      };
+      admin_search_users: {
+        Args: {
+          p_filter?: string;
+          p_limit?: number;
+          p_offset?: number;
+          p_query?: string;
+        };
+        Returns: Json;
+      };
+      admin_set_verification: {
+        Args: {
+          p_reason: string;
+          p_target_user_id: string;
+          p_tier: string;
+        };
+        Returns: Json;
+      };
+      admin_update_recognition_config: {
+        Args: {
+          p_awards_enabled: boolean;
+          p_day_one_window_hours: number;
+          p_founding_member_cap: number;
+          p_founding_member_window_days: number;
+          p_launch_starts_at: string;
+          p_reason: string;
+        };
+        Returns: Json;
+      };
+      admin_upsert_badge_definition: {
+        Args: {
+          p_accent_hex: string;
+          p_category: string;
+          p_description: string;
+          p_icon_key: string;
+          p_id: string;
+          p_is_active?: boolean;
+          p_is_automatic?: boolean;
+          p_is_numbered?: boolean;
+          p_max_supply?: number | null;
+          p_name: string;
+          p_rarity: string;
+          p_sort_order?: number;
+          p_subtitle: string;
+        };
+        Returns: Json;
+      };
+      evaluate_early_member_awards: {
+        Args: { p_user_id: string };
+        Returns: Json;
+      };
+      evaluate_member_achievements: {
+        Args: { p_user_id: string };
+        Returns: Json;
+      };
+      get_user_recognition: {
+        Args: { p_user_id?: string | null };
+        Returns: Json;
+      };
+      my_verification_status: {
+        Args: Record<PropertyKey, never>;
+        Returns: Json;
+      };
+      profile_awards_json: {
+        Args: { p_user_id: string };
+        Returns: Json;
+      };
+      set_featured_badges: {
+        Args: { p_badge_ids: string[] };
+        Returns: string[];
+      };
+      submit_verification_request: {
+        Args: {
+          p_category?: string;
+          p_evidence_links?: string[];
+          p_requested_tier?: string;
+          p_statement?: string;
+        };
+        Returns: string;
+      };
+      sync_my_recognition: {
+        Args: Record<PropertyKey, never>;
+        Returns: Json;
+      };
+      list_direct_messages: {
+        Args: { p_limit?: number; p_peer_handle: string };
+        Returns: Json;
+      };
+      mark_conversation_read: {
+        Args: { p_peer_handle: string };
+        Returns: number;
+      };
+      rate_title: {
+        Args: { p_score: number; p_title_id: string };
+        Returns: Json;
+      };
+      send_direct_message: {
+        Args: {
+          p_body: string;
+          p_recipient_handle: string;
+          p_shared_drama_id?: string | null;
+          p_shared_post_id?: string | null;
+        };
+        Returns: Json;
+      };
+      video_access: {
+        Args: { p_user?: string };
+        Returns: boolean;
+      };
+      video_bytes_used_this_month: {
+        Args: { p_user?: string };
+        Returns: number;
+      };
+      video_creator_roster: {
+        Args: { p_limit?: number };
+        Returns: Json;
+      };
+      video_quota: {
+        Args: { p_user?: string };
+        Returns: Json;
+      };
+      vote_post_poll: {
+        Args: { p_option_index: number; p_post_id: string };
+        Returns: Json;
       };
     };
     Enums: {

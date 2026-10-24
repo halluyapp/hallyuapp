@@ -3,10 +3,13 @@ node_modules/
 dist/
 npm-debug.*
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
+google-services.json
+*firebase-adminsdk*.json
 *.orig.*
 web-build/
 

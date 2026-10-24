@@ -121,7 +121,7 @@ export default function GenrePage() {
                 <ActivityIndicator color={colors.accent} />
               </View>
             ) : done && list.length ? (
-              <Text variant="caption" tone="disabled" align="center" style={{ paddingVertical: space.x4 }}>
+              <Text variant="caption" tone="tertiary" align="center" style={{ paddingVertical: space.x4 }}>
                 That’s everything TMDB lists for {name}.
               </Text>
             ) : null

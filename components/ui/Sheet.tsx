@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, BackHandler, Dimensions, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Animated, BackHandler, Dimensions, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, motion, radius, space } from '../../constants/theme';
 import { springs } from '../../lib/motion';
@@ -21,12 +21,13 @@ export interface SheetProps {
 
 /**
  * Bottom sheet: surface.2, top radius lg, 32×4 handle, overlay scrim.
- * Springs in (gentle), slides out in 160ms. Drag on the header to dismiss.
+ * Springs in (gentle), slides out in 160ms. Drag on the handle pill to dismiss, with reliable Android keyboard lift.
  */
 export function Sheet({ visible, onClose, title, subtitle, detent = 'content', blocking, children, footer, scroll = true, headerRight }: SheetProps) {
   const insets = useSafeAreaInsets();
   const screenH = Dimensions.get('window').height;
   const [mounted, setMounted] = useState(visible);
+  const [androidKeyboardH, setAndroidKeyboardH] = useState(0);
   const y = useRef(new Animated.Value(screenH)).current;
   const scrim = useRef(new Animated.Value(0)).current;
 
@@ -46,10 +47,25 @@ export function Sheet({ visible, onClose, title, subtitle, detent = 'content', b
         Animated.timing(scrim, { toValue: 1, duration: motion.medium, useNativeDriver: true }),
       ]).start();
     } else if (mounted) {
+      setAndroidKeyboardH(0);
       close();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
+
+  useEffect(() => {
+    if (!mounted || Platform.OS !== 'android') return;
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setAndroidKeyboardH(Math.max(0, e.endCoordinates.height));
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setAndroidKeyboardH(0);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [mounted]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -62,32 +78,40 @@ export function Sheet({ visible, onClose, title, subtitle, detent = 'content', b
 
   const pan = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 6 && Math.abs(g.dy) > Math.abs(g.dx),
+      onMoveShouldSetPanResponder: (_, g) => g.dy > 8 && Math.abs(g.dy) > Math.abs(g.dx) * 1.4,
       onPanResponderMove: (_, g) => {
         if (g.dy > 0) y.setValue(g.dy);
       },
       onPanResponderRelease: (_, g) => {
-        if ((g.dy > 120 || g.vy > 1.2) && !blocking) onClose();
+        if ((g.dy > 110 || g.vy > 1.1) && !blocking) onClose();
         else Animated.spring(y, { toValue: 0, ...springs.gentle }).start();
       },
     }),
   ).current;
 
   if (!mounted) return null;
-  const maxH = detent === 'full' ? screenH - insets.top - 16 : detent === 'half' ? screenH * 0.5 : screenH * 0.88;
+  const availableH = Math.max(260, screenH - insets.top - androidKeyboardH - 16);
+  const maxH =
+    detent === 'full'
+      ? availableH
+      : detent === 'half'
+        ? Math.min(availableH, Math.max(screenH * 0.54, 340))
+        : Math.min(availableH, screenH * 0.88);
   return (
     <Modal transparent visible={mounted} animationType="none" onRequestClose={() => !blocking && onClose()} statusBarTranslucent>
-      <View style={styles.root}>
+      <View style={[styles.root, Platform.OS === 'android' && androidKeyboardH > 0 ? { paddingBottom: androidKeyboardH } : null]}>
         <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: colors.overlay, opacity: scrim }]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={() => !blocking && onClose()} accessibilityRole="button" accessibilityLabel="Close" />
         </Animated.View>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} pointerEvents="box-none" style={styles.kav}>
-          <Animated.View style={[styles.sheet, { maxHeight: maxH, paddingBottom: insets.bottom + space.x3, transform: [{ translateY: y }] }, detent !== 'content' ? { height: maxH } : null]} accessibilityViewIsModal>
-            <View {...pan.panHandlers} style={styles.grab}>
-              <View style={styles.handle} />
+          <Animated.View style={[styles.sheet, { maxHeight: maxH, paddingBottom: androidKeyboardH > 0 ? space.x2 : insets.bottom + space.x3, transform: [{ translateY: y }] }, detent !== 'content' ? { height: maxH } : null]} accessibilityViewIsModal>
+            <View style={styles.grab}>
+              <View {...pan.panHandlers} style={{ paddingVertical: space.x1 }}>
+                <View style={styles.handle} />
+              </View>
               {title ? (
                 <View style={styles.header}>
-                  <View style={{ flex: 1 }}>
+                  <View {...pan.panHandlers} style={{ flex: 1 }}>
                     <Text variant="title">{title}</Text>
                     {subtitle ? (
                       <Text variant="caption" tone="secondary" style={{ marginTop: 2 }}>

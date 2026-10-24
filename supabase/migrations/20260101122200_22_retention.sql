@@ -10,6 +10,12 @@
 -- PostgreSQL refuses to redefine a function whose row type has changed (42P13). Dropping here is what
 -- makes the whole set re-appliable over a project that was provisioned from a newer or older branch —
 -- the live project cannot be rebuilt from scratch, it is brought forward file by file.
+
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 drop function if exists public.purge_deleted_accounts(interval);
 
 create or replace function public.purge_deleted_accounts(retention interval default interval '30 days')
@@ -88,3 +94,6 @@ grant execute on function public.purge_deleted_accounts(interval) to service_rol
 --
 -- Requires `pg_cron` and `pg_net` (both available on Supabase projects; enable them in Dashboard →
 -- Database → Extensions if they are not already on).
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

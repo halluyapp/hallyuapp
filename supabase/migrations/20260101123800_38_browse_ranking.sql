@@ -17,6 +17,11 @@
 -- directly. This function is SECURITY DEFINER, so it evaluates it on the caller's behalf and the
 -- grant below only exposes the ordered result.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.browse_titles(
   p_genre text default null,
   p_provider text default null,
@@ -65,3 +70,6 @@ comment on function public.browse_titles(text, text, text, text, integer, intege
 -- raising: a typo in the client degrades to the app-wide ordering instead of an error page. There
 -- is no separate "is this sort valid" function — nothing calls one, and a check the server never
 -- consults is documentation pretending to be a constraint.
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

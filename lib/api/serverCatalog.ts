@@ -18,8 +18,8 @@
  */
 import { CatalogError, setHealth, type CatalogProvider } from '../catalog';
 import { supabase, isBackendConfigured } from './client';
-import { FANDOMS, fandomById } from '../fandoms';
-import type { Actor, Drama, FandomId, MediaType } from '../model';
+import { FANDOMS, fandomById, isValidWorldDrama } from '../fandoms';
+import type { Actor, Drama, Episode, FandomId, MediaType } from '../model';
 
 // ── Row shapes (as returned by the backend surface) ─────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ interface TitleRow {
   tone?: string | null;
   runtime_minutes?: number | null;
   original_language?: string | null;
+  origin_country?: string[] | null;
   vote_average?: number | null;
   community_rating?: number | null;
   popularity?: number | null;
@@ -73,11 +74,13 @@ export interface SlimTitleRow {
   backdrop_url: string | null;
   vote_average?: number | null;
   follower_count?: number | null;
-  episode_count: number;
+  episode_count?: number;
   season_count?: number | null;
   network?: string | null;
+  first_air_date?: string | null;
   next_episode_at?: string | null;
   airs_on?: string | null;
+  episodes_this_week?: number | null;
 }
 
 interface PersonRow {
@@ -113,7 +116,15 @@ interface DiscoveryEpisode {
 interface DiscoveryPayload {
   title?: Partial<TitleRow> & { id: string };
   episodes?: DiscoveryEpisode[];
-  cast?: { external_id: string; name: string; character?: string | null; order_index?: number | null; photo_url?: string | null }[];
+  cast?: {
+    id?: string;
+    external_id?: string | null;
+    name: string;
+    korean_name?: string | null;
+    character?: string | null;
+    order_index?: number | null;
+    photo_url?: string | null;
+  }[];
   similar?: SlimTitleRow[];
 }
 
@@ -127,13 +138,20 @@ const formatOf = (world: string, mediaType: MediaType): Drama['format'] => {
   return mediaType === 'movie' ? 'hollywood-movie' : 'hollywood-series';
 };
 
-const statusOf = (row: { status?: string; lifecycle?: string }): Drama['status'] => {
-  const raw = row.status ?? row.lifecycle ?? 'completed';
-  return raw === 'airing' || raw === 'upcoming' ? raw : 'completed';
+const statusOf = (
+  row: { status?: string; lifecycle?: string },
+  fallback: Drama['status'] = 'completed',
+): Drama['status'] => {
+  const raw = row.status ?? row.lifecycle;
+  if (raw === 'airing' || raw === 'upcoming' || raw === 'canceled' || raw === 'completed') return raw;
+  return fallback;
 };
 
 function toDrama(row: TitleRow): Drama {
   const mediaType = row.media_type ?? 'tv';
+  const nextOrPremiere =
+    row.next_episode_at ??
+    (row.status === 'upcoming' && row.first_air_date ? `${row.first_air_date}T00:00:00Z` : undefined);
   return {
     id: dramaIdOf(row.external_id, mediaType),
     title: row.title,
@@ -141,6 +159,7 @@ function toDrama(row: TitleRow): Drama {
     mediaType,
     format: formatOf(row.world, mediaType),
     originalLanguage: row.original_language ?? undefined,
+    region: row.origin_country?.[0] ?? undefined,
     runtime: row.runtime_minutes ?? undefined,
     year: row.year,
     endYear: row.end_year ?? undefined,
@@ -160,60 +179,88 @@ function toDrama(row: TitleRow): Drama {
     episodes: [],
     cast: [],
     airsOn: row.airs_on ?? undefined,
-    nextEpisodeAt: row.next_episode_at ?? undefined,
+    nextEpisodeAt: nextOrPremiere,
     followerCount: Math.round(row.follower_count ?? 0),
     provider: { name: 'tmdb', id: Number(row.external_id), mediaType },
   };
 }
 
-function slimToDrama(row: SlimTitleRow, externalId: string): Drama {
-  const mediaType = row.media_type ?? 'tv';
+interface HydratedTitleMeta {
+  id: string;
+  external_id: string;
+  media_type: MediaType;
+  original_language?: string | null;
+  origin_country?: string[] | null;
+  status?: string | null;
+  first_air_date?: string | null;
+  vote_average?: number | null;
+}
+
+function slimToDrama(
+  row: SlimTitleRow,
+  meta: HydratedTitleMeta,
+  statusHint?: Drama['status'],
+): Drama {
+  const mediaType = row.media_type ?? meta.media_type ?? 'tv';
+  const resolvedStatus = statusOf(
+    { status: row.status ?? meta.status ?? undefined, lifecycle: row.lifecycle },
+    statusHint ?? 'completed',
+  );
+  const premiereDate = row.first_air_date ?? meta.first_air_date ?? undefined;
+  const nextEpisodeAt =
+    row.next_episode_at ?? (premiereDate ? `${premiereDate}T00:00:00Z` : undefined);
   return {
-    id: dramaIdOf(externalId, mediaType),
+    id: dramaIdOf(meta.external_id, mediaType),
     title: row.title,
     originalTitle: row.original_title ?? undefined,
     mediaType,
     format: formatOf(row.world, mediaType),
+    originalLanguage: meta.original_language ?? undefined,
+    region: meta.origin_country?.[0] ?? undefined,
     year: row.year,
-    status: statusOf(row),
+    status: resolvedStatus,
     network: row.network ?? undefined,
     genres: row.genres ?? [],
     synopsis: row.synopsis ?? '',
     posterUrl: row.poster_url ?? undefined,
     backdropUrl: row.backdrop_url ?? undefined,
     tone: fandomById(row.world as FandomId)?.tint || '#1F2430',
-    rating: row.vote_average ?? undefined,
+    rating: row.vote_average ?? meta.vote_average ?? undefined,
     episodeCount: row.episode_count ?? 0,
     seasons: [],
     episodes: [],
     cast: [],
     airsOn: row.airs_on ?? undefined,
-    nextEpisodeAt: row.next_episode_at ?? undefined,
+    nextEpisodeAt,
     followerCount: Math.round(row.follower_count ?? 0),
-    provider: { name: 'tmdb', id: Number(externalId), mediaType },
+    provider: { name: 'tmdb', id: Number(meta.external_id), mediaType },
   };
 }
 
-/** UUID-keyed slim rows → Dramas, resolving the provider ids in one batched read. */
-export async function hydrateSlim(rows: SlimTitleRow[], signal?: AbortSignal): Promise<Drama[]> {
+/** UUID-keyed slim rows → Dramas, resolving provider ids + authoritative world/status metadata in one batched read. */
+export async function hydrateSlim(
+  rows: SlimTitleRow[],
+  signal?: AbortSignal,
+  statusHint?: Drama['status'],
+): Promise<Drama[]> {
   if (!rows.length) return [];
   const uuids = rows.map((r) => r.id);
   const { data, error } = await supabase!
     .from('titles')
-    .select('id, external_id, media_type')
+    .select('id, external_id, media_type, original_language, origin_country, status, first_air_date, vote_average')
     .in('id', uuids)
     .abortSignal(signal!);
   if (error) throw new CatalogError(`title lookup failed: ${error.message}`, 500);
-  const byUuid = new Map<string, { external_id: string; media_type: MediaType }>();
-  for (const row of (data ?? []) as { id: string; external_id: string; media_type: MediaType }[]) {
+  const byUuid = new Map<string, HydratedTitleMeta>();
+  for (const row of (data ?? []) as HydratedTitleMeta[]) {
     byUuid.set(row.id, row);
   }
   return rows
     .map((row) => {
       const resolved = byUuid.get(row.id);
-      return resolved ? slimToDrama(row, resolved.external_id) : null;
+      return resolved ? slimToDrama(row, resolved, statusHint) : null;
     })
-    .filter((d): d is Drama => d !== null);
+    .filter((d): d is Drama => d !== null && isValidWorldDrama(d));
 }
 
 function toActor(row: PersonRow, externalId: string): Actor {
@@ -254,13 +301,24 @@ function memo<T>(key: string, run: () => Promise<T>): Promise<T> {
 /** TMDB watch-provider id → the streaming label the backend stores on titles.streaming_on. */
 const PROVIDER_NAMES: Record<number, string> = {
   8: 'Netflix',
+  1796: 'Netflix',
   9: 'Prime Video',
+  119: 'Prime Video',
   15: 'Hulu',
   337: 'Disney+',
   350: 'Apple TV+',
-  1899: 'HBO Max',
+  1899: 'Max',
+  384: 'Max',
   283: 'Crunchyroll',
   1968: 'Crunchyroll',
+  344: 'Viki',
+  444: 'Viki',
+  581: 'iQIYI',
+  623: 'WeTV',
+  158: 'Viu',
+  97: 'Watcha',
+  356: 'Wavve',
+  1715: 'TVING',
 };
 
 /** Find the title UUID behind a TMDB provider id (the direct table read the hub screens use). */
@@ -312,10 +370,10 @@ export const serverProvider: CatalogProvider = {
   async searchDramas(query, signal) {
     return call('search', async (abort) => {
       const { data, error } = await supabase!
-        .rpc('search_titles', { p_query: query, p_limit: 20 })
+        .rpc('search_titles', { p_query: query, p_limit: 24 })
         .abortSignal(abort!);
       if (error) throw new CatalogError(`search failed: ${error.message}`, 500);
-      return ((data ?? []) as TitleRow[]).map(toDrama);
+      return ((data ?? []) as TitleRow[]).map(toDrama).filter(isValidWorldDrama).slice(0, 20);
     }, signal);
   },
 
@@ -364,18 +422,22 @@ export const serverProvider: CatalogProvider = {
         .map(([number, count]) => ({ number, episodeCount: count, year: drama.year }));
 
       const castActors: Actor[] = [];
-      drama.cast = (payload.cast ?? []).map((c, index) => {
-        const actorId = `tmdb-${c.external_id}`;
-        castActors.push({
-          id: actorId,
-          name: c.name,
-          photoUrl: c.photo_url ?? undefined,
-          knownFor: [],
-          followerCount: 0,
-          provider: { name: 'tmdb', id: Number(c.external_id) },
+      drama.cast = (payload.cast ?? [])
+        .filter((c) => Boolean(c.external_id))
+        .map((c, index) => {
+          const extId = String(c.external_id);
+          const actorId = `tmdb-${extId}`;
+          castActors.push({
+            id: actorId,
+            name: c.name,
+            koreanName: c.korean_name ?? undefined,
+            photoUrl: c.photo_url ?? undefined,
+            knownFor: [],
+            followerCount: 0,
+            provider: { name: 'tmdb', id: Number(extId) },
+          });
+          return { actorId, role: c.character || 'Cast', order: c.order_index ?? index };
         });
-        return { actorId, role: c.character || 'Cast', order: c.order_index ?? index };
-      });
       if (castActors.length) drama.castActors = castActors;
       return drama;
     }, signal);
@@ -411,7 +473,7 @@ export const serverProvider: CatalogProvider = {
       const { data, error } = await supabase!
         .from('title_people')
         .select('character, order_index, titles(*)')
-        .eq('external_id', person.external_id)
+        .eq('person_id', person.id)
         .order('order_index', { ascending: true })
         .limit(40)
         .abortSignal(signal!);
@@ -473,10 +535,82 @@ export const serverProvider: CatalogProvider = {
     }, signal);
   },
 
+  worldLeaders(signal) {
+    return call('world-leaders', (signal) =>
+      memo('world-leaders', async () => {
+        const { data, error } = await supabase!.rpc('world_leaders').abortSignal(signal!);
+        if (error) throw new CatalogError(`world leaders failed: ${error.message}`, 500);
+        return hydrateSlim((data ?? []) as SlimTitleRow[], signal);
+      }),
+    );
+  },
+
+  scheduleEpisodes(days = 7, signal) {
+    return call('schedule', (signal) =>
+      memo(`schedule:${days}`, async () => {
+        const start = new Date();
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(start.getTime() + days * 86_400_000);
+        const fromIso = start.toISOString().slice(0, 10);
+        const toIso = end.toISOString().slice(0, 10);
+
+        const { data, error } = await supabase!
+          .from('title_episodes')
+          .select('season, number, title, air_date, runtime_minutes, synopsis, still_url, titles!inner(*)')
+          .gte('air_date', fromIso)
+          .lte('air_date', toIso)
+          .order('air_date', { ascending: true })
+          .order('number', { ascending: true })
+          .limit(160)
+          .abortSignal(signal!);
+        if (error) throw new CatalogError(`schedule failed: ${error.message}`, 500);
+
+        interface ScheduleJoinRow {
+          season: number;
+          number: number;
+          title: string | null;
+          air_date: string | null;
+          runtime_minutes: number | null;
+          synopsis: string | null;
+          still_url: string | null;
+          titles: TitleRow | TitleRow[] | null;
+        }
+
+        const byDramaId = new Map<string, Drama>();
+        for (const raw of (data ?? []) as ScheduleJoinRow[]) {
+          const titleRow = Array.isArray(raw.titles) ? raw.titles[0] : raw.titles;
+          if (!titleRow || !raw.air_date) continue;
+          const base = toDrama({ ...titleRow, status: 'airing' });
+          if (!isValidWorldDrama(base)) continue;
+          let target = byDramaId.get(base.id);
+          if (!target) {
+            target = { ...base, episodes: [] };
+            byDramaId.set(base.id, target);
+          }
+          const ep: Episode = {
+            id: `${target.id}-s${raw.season}e${raw.number}`,
+            dramaId: target.id,
+            season: raw.season,
+            number: raw.number,
+            title: raw.title ?? undefined,
+            airDate: `${raw.air_date}T21:00:00Z`,
+            runtime: raw.runtime_minutes ?? undefined,
+            synopsis: raw.synopsis ?? undefined,
+            stillUrl: raw.still_url ?? undefined,
+          };
+          if (!target.episodes.some((existing) => existing.id === ep.id)) {
+            target.episodes.push(ep);
+          }
+        }
+        return [...byDramaId.values()];
+      }),
+    );
+  },
+
   trending(signal) {
     return call('trending', (signal) =>
       memo('trending', async () => {
-        const { data, error } = await supabase!.rpc('trending_titles', { p_limit: 24 }).abortSignal(signal!);
+        const { data, error } = await supabase!.rpc('trending_titles', { p_limit: 32 }).abortSignal(signal!);
         if (error) throw new CatalogError(`trending failed: ${error.message}`, 500);
         return hydrateSlim((data ?? []) as SlimTitleRow[], signal);
       }),
@@ -486,15 +620,18 @@ export const serverProvider: CatalogProvider = {
   popular(page = 1, signal) {
     return call('popular', (signal) =>
       memo(`popular:${page}`, async () => {
-        const from = (page - 1) * 24;
         const { data, error } = await supabase!
-          .from('titles')
-          .select('*')
-          .order('popularity', { ascending: false, nullsFirst: false })
-          .range(from, from + 23)
+          .rpc('browse_titles', {
+            p_genre: null,
+            p_provider: null,
+            p_world: null,
+            p_sort: 'popular',
+            p_limit: 24,
+            p_offset: (page - 1) * 24,
+          })
           .abortSignal(signal!);
         if (error) throw new CatalogError(`popular failed: ${error.message}`, 500);
-        return ((data ?? []) as TitleRow[]).map(toDrama);
+        return ((data ?? []) as TitleRow[]).map(toDrama).filter(isValidWorldDrama);
       }),
     );
   },
@@ -502,9 +639,9 @@ export const serverProvider: CatalogProvider = {
   airingSoon(days = 7, signal) {
     return call('airing', (signal) =>
       memo(`airing:${days}`, async () => {
-        const { data, error } = await supabase!.rpc('airing_titles', { p_limit: 24 }).abortSignal(signal!);
+        const { data, error } = await supabase!.rpc('airing_titles', { p_limit: 32 }).abortSignal(signal!);
         if (error) throw new CatalogError(`airing failed: ${error.message}`, 500);
-        return hydrateSlim((data ?? []) as SlimTitleRow[], signal);
+        return hydrateSlim((data ?? []) as SlimTitleRow[], signal, 'airing');
       }),
     );
   },
@@ -512,16 +649,13 @@ export const serverProvider: CatalogProvider = {
   topRated(page = 1, signal) {
     return call('top', (signal) =>
       memo(`top:${page}`, async () => {
-        const from = (page - 1) * 24;
         const { data, error } = await supabase!
-          .from('titles')
-          .select('*')
-          .gte('vote_count', 40)
-          .order('vote_average', { ascending: false, nullsFirst: false })
-          .range(from, from + 23)
+          .rpc('top_rated_titles', { p_world: null, p_limit: page * 24 })
           .abortSignal(signal!);
         if (error) throw new CatalogError(`top rated failed: ${error.message}`, 500);
-        return ((data ?? []) as TitleRow[]).map(toDrama);
+        const items = ((data ?? []) as TitleRow[]).map(toDrama).filter(isValidWorldDrama);
+        const start = (page - 1) * 24;
+        return items.slice(start, start + 24);
       }),
     );
   },
@@ -529,9 +663,9 @@ export const serverProvider: CatalogProvider = {
   upcoming(signal) {
     return call('upcoming', (signal) =>
       memo('upcoming', async () => {
-        const { data, error } = await supabase!.rpc('upcoming_titles', { p_limit: 24 }).abortSignal(signal!);
+        const { data, error } = await supabase!.rpc('upcoming_titles', { p_limit: 32 }).abortSignal(signal!);
         if (error) throw new CatalogError(`upcoming failed: ${error.message}`, 500);
-        return hydrateSlim((data ?? []) as SlimTitleRow[], signal);
+        return hydrateSlim((data ?? []) as SlimTitleRow[], signal, 'upcoming');
       }),
     );
   },
@@ -590,17 +724,27 @@ export const serverProvider: CatalogProvider = {
         if (sort === 'new') {
           const { data, error } = await supabase!.rpc('upcoming_titles', { p_world: fandom, p_limit: 24 }).abortSignal(signal!);
           if (error) throw new CatalogError(`world premieres failed: ${error.message}`, 500);
-          return hydrateSlim((data ?? []) as SlimTitleRow[], signal);
+          return hydrateSlim((data ?? []) as SlimTitleRow[], signal, 'upcoming');
         }
-        const from = (page - 1) * 24;
-        let query = supabase!.from('titles').select('*').eq('world', fandom).range(from, from + 23);
-        query =
-          sort === 'top'
-            ? query.gte('vote_count', 40).order('vote_average', { ascending: false, nullsFirst: false })
-            : query.order('popularity', { ascending: false, nullsFirst: false });
-        const { data, error } = await query.abortSignal(signal!);
+        if (sort === 'top') {
+          const { data, error } = await supabase!.rpc('top_rated_titles', { p_world: fandom, p_limit: page * 24 }).abortSignal(signal!);
+          if (error) throw new CatalogError(`world top rated failed: ${error.message}`, 500);
+          const items = ((data ?? []) as TitleRow[]).map(toDrama).filter(isValidWorldDrama);
+          const from = (page - 1) * 24;
+          return items.slice(from, from + 24);
+        }
+        const { data, error } = await supabase!
+          .rpc('browse_titles', {
+            p_genre: null,
+            p_provider: null,
+            p_world: fandom,
+            p_sort: 'popular',
+            p_limit: 24,
+            p_offset: (page - 1) * 24,
+          })
+          .abortSignal(signal!);
         if (error) throw new CatalogError(`world browse failed: ${error.message}`, 500);
-        return ((data ?? []) as TitleRow[]).map(toDrama);
+        return ((data ?? []) as TitleRow[]).map(toDrama).filter(isValidWorldDrama);
       }),
     );
   },
@@ -612,16 +756,20 @@ export const serverProvider: CatalogProvider = {
         const picks = await Promise.all(
           others.map(async (world) => {
             const { data, error } = await supabase!
-              .from('titles')
-              .select('*')
-              .eq('world', world.id)
-              .order('popularity', { ascending: false, nullsFirst: false })
-              .limit(24)
+              .rpc('browse_titles', {
+                p_genre: null,
+                p_provider: null,
+                p_world: world.id,
+                p_sort: 'popular',
+                p_limit: 24,
+                p_offset: 0,
+              })
               .abortSignal(signal!);
             if (error) return [];
             const overlap = (d: Drama) => d.genres.filter((g) => anchor.genres.includes(g)).length;
             return ((data ?? []) as TitleRow[])
               .map(toDrama)
+              .filter(isValidWorldDrama)
               .sort((a, b) => overlap(b) - overlap(a) || b.followerCount - a.followerCount)
               .slice(0, 3)
               .map((drama) => ({ drama, world, shared: drama.genres.filter((g) => anchor.genres.includes(g)) }));
@@ -638,8 +786,10 @@ export const serverProvider: CatalogProvider = {
         const { data, error } = await supabase!
           .from('people')
           .select('*')
+          .not('photo_url', 'is', null)
           .order('follower_count', { ascending: false, nullsFirst: false })
-          .limit(16)
+          .order('known_for_count', { ascending: false, nullsFirst: false })
+          .limit(20)
           .abortSignal(signal!);
         if (error) throw new CatalogError(`people failed: ${error.message}`, 500);
         return ((data ?? []) as (PersonRow & { external_id: string })[]).map((r) => toActor(r, r.external_id));

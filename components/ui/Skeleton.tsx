@@ -1,29 +1,89 @@
+import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useRef } from 'react';
-import { Animated, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { Animated, Easing, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import { colors, radius as R, space } from '../../constants/theme';
+import { useReduceMotion } from '../../lib/hooks';
 
-interface SkeletonProps {
+const AnimatedGradient = Animated.createAnimatedComponent(LinearGradient);
+
+export interface SkeletonProps {
   width?: number | `${number}%`;
   height?: number;
   radius?: number;
+  rounded?: number;
   style?: StyleProp<ViewStyle>;
   circle?: boolean;
 }
 
-/** Shimmer-free skeleton: a slow opacity breath (1.6s) — calmer on OLED and reduced-motion friendly. */
-export function Skeleton({ width = '100%', height = 16, radius = R.sm, style, circle }: SkeletonProps) {
-  const a = useRef(new Animated.Value(0.55)).current;
+/** Smooth GPU-accelerated LinearGradient shimmer placeholder (honours reduceMotion). */
+export function Skeleton({
+  width = '100%',
+  height = 16,
+  radius,
+  rounded,
+  style,
+  circle,
+}: SkeletonProps) {
+  const reduce = useReduceMotion();
+  const sweep = useRef(new Animated.Value(0)).current;
+  const resolvedRadius = circle ? 999 : (rounded ?? radius ?? R.sm);
+
   useEffect(() => {
+    if (reduce) {
+      sweep.setValue(0.5);
+      return;
+    }
     const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(a, { toValue: 1, duration: 800, useNativeDriver: true }),
-        Animated.timing(a, { toValue: 0.55, duration: 800, useNativeDriver: true }),
-      ]),
+      Animated.timing(sweep, {
+        toValue: 1,
+        duration: 1350,
+        easing: Easing.inOut(Easing.ease),
+        useNativeDriver: true,
+      }),
     );
     loop.start();
     return () => loop.stop();
-  }, [a]);
-  return <Animated.View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[{ width, height, borderRadius: circle ? 999 : radius, backgroundColor: colors.skeleton, opacity: a }, style]} />;
+  }, [reduce, sweep]);
+
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[
+        {
+          width,
+          height,
+          borderRadius: resolvedRadius,
+          backgroundColor: colors.skeleton,
+          overflow: 'hidden',
+        },
+        style,
+      ]}
+    >
+      {!reduce ? (
+        <AnimatedGradient
+          pointerEvents="none"
+          colors={['rgba(255,255,255,0)', 'rgba(255,255,255,0.085)', 'rgba(255,255,255,0)']}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              width: 220,
+              transform: [
+                {
+                  translateX: sweep.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-220, 380],
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
+      ) : null}
+    </View>
+  );
 }
 
 export function SkeletonLines({ lines = 3, widths }: { lines?: number; widths?: (number | `${number}%`)[] }) {

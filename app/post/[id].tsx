@@ -12,17 +12,21 @@ import { Chip, ChipRow } from '../../components/ui/Chip';
 import { Screen, useColumn } from '../../components/ui/Screen';
 import { Segmented } from '../../components/ui/Segmented';
 import { Sheet } from '../../components/ui/Sheet';
+import { ListSkeleton } from '../../components/ui/Skeleton';
 import { EmptyState, ErrorState } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, fonts, radius, space } from '../../constants/theme';
+import { supabase } from '../../lib/api/client';
 import { useAuth } from '../../lib/auth';
 import { extractMentions, uid } from '../../lib/format';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
 import { Comment, emptyReactions, LIMITS, SpoilerLevel } from '../../lib/model';
 import { commentsFor } from '../../lib/selectors';
 import { SPOILER_LABEL } from '../../lib/spoiler';
+import { getState } from '../../lib/store';
+import { adoptLocal, adoptPostThread } from '../../lib/sync';
 import { track } from '../../lib/analytics';
 
 type Sort = 'top' | 'newest' | 'oldest';
@@ -45,8 +49,28 @@ export default function PostDetail() {
   const [spoiler, setSpoiler] = useState<SpoilerLevel>('none');
   const [spoilerSheet, setSpoilerSheet] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [hydrating, setHydrating] = useState<boolean>(() => Boolean(!post && supabase && id));
   const inputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList<Row>>(null);
+
+  useEffect(() => {
+    if (!id || !supabase) return;
+    let alive = true;
+    setHydrating(!post);
+    void adoptPostThread(id, {
+      getState,
+      apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+      addPosts: (posts) => {
+        for (const p of posts) adoptLocal({ type: 'addPost', post: p });
+      },
+    }).finally(() => {
+      if (alive) setHydrating(false);
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   const comments = useMemo(() => (post ? commentsFor(state, post.id) : []), [state, post]);
   const rows = useMemo<Row[]>(() => {
@@ -72,6 +96,14 @@ export default function PostDetail() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commentId, rows.length]);
+
+  if (!post && hydrating) {
+    return (
+      <Screen header={<TopBar mode="stack" title="Post" />}>
+        <ListSkeleton rows={4} />
+      </Screen>
+    );
+  }
 
   if (!post || post.state === 'deleted') {
     return (

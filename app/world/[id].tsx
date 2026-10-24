@@ -110,21 +110,32 @@ export default function WorldScreen() {
           <Text variant="body" tone="secondary">
             {world.blurb}
           </Text>
-          {!mine ? (
-            <Pressable onPress={toggleMine} style={[styles.add, { borderColor: world.tint }]} accessibilityRole="button" accessibilityLabel={`Add ${world.label} to my worlds`}>
-              <Ionicons name="add-circle-outline" size={16} color={world.tint} />
-              <Text variant="label" style={{ color: world.tint }}>
-                Add {world.short} to my worlds
-              </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x3, flexWrap: 'wrap' }}>
+            {!mine ? (
+              <Pressable onPress={toggleMine} style={[styles.add, { borderColor: world.tint }]} accessibilityRole="button" accessibilityLabel={`Add ${world.label} to my worlds`}>
+                <Ionicons name="add-circle-outline" size={16} color={world.tint} />
+                <Text variant="label" style={{ color: world.tint }}>
+                  Add {world.short} to my worlds
+                </Text>
+              </Pressable>
+            ) : (
+              <Pressable onPress={toggleMine} style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2, alignSelf: 'flex-start' }} accessibilityRole="button" accessibilityLabel={`One of your worlds: ${world.label}`}>
+                <Ionicons name="checkmark-circle" size={16} color={world.tint} />
+                <Text variant="caption" tone="secondary">
+                  One of your worlds
+                </Text>
+              </Pressable>
+            )}
+            <Pressable
+              onPress={() => router.push('/communities')}
+              style={[styles.add, { borderColor: colors.borderStrong }]}
+              accessibilityRole="button"
+              accessibilityLabel={`${world.label} fandom rooms`}
+            >
+              <Ionicons name="people-outline" size={16} color={colors.textPrimary} />
+              <Text variant="label">Fandom Rooms</Text>
             </Pressable>
-          ) : (
-            <Pressable onPress={toggleMine} style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2, alignSelf: 'flex-start' }} accessibilityRole="button" accessibilityLabel={`One of your worlds: ${world.label}`}>
-              <Ionicons name="checkmark-circle" size={16} color={world.tint} />
-              <Text variant="caption" tone="secondary">
-                One of your worlds
-              </Text>
-            </Pressable>
-          )}
+          </View>
         </View>
 
         <View style={{ marginTop: space.x5 }}>
@@ -190,8 +201,8 @@ export default function WorldScreen() {
         </View>
 
         <View style={{ paddingHorizontal: space.margin, marginTop: space.x4, flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
-          <Ionicons name="film-outline" size={14} color={colors.textDisabled} />
-          <Text variant="caption" tone="disabled" style={{ flex: 1 }}>
+          <Ionicons name="film-outline" size={14} color={colors.textTertiary} />
+          <Text variant="caption" tone="tertiary" style={{ flex: 1 }}>
             Titles, art and ratings by TMDB. Hallyu is not endorsed or certified by TMDB.
           </Text>
         </View>

@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Pressable, Share, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { Pressable, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import { aspect, colors, radius, space } from '../../constants/theme';
 import { dramaLabel } from '../../lib/fandoms';
 import { compact, seasonEpisodeLabel, timeAgo } from '../../lib/format';
@@ -14,10 +14,13 @@ import { Tap } from '../ui/Tap';
 import { Text } from '../ui/Text';
 import { useToast } from '../ui/Toast';
 import { ReactionButton, ReactionSummary } from './Reactions';
+import { PollBlock } from './PollBlock';
+import { ShareCardModal } from '../share/ShareCardModal';
 import { FeedVideo } from '../media/FeedVideo';
 import { ImageCarousel } from '../media/ImageCarousel';
 import { SpoilerBlock, SpoilerTag } from './SpoilerBlock';
 import { RichText } from './RichText';
+import { VerificationSeal } from '../recognition/VerificationSeal';
 import * as Clipboard from 'expo-clipboard';
 import { localDone, saveImage, saveVideo, MediaError } from '../../lib/media';
 import { videoUrl } from '../../lib/video';
@@ -41,11 +44,12 @@ interface PostCardProps {
  */
 function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments }: PostCardProps) {
   const router = useRouter();
-  const { getUser, getDrama, getActor, isPostVeiled, isSaved, dispatch, me } = useApp();
+  const { getUser, getDrama, getActor, isPostVeiled, isSaved, watch, dispatch, me } = useApp();
   const require = useRequireMember();
   const toast = useToast();
   const { width, margin } = useLayout();
   const [menu, setMenu] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savePct, setSavePct] = useState(0);
   const [toDevice, setToDevice] = useState(false);
@@ -59,7 +63,10 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
   const imageW = Math.min(width - margin * 2, 640);
 
   const open = () => router.push(`/post/${post.id}`);
-  const share = () => Share.share({ message: `${post.title ?? post.body.slice(0, 80)} — https://hallyu.app/p/${post.id}` }).catch(() => {});
+  const share = () => {
+    haptic.light();
+    setShareOpen(true);
+  };
   const save = () =>
     require('save posts', () => {
       haptic.light();
@@ -138,25 +145,81 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
           <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} tone="secondary" />
         </>
       ) : post.type === 'review' ? (
-        <>
-          <View style={styles.ratingRow}>
-            <View style={styles.ratingBox}>
-              <Text variant="titleLarge" tone="warm" numeric>
-                {post.rating}
-              </Text>
-              <Text variant="caption" tone="warm" style={{ opacity: 0.8 }}>
-                /10
+        <View style={{ gap: space.x3 }}>
+          <View style={styles.reviewShowcase}>
+            {drama ? (
+              <Pressable onPress={() => router.push(`/drama/${drama.id}`)} accessibilityRole="link" accessibilityLabel={drama.title}>
+                <Poster drama={drama} width={60} rounded={radius.sm} />
+              </Pressable>
+            ) : null}
+            <View style={{ flex: 1, gap: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+                <View style={styles.ratingBox}>
+                  <Ionicons name="star" size={14} color={colors.warm} />
+                  <Text variant="titleSmall" style={{ color: colors.warm }} numeric>
+                    {post.rating}
+                  </Text>
+                  <Text variant="caption" style={{ color: colors.warm, opacity: 0.78 }}>
+                    /10
+                  </Text>
+                </View>
+                <Text variant="overline" tone="tertiary">
+                  VERDICT
+                </Text>
+              </View>
+              <Text variant={detail ? 'titleLarge' : 'title'} style={{ lineHeight: 22 }}>
+                {post.verdict}
               </Text>
             </View>
-            <Text variant={detail ? 'titleLarge' : 'title'} style={{ flex: 1 }}>
-              {post.verdict}
-            </Text>
           </View>
-          <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} tone="secondary" />
-        </>
+          {post.body ? <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} tone="secondary" /> : null}
+        </View>
       ) : post.type === 'recommendation' ? (
-        <>
-          {secondary ? (
+        <View style={{ gap: space.x3 }}>
+          {drama && secondary ? (
+            <View style={styles.recPairCard}>
+              <Pressable onPress={() => router.push(`/drama/${secondary.id}`)} style={styles.recCol} accessibilityRole="link" accessibilityLabel={`If you liked ${secondary.title}`}>
+                <Text variant="overline" tone="tertiary">
+                  IF YOU LOVED
+                </Text>
+                <Poster drama={secondary} width={66} rounded={radius.sm} />
+                <Text variant="caption" numberOfLines={1} style={{ textAlign: 'center', maxWidth: 96 }}>
+                  {secondary.title}
+                </Text>
+              </Pressable>
+              <View style={styles.recArrow}>
+                <Ionicons name="arrow-forward" size={18} color={colors.accent} />
+              </View>
+              <Pressable onPress={() => router.push(`/drama/${drama.id}`)} style={styles.recCol} accessibilityRole="link" accessibilityLabel={`Watch next: ${drama.title}`}>
+                <Text variant="overline" tone="accent">
+                  WATCH NEXT
+                </Text>
+                <Poster drama={drama} width={66} rounded={radius.sm} />
+                <Text variant="caption" numberOfLines={1} style={{ textAlign: 'center', maxWidth: 96 }}>
+                  {drama.title}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  require('save to watchlist', () => {
+                    haptic.light();
+                    const inList = Boolean(watch(drama.id));
+                    dispatch({ type: 'watch', dramaId: drama.id, status: inList ? null : 'want' });
+                    toast.show({ message: inList ? `Removed ${drama.title}` : `Saved ${drama.title} to Watchlist`, icon: 'bookmark' });
+                  })
+                }
+                style={[styles.recSaveBtn, watch(drama.id) ? styles.recSaveBtnOn : null]}
+                accessibilityRole="button"
+                accessibilityLabel={`Save ${drama.title} to watchlist`}
+              >
+                <Ionicons
+                  name={watch(drama.id) ? 'checkmark' : 'add'}
+                  size={16}
+                  color={watch(drama.id) ? colors.onAccent : colors.textPrimary}
+                />
+              </Pressable>
+            </View>
+          ) : secondary ? (
             <Pressable onPress={() => router.push(`/drama/${secondary.id}`)} hitSlop={4} accessibilityRole="link" accessibilityLabel={`If you liked ${secondary.title}`}>
               <Text variant="caption" tone="secondary">
                 If you liked{' '}
@@ -167,7 +230,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
             </Pressable>
           ) : null}
           <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} />
-        </>
+        </View>
       ) : post.type === 'reaction' ? (
         <RichText text={post.body} variant={detail ? 'headline' : 'titleLarge'} numberOfLines={detail ? undefined : 5} />
       ) : (
@@ -189,6 +252,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
       ) : post.images?.length ? (
         <ImageCarousel
           images={post.images}
+          imagePaths={post.imagePaths}
           width={imageW}
           height={post.images.length > 1 ? Math.round(imageW * 1.05) : Math.round(imageW / aspect.postImage) * 0.7}
           onPressImage={(i) => router.push({ pathname: '/media', params: { postId: post.id, index: String(i) } })}
@@ -212,14 +276,21 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
         {/* Author */}
         <View style={styles.author}>
           <Pressable onPress={() => author && router.push(`/user/${author.handle}`)} accessibilityRole="link" accessibilityLabel={`${author?.displayName ?? 'Unknown'} profile`} hitSlop={6}>
-            <Avatar uri={author?.avatarUrl} name={author?.displayName ?? '?'} size="md" />
+            <Avatar uri={author?.avatarUrl} avatarPath={author?.avatarPath} name={author?.displayName ?? '?'} size="md" />
           </Pressable>
           <View style={{ flex: 1 }}>
             <View style={styles.nameRow}>
               <Text variant="titleSmall" numberOfLines={1} onPress={() => author && router.push(`/user/${author.handle}`)}>
                 {author?.displayName ?? 'Unknown'}
               </Text>
-              {author?.verified ? <Ionicons name="checkmark-circle" size={14} color={colors.accentText} /> : null}
+              <VerificationSeal tier={author?.verificationTier} verified={author?.verified} size={15} />
+              {author?.awards?.some((a) => a.serialNumber != null && a.badgeId === 'founding_ten') ? (
+                <View style={{ paddingHorizontal: 5, paddingVertical: 1, borderRadius: 999, backgroundColor: 'rgba(245, 158, 11, 0.14)', borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.38)' }}>
+                  <Text style={{ fontSize: 10, fontWeight: '800', color: '#FDE68A' }} numeric>
+                    #{author.awards.find((a) => a.badgeId === 'founding_ten')?.serialNumber}
+                  </Text>
+                </View>
+              ) : null}
               <Text variant="caption" tone="tertiary">
                 @{author?.handle} · {timeAgo(post.createdAt)}
                 {post.editedAt ? ' · edited' : ''}
@@ -282,6 +353,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
         {/* Body (veiled or not) */}
         <SpoilerBlock id={post.id} level={post.spoiler} drama={drama} season={post.context.season} episode={post.context.episode} veiled={veiled}>
           {Body}
+          {post.poll ? <PollBlock postId={post.id} poll={post.poll} /> : null}
         </SpoilerBlock>
 
         {/* Hashtags not already inline in the body */}
@@ -462,6 +534,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
           </>
         )}
       </Sheet>
+      <ShareCardModal visible={shareOpen} onClose={() => setShareOpen(false)} post={post} drama={drama} author={author} />
     </>
   );
 }
@@ -488,7 +561,63 @@ const styles = StyleSheet.create({
   epChip: { backgroundColor: colors.accentSoft, paddingHorizontal: 6, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   kindRow: { flexDirection: 'row' },
   ratingRow: { flexDirection: 'row', alignItems: 'center', gap: space.x3 },
-  ratingBox: { flexDirection: 'row', alignItems: 'baseline', backgroundColor: colors.warmSoft, paddingHorizontal: 10, height: 40, borderRadius: radius.sm },
+  ratingBox: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 4,
+    backgroundColor: colors.warmSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.full,
+  },
+  reviewShowcase: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.x3,
+    padding: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+  },
+  recPairCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.x2,
+    padding: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+  },
+  recCol: {
+    alignItems: 'center',
+    gap: 5,
+    flex: 1,
+  },
+  recArrow: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recSaveBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.surface3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recSaveBtnOn: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.x2, marginTop: -4 },
   actions: { flexDirection: 'row', alignItems: 'center', gap: space.x2, marginTop: -4 },
   action: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36, paddingHorizontal: 6 },

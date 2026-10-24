@@ -28,7 +28,7 @@ playback are deliberately out of scope: `titles.trailer_url` still exists, and n
 ```
 supabase/
 ├── config.toml                     project configuration for `supabase start` / `db reset`
-├── migrations/                     39 ordered migrations — the schema, applied in filename order
+├── migrations/                     40 ordered migrations — the schema, applied in filename order
 ├── seed.sql                        reference rows only (4 worlds, 1 provider, 4 official rooms)
 ├── env.example                     every credential name, placeholder values only
 ├── functions/
@@ -84,6 +84,8 @@ supabase/
 | 35 | `20260101123500_35_feed_pagination.sql` | `feed_page` with keyset cursors, the cursor codec, `comment_page` |
 | 36 | `20260101123600_36_audit_and_deletion.sql` | a survivable audit log (`actor_handle`), and `delete_account`/`purge_deleted_accounts` completed for the new tables |
 | 37 | `20260101123700_37_storage_removal_queue.sql` | `media_removal_queue` and the claim/complete RPCs — storage deletion goes through the Storage API — plus the `profiles_guard_privileges` trigger |
+| 38 | `20260101123800_38_browse_ranking.sql` | `browse_titles` — the ranked browse surface behind Explore, with the sort degrading to the app-wide ordering rather than failing |
+| 39 | `20260101123900_39_video_publishing.sql` | `video_creators` (the allowlist), `video_access_requests` (the queue), the grant/revoke/review RPCs, and the video gates on `begin_media_upload` + `post_media` |
 
 ## Freshness, ranking and discovery
 
@@ -158,17 +160,41 @@ failure is recorded without stopping the others.
   `purge_deleted_accounts()` hard-deletes the tombstone after the retention window.
 - **Events are partitioned and validated.** `analytics_events` is RANGE-partitioned by month with a
   default partition and a BRIN index; `record_event()` validates the name, caps properties at 2 kB and
-  requires either a session or an install-scoped anonymous id.
+  requires either a session or an install-scoped anonymous id. Every partition — the default one and
+  each month created at run time by `ensure_event_partition()` — carries its own row level security
+  flag. A partition read by name is checked against that partition's flag, not the parent's, so
+  without it a single over-broad `grant select on all tables in schema public` would expose every
+  event; with it, a partition denies everything and the parent's moderator policy still governs
+  `select ... from analytics_events`.
 
 ## Verification
 
 ```sh
-node scripts/verify-sql.mjs             # parses all 37 migrations; RLS, search_path, dynamic SQL, credentials
+node scripts/verify-sql.mjs             # parses all 40 migrations; RLS, search_path, dynamic SQL, credentials
 node scripts/verify-db-types.mjs        # proves supabase/types/database.ts matches the migrations
 node scripts/verify-backend-surface.mjs # proves every required capability exists and is not a placeholder
 node scripts/verify-backend.mjs         # live integration test against a real project
 npm run check                           # typecheck, lint, fandom checks, and all offline backend checks
 ```
+
+With a database (local `psql`, or the CI service container):
+
+```sh
+node scripts/localdb/apply.mjs           # applies the migrations, then validates every function body
+node scripts/localdb/verify-function-bodies.mjs   # the body-validation step on its own
+node scripts/localdb/check.mjs           # replays the backend behaviour checks against that database
+node scripts/localdb/surface.mjs         # calls every public function once, so plpgsql bodies compile
+```
+
+Applying and validating are two different checks and both are needed. Each migration turns
+`check_function_bodies` off for its own duration, because a file may define a function whose
+dependencies arrive in a later file — so applying the schema proves nothing about the code inside it.
+`verify-function-bodies.mjs` re-creates all 174 definitions against the finished schema with
+validation **on**, each inside a transaction that is rolled back, so a body that names a table the
+schema never created, a column that does not exist, or an operator that lives outside the function's
+pinned `search_path` is reported instead of waiting for the member who calls it. It never runs a
+function, which is why it is safe to point at the live project — `surface.mjs` calls them, catches
+plpgsql compile errors too, and belongs on a disposable database only.
 
 `verify-backend-surface.mjs` is the completeness gate: a manifest of every capability Hallyu's backend
 must provide, each checked against the migration that implements it, plus a global scan that no

@@ -9,6 +9,7 @@ import { IconButton } from '../components/ui/IconButton';
 import { Text } from '../components/ui/Text';
 import { useToast } from '../components/ui/Toast';
 import { colors, space } from '../constants/theme';
+import { normalizeMediaUrl } from '../lib/api/client';
 import { useApp } from '../lib/hooks';
 import { saveImage, saveVideo } from '../lib/media';
 import { videoUrl } from '../lib/video';
@@ -28,9 +29,21 @@ export default function MediaViewer() {
   const { getPost, getUser } = useApp();
   const post = getPost(params.postId);
   const slides = useMemo<Slide[]>(() => {
-    if (post?.video) return [{ kind: 'video', uri: post.video.url, poster: post.video.poster ?? post.images?.[0] }];
-    if (post?.images?.length) return post.images.map((source) => ({ kind: 'image', source }));
-    return (params.uris ? params.uris.split('|') : params.uri ? [params.uri] : []).filter(Boolean).map((source) => ({ kind: 'image', source }));
+    if (post?.video) {
+      const normalizedVideo = normalizeMediaUrl(post.video.url) ?? post.video.url;
+      const rawPoster = post.video.poster ?? post.images?.[0];
+      const normalizedPoster = typeof rawPoster === 'string' ? normalizeMediaUrl(rawPoster) ?? rawPoster : rawPoster;
+      return [{ kind: 'video', uri: normalizedVideo, poster: normalizedPoster }];
+    }
+    if (post?.images?.length) {
+      return post.images.map((source) => ({
+        kind: 'image',
+        source: typeof source === 'string' ? normalizeMediaUrl(source) ?? source : source,
+      }));
+    }
+    return (params.uris ? params.uris.split('|') : params.uri ? [params.uri] : [])
+      .filter(Boolean)
+      .map((source) => ({ kind: 'image', source: normalizeMediaUrl(source) ?? source }));
   }, [post, params.uris, params.uri]);
   const title = params.title ?? (post ? `@${getUser(post.authorId)?.handle ?? 'post'}` : '');
   const [index, setIndex] = useState(Math.min(Number(params.index) || 0, Math.max(0, slides.length - 1)));

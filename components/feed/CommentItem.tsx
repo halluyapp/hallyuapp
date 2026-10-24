@@ -14,6 +14,7 @@ import { useToast } from '../ui/Toast';
 import { ReactionButton } from './Reactions';
 import { RichText } from './RichText';
 import { SpoilerBlock, SpoilerTag } from './SpoilerBlock';
+import { VerificationSeal } from '../recognition/VerificationSeal';
 
 interface CommentItemProps {
   comment: Comment;
@@ -63,6 +64,7 @@ function CommentItemBase({ comment, post, isReply, onReply, highlighted, replyCo
                 {author?.displayName}
               </Text>
             </Pressable>
+            <VerificationSeal tier={author?.verificationTier} verified={author?.verified} size={13} />
             {isOP ? (
               <View style={styles.op}>
                 <Text variant="caption" tone="accent" style={{ fontSize: 10, lineHeight: 12 }}>

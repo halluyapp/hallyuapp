@@ -1,4 +1,4 @@
-import { useRouter, useRootNavigationState } from 'expo-router';
+import { usePathname, useRouter, useRootNavigationState } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Animated, Pressable, StyleSheet, View } from 'react-native';
@@ -72,13 +72,29 @@ function gateDetail(conn: ConnectionStatus | null): string {
 export default function Index() {
   const auth = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
   const { state } = useStore();
   // expo-router requires the root navigator to be registered before ANY router.replace/push —
   // navigating earlier throws "Attempted to navigate before mounting the Root Layout component".
   const navReady = useRootNavigationState()?.key != null;
   const online = useNetwork();
   const configured = isBackendConfigured();
-  const accountAligned = auth.status === 'signedIn' ? state.profile.id === auth.user?.id : auth.status === 'guest' ? state.profile.id === GUEST_ID : true;
+  const [syncTimedOut, setSyncTimedOut] = useState(false);
+
+  useEffect(() => {
+    setSyncTimedOut(false);
+    if (auth.status !== 'signedIn' || !configured) return;
+    if (state.backendSyncedUserId === auth.user?.id) return;
+    const t = setTimeout(() => setSyncTimedOut(true), 3500);
+    return () => clearTimeout(t);
+  }, [auth.status, auth.user?.id, configured, state.backendSyncedUserId]);
+
+  const accountAligned =
+    auth.status === 'signedIn'
+      ? state.profile.id === auth.user?.id && (!configured || state.backendSyncedUserId === auth.user?.id || syncTimedOut)
+      : auth.status === 'guest'
+        ? state.profile.id === GUEST_ID
+        : true;
   const coreReady = auth.status !== 'loading' && state.hydrated && accountAligned;
   // The connection gate: with a backend configured, cold start waits for the bounded probe —
   // never longer than the bailout window — and publishes the true state via BackendHealth.
@@ -127,10 +143,17 @@ export default function Index() {
     if (!ready || !navReady || hasNavigated.current) return;
     hasNavigated.current = true;
 
+    // Preserve cold-start App Links, custom scheme deep links, and push notification taps when
+    // Expo Router mounts `index` underneath the requested target screen on cold start.
+    if (pathname && pathname !== '/' && auth.status === 'signedIn' && state.onboarding.done) {
+      markBoot(`index:deep-link ${pathname}`);
+      return;
+    }
+
     const dest = auth.status === 'signedOut' ? '/(auth)/welcome' : auth.status === 'signedIn' && !state.onboarding.done ? '/(onboarding)/fandoms' : '/(tabs)';
     markBoot(`index:redirect${auth.status === 'signedOut' || (auth.status === 'signedIn' && !state.onboarding.done) ? '' : ':tabs'} ${dest}`);
     router.replace(dest as never);
-  }, [ready, navReady, auth.status, state.onboarding.done, router]);
+  }, [ready, navReady, pathname, auth.status, state.onboarding.done, router]);
 
   // Auto-bailout failsafe: if readiness never arrives, force navigation to welcome.
   //

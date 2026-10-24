@@ -15,9 +15,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
+import { performVerifiedAccountDeletion } from './accountDeletion';
 import { reportError, track } from './analytics';
 import { markBoot } from './boot';
-import { setBackendAccessToken, supabase } from './api/client';
+import { ensureBackendSessionToken, setBackendAccessToken, supabase } from './api/client';
 
 export type AuthStatus = 'loading' | 'signedOut' | 'guest' | 'signedIn';
 
@@ -61,7 +62,12 @@ const Ctx = createContext<AuthValue | null>(null);
 const GUEST_KEY = 'hallyu.auth.guest';
 const ACCOUNT_KEY = 'hallyu.auth.account.v1';
 /** Deep link the backend emails return to (declared in supabase/config.toml + app.json scheme). */
-const AUTH_REDIRECT = 'hallyu://auth/callback';
+function authRedirectUrl(): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}/auth/callback`;
+  }
+  return 'hallyu://auth/callback';
+}
 
 const MIN_PASSWORD = 6;
 
@@ -222,6 +228,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email: address, password });
       if (error) throw error;
+      setBackendAccessToken(data.session?.access_token ?? null);
       await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
       const next = mapSupabaseUser(data.user);
       setUser(next);
@@ -255,11 +262,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data, error } = await supabase.auth.signUp({
         email: address,
         password,
-        options: { data: { display_name: name, full_name: name, handle }, emailRedirectTo: AUTH_REDIRECT },
+        options: { data: { display_name: name, full_name: name, handle }, emailRedirectTo: authRedirectUrl() },
       });
       if (error) throw error;
       await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
       if (data.session?.user) {
+        setBackendAccessToken(data.session.access_token ?? null);
         setUser(mapSupabaseUser(data.session.user));
         setStatus('signedIn');
         track('auth.signup', { provider: 'email' });
@@ -281,7 +289,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!supabase) throw new AuthError('unknown', NO_MAIL);
 
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(address, { redirectTo: AUTH_REDIRECT });
+      const { error } = await supabase.auth.resetPasswordForEmail(address, { redirectTo: authRedirectUrl() });
       if (error) throw error;
       setRecoveryPending(true);
     } catch (e) {
@@ -310,7 +318,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!supabase) throw new AuthError('unknown', NO_MAIL);
 
     try {
-      const { error } = await supabase.auth.resend({ type: 'signup', email: address, options: { emailRedirectTo: AUTH_REDIRECT } });
+      const { error } = await supabase.auth.resend({ type: 'signup', email: address, options: { emailRedirectTo: authRedirectUrl() } });
       if (error) throw error;
     } catch (e) {
       throw mapAuthError(e);
@@ -337,23 +345,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const deleteAccount = useCallback(async () => {
-    // Server-side deletion first (migration 20/36: scrubs private data, tombstones the identity),
-    // then the device wipe. When the backend is unavailable, deleting still means wiping the
-    // device's copy — reported honestly by the settings screen's connection state.
-    if (supabase) {
-      try {
-        const { error } = await supabase.rpc('delete_account');
-        if (error) reportError('auth.deleteAccount.rpc', error);
-      } catch (e) {
-        reportError('auth.deleteAccount', e);
-      }
-      await supabase.auth.signOut().catch(() => {});
-      setBackendAccessToken(null);
-    }
-    await AsyncStorage.removeItem(ACCOUNT_KEY).catch(() => {});
-    await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
-    setUser(null);
-    setStatus('signedOut');
+    // Server-side deletion MUST confirm `{ deleted: true }` before signing out or wiping device storage.
+    // If the RPC errors, times out, or lacks a session, `performVerifiedAccountDeletion` throws
+    // without touching local session/cache so the UI never falsely claims deletion succeeded.
+    await performVerifiedAccountDeletion({
+      hasRemoteBackend: Boolean(supabase),
+      ensureSessionToken: () => ensureBackendSessionToken(),
+      rpcDeleteAccount: async () => {
+        const res = await supabase!.rpc('delete_account');
+        return {
+          data: (res.data as { deleted?: boolean } | null) ?? null,
+          error: res.error ? { message: res.error.message, code: res.error.code } : null,
+        };
+      },
+      signOutRemote: async () => {
+        setBackendAccessToken(null);
+        await supabase!.auth.signOut();
+      },
+      clearLocalAccountStorage: async () => {
+        await AsyncStorage.removeItem(ACCOUNT_KEY).catch(() => {});
+        await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
+      },
+      clearLocalSessionState: () => {
+        setBackendAccessToken(null);
+        setUser(null);
+        setStatus('signedOut');
+      },
+      recordDiagnosticError: (scope, summary) => {
+        reportError(scope, new Error(summary));
+      },
+    });
   }, []);
 
   const value = useMemo<AuthValue>(

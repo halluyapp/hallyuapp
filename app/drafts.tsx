@@ -20,7 +20,7 @@ export default function Drafts() {
   const { state, dispatch, getDrama } = useApp();
   const padding = useListPadding(false);
   const [confirm, setConfirm] = useState<string | null>(null);
-  const drafts = [...state.drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const drafts = [...state.drafts].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
   return (
     <Screen header={<TopBar mode="stack" title="Drafts" subtitle={drafts.length ? `${drafts.length} on this device` : undefined} />}>
       <FlatList
@@ -28,7 +28,9 @@ export default function Drafts() {
         keyExtractor={(d) => d.id}
         contentContainerStyle={[padding, drafts.length ? null : { flex: 1 }]}
         renderItem={({ item: d }) => {
-          const meta = CREATE_TYPES.find((t) => t.type === d.type)!;
+          // A draft saved by an older build can carry a type this build no longer has. Show it with the
+          // generic entry instead of crashing the whole list.
+          const meta = CREATE_TYPES.find((t) => t.type === d.type) ?? CREATE_TYPES[0]!;
           const drama = getDrama(d.context.dramaId);
           const preview = d.title || d.verdict || d.body || (d.images.length ? `${d.images.length} image${d.images.length > 1 ? 's' : ''}` : 'Empty draft');
           return (

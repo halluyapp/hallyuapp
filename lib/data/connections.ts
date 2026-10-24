@@ -23,11 +23,11 @@ function remember(profiles: User[]): void {
 }
 
 async function backendConnections(userId: string, tab: 'followers' | 'following'): Promise<User[] | null> {
-  if (!hasSession() || !supabase) return null;
+  if (!supabase) return null;
   const column = tab === 'following' ? 'target_id' : 'follower_id';
   const match = tab === 'following' ? 'follower_id' : 'target_id';
   const { data, error } = await supabase.from('follows').select(column).eq(match, userId).limit(200);
-  if (error || !data) return null;
+  if (error || !data) return hasSession() ? null : null;
   const ids = data.map((row) => (row as Record<string, string>)[column]).filter(Boolean);
   if (!ids.length) return [];
   const profiles = await fetchProfiles(ids);
@@ -37,7 +37,7 @@ async function backendConnections(userId: string, tab: 'followers' | 'following'
 
 /** Resolve a handle to a profile id even when the device has never seen that member. */
 async function backendUserIdForHandle(handle: string): Promise<string | null> {
-  if (!hasSession() || !supabase) return null;
+  if (!supabase) return null;
   const { data, error } = await supabase.from('profiles').select('id').ilike('handle', handle).limit(1);
   if (error || !data?.length) return null;
   return (data[0] as { id: string }).id;

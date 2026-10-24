@@ -1,44 +1,55 @@
 /**
- * The store ↔ backend bridge.
+ * The store ↔ backend bridge + Supabase Realtime sync.
  *
- * Two directions, both no-ops unless a connected build has a real session:
+ * Two directions, plus live Realtime subscriptions:
  *
  *  mirror   every write the app performs as a store action is forwarded to the Hallyu backend
- *           (lib/api/social.ts). The store is the optimistic cache, NOT the source of truth: when
- *           the backend rejects a write the cache is rolled back to the value it held before, and
- *           the failure is published so the screen can say so. A member must never keep looking at
- *           a like, save, follow or post that the server refused — that was the previous
- *           behaviour (fire-and-forget, logged to analytics, cache left showing "done").
+ *           (lib/api/social.ts). When the backend rejects a write the optimistic cache is rolled
+ *           back to the value it held before, and the failure is published so the screen shows an
+ *           honest toast instead of pretending the change saved.
  *
- *  adopt    on sign-in/session restore the member's server state (bootstrap: profile, preferences,
- *           follows, saves, watchlist; the latest feed page; the notification inbox) is read and
- *           folded into the cache, so what screens show is real backend data.
+ *  adopt    on sign-in/session restore (and on public cold start for anonymous visitors) server
+ *           state — profile, preferences, follows, saves, reactions, collections, watchlist,
+ *           alerts, feed posts, comments, public shelves, community pulse, and notifications — is
+ *           folded cleanly into the local store cache.
  *
- * The store imports `mirrorAction` (one line in `dispatch`); adoption is called from AccountSync
- * (app/_layout.tsx). `import type` from './store' keeps the module graph acyclic at runtime — the
- * one value sync needs back from the store (dispatch) arrives through `setRestoreDispatcher`.
+ *  realtime subscribes to Postgres changes on `posts`, `comments`, and `notifications` so live
+ *           activity from other devices/members lands without manual reloads.
  */
 import { reportError } from './analytics';
+import { presentServerNotificationBanner } from './reminders';
 import { fetchBootstrap, serverProfileToUser } from './api/bootstrap';
-import { fetchComments, fetchFeed, fetchNotifications, fetchProfiles, fetchPosts, resolveActorClientIds, resolveDramaClientIds } from './api/feed';
+import {
+  fetchComments,
+  fetchCommunityPulse,
+  fetchDramasByUuids,
+  fetchFeed,
+  fetchNotifications,
+  fetchPosts,
+  fetchPostThread,
+  fetchProfileByHandle,
+  fetchProfiles,
+  fetchPublicCollections,
+  hydrateCollectionBundles,
+  hydrateServerPosts,
+  resolveActorClientIds,
+  serverTitleToDrama,
+  toComment,
+  type ServerComment,
+  type ServerTitleRow,
+} from './api/feed';
+import { signedUrls } from './api/media';
+import { syncMyRecognition } from './api/recognition';
 import * as social from './api/social';
-import { getBackendAccessToken, supabase } from './api/client';
+import { ensureBackendSessionToken, getBackendAccessToken, supabase } from './api/client';
 import type { AppState, Action, Prefs } from './store';
-import type { Comment, Post, WatchlistItem } from './model';
+import type { Collection, Comment, Community, Drama, FandomId, Post, ReactionKind, User, WatchlistItem } from './model';
 
 // ── Failed writes ──────────────────────────────────────────────────────────────────────────────
 
-/**
- * A write the backend refused. Screens subscribe through `subscribeSyncFailures` (the app shell
- * turns each one into a toast) so the member is told the truth instead of silently losing the
- * change at the next adoption.
- */
 export interface SyncFailure {
-  /** The store action type that failed, e.g. 'save'. */
   scope: string;
-  /** What the member was trying to do, phrased for them. */
   message: string;
-  /** Always true today: the optimistic cache change was put back. */
   rolledBack: boolean;
   error: unknown;
 }
@@ -58,12 +69,10 @@ export function subscribeSyncFailures(fn: () => void): () => void {
 }
 
 function publishFailure(failure: SyncFailure): void {
-  // Bounded: this is a live signal for "that did not save", not an archive.
   failures = [...failures, failure].slice(-20);
   for (const fn of Array.from(failureListeners)) fn();
 }
 
-/** Human wording per action, so the toast names what failed rather than an internal scope. */
 const FAILURE_COPY: Record<string, string> = {
   addPost: 'Your post was not saved',
   editPost: 'Your edit was not saved',
@@ -73,6 +82,7 @@ const FAILURE_COPY: Record<string, string> = {
   react: 'That reaction was not saved',
   save: 'That save was not saved',
   follow: 'That follow was not saved',
+  dramaNotify: 'That episode alert change was not saved',
   'watch.remove': 'Removing that title was not saved',
   'watch.upsert': 'Updating your watchlist was not saved',
   'watch.progress': 'Updating your progress was not saved',
@@ -87,19 +97,38 @@ const FAILURE_COPY: Record<string, string> = {
   upsertCollection: 'That collection was not saved',
   deleteCollection: 'That collection was not deleted',
   collectionItem: 'That change to the collection was not saved',
+  joinCommunity: 'That community membership change was not saved',
 };
 
 // ── Mirror ────────────────────────────────────────────────────────────────────────────────────
 
-/** True while adoption is writing server rows into the cache — those writes must not mirror back. */
 let adopting = false;
+const pendingReadIds = new Map<string, number>();
+let pendingReadGroupUntil: { group: string | null; until: number } | null = null;
+
+function applyPendingReadMarks<T extends { id: string; group: string; read: boolean }>(list: T[]): T[] {
+  const now = Date.now();
+  for (const [id, until] of pendingReadIds.entries()) {
+    if (until < now) pendingReadIds.delete(id);
+  }
+  if (pendingReadGroupUntil && pendingReadGroupUntil.until < now) {
+    pendingReadGroupUntil = null;
+  }
+  return list.map((n) => {
+    if (n.read) return n;
+    if (pendingReadIds.has(n.id)) return { ...n, read: true };
+    if (
+      pendingReadGroupUntil &&
+      (!pendingReadGroupUntil.group || pendingReadGroupUntil.group === n.group)
+    ) {
+      return { ...n, read: true };
+    }
+    return n;
+  });
+}
 
 const sessionReady = (): boolean => Boolean(supabase && getBackendAccessToken());
 
-/**
- * The slices each mirrored action can change. A rejected write must put exactly these back, and
- * nothing else: reverting more would throw away unrelated edits the member made in the meantime.
- */
 const MIRRORED_SLICES: Record<string, (keyof AppState)[]> = {
   addPost: ['posts'],
   editPost: ['posts'],
@@ -108,12 +137,13 @@ const MIRRORED_SLICES: Record<string, (keyof AppState)[]> = {
   deleteComment: ['comments', 'posts'],
   react: ['reactions', 'posts', 'comments'],
   save: ['saves', 'posts'],
-  follow: ['follows'],
+  follow: ['follows', 'profile', 'users'],
+  dramaNotify: ['dramaNotify'],
   watch: ['watchlist', 'follows'],
   progress: ['watchlist', 'follows'],
   note: ['watchlist'],
   prefs: ['prefs'],
-  profile: ['profile'],
+  profile: ['profile', 'users'],
   onboarding: ['onboarding'],
   readNotifications: ['notifications'],
   block: ['blockedUsers', 'follows'],
@@ -123,24 +153,15 @@ const MIRRORED_SLICES: Record<string, (keyof AppState)[]> = {
   upsertCollection: ['collections'],
   deleteCollection: ['collections'],
   collectionItem: ['collections'],
+  joinCommunity: ['joinedCommunities'],
 };
 
-/** Installed by lib/store.tsx (see the note there): the rollback needs dispatch, sync cannot import it. */
 let applyWithoutMirror: ((action: Action) => void) | null = null;
 
 export function setApplyDispatcher(fn: (action: Action) => void): void {
   applyWithoutMirror = fn;
 }
 
-/**
- * Apply a cache action WITHOUT mirroring it to the backend.
- *
- * Two callers need this and both have already written to the server themselves:
- *  - the rollback below, whose undo must not be sent back;
- *  - the media composer, which awaits `insertPost` + `complete_media_upload` itself before adding
- *    the post to the cache, because it has to know the server accepted the upload before the cache
- *    is allowed to show it as posted.
- */
 function applyLocal(action: Action): void {
   if (!applyWithoutMirror) return;
   adopting = true;
@@ -151,7 +172,6 @@ function applyLocal(action: Action): void {
   }
 }
 
-/** Put the slices `action` touched back to the value they held before the failed write. */
 function revert(action: Action, prev: AppState): void {
   const keys = MIRRORED_SLICES[action.type];
   if (!keys) return;
@@ -160,20 +180,10 @@ function revert(action: Action, prev: AppState): void {
   applyLocal({ type: 'restore', patch });
 }
 
-/**
- * Adopt a server-owned write into the cache without mirroring it back. The media composer uses this
- * after it has itself created the post and attached the uploads, so the cache only ever shows a
- * post the server actually accepted.
- */
 export function adoptLocal(action: Action): void {
   applyLocal(action);
 }
 
-/**
- * Attach the rollback + the visible failure to one mirrored write. `work` is the backend promise;
- * a rejection means the server did NOT accept the change, so the optimistic cache must not keep
- * pretending it did.
- */
 function write(action: Action, prev: AppState, scope: string, work: Promise<unknown>): void {
   void work.catch((e) => {
     revert(action, prev);
@@ -182,7 +192,6 @@ function write(action: Action, prev: AppState, scope: string, work: Promise<unkn
   });
 }
 
-/** The world a drama belongs to (posts.world is a worlds.id reference). */
 export function worldOf(state: AppState, dramaId?: string): string | null {
   if (!dramaId) return null;
   const format = state.importedDramas.find((d) => d.id === dramaId)?.format;
@@ -198,13 +207,8 @@ const FOLLOW_KINDS: Record<keyof AppState['follows'], social.FollowKind> = {
   collections: 'collection',
 };
 
-/**
- * Forward one store action to the backend. Called synchronously from `dispatch` (fire-and-forget);
- * anything that is purely device state (drafts, revealed spoilers, recent searches, UI caches) is
- * deliberately NOT here.
- */
 export function mirrorAction(action: Action, prev: AppState, next: AppState): void {
-  if (adopting || !sessionReady()) return;
+  if (adopting || !supabase || !social.isUuid(next.profile.id)) return;
   const me = next.profile.id;
 
   switch (action.type) {
@@ -212,7 +216,7 @@ export function mirrorAction(action: Action, prev: AppState, next: AppState): vo
       write(action, prev, 'addPost', social.insertPost(action.post, action.post.authorId ?? me, worldOf(next, action.post.context.dramaId)));
       return;
     case 'editPost':
-      write(action, prev, 'editPost', social.updatePost(action.id, action.patch));
+      write(action, prev, 'editPost', social.updatePost(action.id, action.patch, worldOf(next, action.patch.context?.dramaId)));
       return;
     case 'deletePost':
       write(action, prev, 'deletePost', social.deletePost(action.id));
@@ -240,6 +244,9 @@ export function mirrorAction(action: Action, prev: AppState, next: AppState): vo
       }
       return;
     }
+    case 'dramaNotify':
+      write(action, prev, 'dramaNotify', social.setTitleAlert(action.id, action.on));
+      return;
     case 'watch': {
       if (action.status === null) {
         write(action, prev, 'watch.remove', social.removeWatchlist(action.dramaId));
@@ -273,6 +280,12 @@ export function mirrorAction(action: Action, prev: AppState, next: AppState): vo
       return;
     case 'readNotifications': {
       const group = action.group && action.group !== 'all' ? action.group : undefined;
+      const until = Date.now() + 12_000;
+      if (action.id) {
+        pendingReadIds.set(action.id, until);
+      } else {
+        pendingReadGroupUntil = { group: group ?? null, until };
+      }
       write(action, prev, 'readNotifications', social.markNotificationsRead(action.id ? [action.id] : undefined, group));
       return;
     }
@@ -308,9 +321,59 @@ export function mirrorAction(action: Action, prev: AppState, next: AppState): vo
       write(action, prev, 'collectionItem', social.setCollectionItem(action.collectionId, action.dramaId, action.on, item?.note));
       return;
     }
+    case 'joinCommunity': {
+      const on = next.joinedCommunities.includes(action.id);
+      if (on !== prev.joinedCommunities.includes(action.id)) {
+        write(action, prev, 'joinCommunity', social.joinCommunity(action.id, on));
+      }
+      return;
+    }
     default:
       return;
   }
+}
+
+// ── Merge helpers ─────────────────────────────────────────────────────────────────────────────
+
+function mergeDramas(existing: Drama[], incoming: Drama[]): Drama[] {
+  if (!incoming.length) return existing;
+  const byId = new Map(existing.map((d) => [d.id, d]));
+  for (const d of incoming) {
+    const prev = byId.get(d.id);
+    byId.set(d.id, prev ? { ...d, ...prev, synopsis: d.synopsis || prev.synopsis, streamingOn: d.streamingOn?.length ? d.streamingOn : prev.streamingOn, trailerUrl: d.trailerUrl ?? prev.trailerUrl } : d);
+  }
+  return [...byId.values()];
+}
+
+function mergeCommunities(existing: Community[], incoming: Community[]): Community[] {
+  if (!incoming.length) return existing;
+  const byId = new Map(existing.map((c) => [c.id, c]));
+  for (const c of incoming) byId.set(c.id, c);
+  return [...byId.values()];
+}
+
+function mergeCollections(existing: Collection[], incoming: Collection[]): Collection[] {
+  if (!incoming.length) return existing;
+  const byId = new Map(existing.map((c) => [c.id, c]));
+  for (const c of incoming) byId.set(c.id, c);
+  return [...byId.values()];
+}
+
+function mergeUsers(existing: Record<string, User>, incoming: User[]): Record<string, User> {
+  if (!incoming.length) return existing;
+  const out = { ...existing };
+  for (const u of incoming) {
+    const prev = out[u.id];
+    out[u.id] = {
+      ...prev,
+      ...u,
+      avatarUrl: u.avatarUrl ?? prev?.avatarUrl,
+      avatarPath: u.avatarPath ?? prev?.avatarPath,
+      bannerUrl: u.bannerUrl ?? prev?.bannerUrl,
+      role: u.role ?? prev?.role,
+    };
+  }
+  return out;
 }
 
 // ── Adoption ──────────────────────────────────────────────────────────────────────────────────
@@ -334,7 +397,6 @@ interface ServerPrefs {
   terms_version?: number;
 }
 
-/** Server preferences → client Prefs (only the keys the server actually holds). */
 function adoptPrefs(server: ServerPrefs | null, current: Prefs): Prefs {
   if (!server) return current;
   return {
@@ -343,6 +405,7 @@ function adoptPrefs(server: ServerPrefs | null, current: Prefs): Prefs {
     oneTapReactions: server.one_tap_reactions ?? current.oneTapReactions,
     mutedWords: server.muted_words ?? current.mutedWords,
     trueBlack: server.true_black ?? current.trueBlack,
+    livePulseBanner: current.livePulseBanner,
     personalization: server.personalization ?? current.personalization,
     reduceMotion: server.reduce_motion ?? current.reduceMotion,
     notifications: {
@@ -371,22 +434,60 @@ interface ServerWatchlistRow {
 }
 
 export interface AdoptionCallbacks {
-  /** The current cache, read fresh at each step (adoption is async). */
   getState: () => AppState;
-  /** Merge server-owned slices into the cache (profile, prefs, follows, saves, watchlist, notifications, users). */
   apply: (patch: Partial<AppState>) => void;
-  /** Server posts go in one by one so the cache keeps any local-only posts as well. */
   addPosts: (posts: Post[]) => void;
-  /** Called before every cache write; true once this adoption is stale (sign-out, account switch). */
   isStale?: () => boolean;
 }
 
 /**
- * Read the member's server state and fold it into the cache. Never throws: a failure leaves the
- * cache exactly as it was and is reported as diagnostics.
+ * Hydrate public community content (latest feed, public collections, top voices, most discussed
+ * dramas) for anonymous / guest sessions as well as signed-in sessions.
+ */
+export async function adoptPublicState(cb: Pick<AdoptionCallbacks, 'getState' | 'apply' | 'addPosts'>): Promise<void> {
+  if (!supabase) return;
+  adopting = true;
+  try {
+    const [feed, pulse, publicCols] = await Promise.all([
+      fetchFeed('latest', { limit: 25 }).catch(() => null),
+      fetchCommunityPulse(null, 16).catch(() => null),
+      fetchPublicCollections(24).catch(() => null),
+    ]);
+
+    if (feed?.items.length) cb.addPosts(feed.items);
+
+    const current = cb.getState();
+    const authorIds = [...new Set(cb.getState().posts.slice(0, 80).map((p) => p.authorId))].filter((id) => id && !current.users[id]);
+    const postAuthors = authorIds.length ? await fetchProfiles(authorIds).catch(() => []) : [];
+
+    const allUsers = [...postAuthors, ...(pulse?.topVoices ?? []), ...(publicCols?.owners ?? [])];
+    const allDramas = [...(pulse?.dramas ?? []), ...(publicCols?.dramas ?? [])];
+    const allCollections = publicCols?.collections ?? [];
+    const allCommunities = pulse?.communities ?? [];
+
+    if (allUsers.length || allDramas.length || allCollections.length || allCommunities.length) {
+      const latest = cb.getState();
+      cb.apply({
+        users: mergeUsers(latest.users, allUsers),
+        importedDramas: mergeDramas(latest.importedDramas, allDramas),
+        collections: mergeCollections(latest.collections, allCollections),
+        communities: mergeCommunities(latest.communities, allCommunities),
+      });
+    }
+  } catch (e) {
+    reportError('sync.adoptPublic', e);
+  } finally {
+    adopting = false;
+  }
+}
+
+/**
+ * Read the member's server state and fold it into the cache.
+ * Server collections, follows, watchlist, saves, alerts, memberships, onboarding, and profile
+ * are treated as authoritative so mutations on Device B synchronize cleanly onto Device A.
  */
 export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
-  if (!sessionReady()) return;
+  if (!supabase || !(await ensureBackendSessionToken())) return;
   const stale = cb.isStale ?? (() => false);
   adopting = true;
   try {
@@ -394,18 +495,44 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     if (stale()) return;
 
     const current = cb.getState();
-    const [dramaIds, actorIds] = await Promise.all([
-      resolveDramaClientIds(boot.follows.titles),
+    const watchRows = (boot.watchlist ?? []) as ServerWatchlistRow[];
+    const favTitleUuids = boot.profile.favorite_title_ids ?? [];
+    const alertTitleUuids = (boot.alerts ?? []).filter((a) => a.episodes).map((a) => a.title_id);
+    const mutedTitleUuids = boot.muted_titles ?? [];
+
+    const bootTitleRows = Array.isArray(boot.titles) ? (boot.titles as ServerTitleRow[]) : [];
+    const bootDramas: Drama[] = [];
+    const preResolvedIds = new Map<string, string>();
+    for (const row of bootTitleRows) {
+      if (row && row.id && row.external_id) {
+        const d = serverTitleToDrama(row);
+        bootDramas.push(d);
+        preResolvedIds.set(row.id, d.id);
+      }
+    }
+
+    const allTitleUuids = [
+      ...boot.follows.titles,
+      ...watchRows.map((r) => r.title_id),
+      ...favTitleUuids,
+      ...alertTitleUuids,
+      ...mutedTitleUuids,
+    ];
+    const missingTitleUuids = allTitleUuids.filter((id) => !preResolvedIds.has(id));
+
+    const [{ dramas: hydratedDramas, idMap: fetchedIds }, actorIds, avatarMap, colHydrated] = await Promise.all([
+      fetchDramasByUuids(missingTitleUuids),
       resolveActorClientIds(boot.follows.people),
+      boot.profile.avatar_path ? signedUrls([boot.profile.avatar_path]).catch(() => new Map<string, string>()) : Promise.resolve(new Map<string, string>()),
+      hydrateCollectionBundles(boot.collections ?? []),
     ]);
     if (stale()) return;
 
-    const watchRows = (boot.watchlist ?? []) as ServerWatchlistRow[];
-    const watchDramaIds = await resolveDramaClientIds(watchRows.map((r) => r.title_id));
-    if (stale()) return;
+    const dramaIds = new Map<string, string>([...preResolvedIds, ...fetchedIds]);
+
     const watchlist: Record<string, WatchlistItem> = {};
     for (const row of watchRows) {
-      const dramaId = watchDramaIds.get(row.title_id);
+      const dramaId = dramaIds.get(row.title_id);
       if (!dramaId) continue;
       watchlist[dramaId] = {
         dramaId,
@@ -418,57 +545,108 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
         completedAt: row.completed_at ?? undefined,
       };
     }
-    if (stale()) return;
 
-    // Union, not replace: a mirror write that failed while offline must not be silently dropped
-    // by the next adoption, and server values still win for the same key (watchlist below).
-    const union = <T,>(local: T[], remote: T[]): T[] => [...new Set([...local, ...remote])];
+    const reactions: Record<string, ReactionKind> = {};
+    for (const r of boot.reactions ?? []) {
+      const targetId = r.comment_id ?? r.post_id;
+      if (targetId && r.kind) reactions[targetId] = r.kind;
+    }
+
+    const dramaNotify: Record<string, boolean> = {};
+    for (const id of alertTitleUuids) {
+      const clientId = dramaIds.get(id);
+      if (clientId) dramaNotify[clientId] = true;
+    }
+
+    const resolvedAvatarUrl = boot.profile.avatar_path
+      ? avatarMap.get(boot.profile.avatar_path) ?? (current.profile.avatarPath === boot.profile.avatar_path ? current.profile.avatarUrl : undefined)
+      : undefined;
+    const resolvedProfile = serverProfileToUser(boot.profile, {
+      avatarUrl: resolvedAvatarUrl,
+      favoriteDramaIds: favTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
+      awards: boot.my_awards ?? [],
+    });
+    const mergedMe: User = {
+      ...current.profile,
+      ...resolvedProfile,
+      avatarUrl: resolvedAvatarUrl,
+      avatarPath: boot.profile.avatar_path ?? undefined,
+      bannerUrl: boot.profile.banner_url ?? undefined,
+    };
+
+    const otherCollections = current.collections.filter((c) => c.ownerId !== boot.profile.id);
+    const syncedCollections = mergeCollections(otherCollections, colHydrated.collections);
+
     cb.apply({
-      profile: { ...current.profile, ...serverProfileToUser(boot.profile) },
+      backendSyncedUserId: boot.profile.id,
+      profile: mergedMe,
+      onboarding: {
+        ...current.onboarding,
+        done: Boolean(boot.profile.onboarding_completed),
+        step: boot.profile.onboarding_step ?? 0,
+        genres: boot.profile.favorite_genres ?? [],
+        fandoms: (boot.profile.worlds ?? []) as FandomId[],
+      },
       prefs: adoptPrefs((boot.prefs ?? null) as ServerPrefs | null, current.prefs),
       follows: {
-        users: union(current.follows.users, boot.follows.users),
-        dramas: union(
-          current.follows.dramas,
-          boot.follows.titles.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)),
-        ),
-        actors: union(
-          current.follows.actors,
-          boot.follows.people.map((id) => actorIds.get(id)).filter((id): id is string => Boolean(id)),
-        ),
-        collections: union(current.follows.collections, boot.follows.collections),
+        users: [...new Set(boot.follows.users)],
+        dramas: [...new Set(boot.follows.titles.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)))],
+        actors: [...new Set(boot.follows.people.map((id) => actorIds.get(id)).filter((id): id is string => Boolean(id)))],
+        collections: [...new Set(boot.follows.collections)],
       },
-      saves: union(current.saves, boot.saved_post_ids),
-      watchlist: { ...current.watchlist, ...watchlist },
+      saves: [...new Set(boot.saved_post_ids)],
+      joinedCommunities: [...new Set(boot.communities ?? [])],
+      reactions,
+      dramaNotify,
+      watchlist,
+      blockedUsers: [...new Set(boot.blocks ?? [])],
+      mutedUsers: [...new Set(boot.muted_users ?? [])],
+      mutedDramas: [...new Set(mutedTitleUuids.map((id) => dramaIds.get(id)).filter((id): id is string => Boolean(id)))],
+      collections: syncedCollections,
+      users: mergeUsers(current.users, [mergedMe, ...colHydrated.owners]),
+      importedDramas: mergeDramas(current.importedDramas, [...bootDramas, ...hydratedDramas, ...colHydrated.dramas]),
     });
 
-    // Feed: the newest public page, cached alongside anything local.
-    const feed = await fetchFeed('latest', { limit: 20 });
+    const [myPosts, feed, pulse] = await Promise.all([
+      hydrateServerPosts(boot.my_posts ?? []).catch(() => []),
+      fetchFeed('latest', { limit: 25 }).catch(() => null),
+      fetchCommunityPulse(null, 16).catch(() => null),
+    ]);
     if (stale()) return;
-    if (feed.items.length) cb.addPosts(feed.items);
 
-    // Saved posts (the bootstrap hands back ids only).
+    // Remove own posts soft-deleted on another device before re-applying active server posts.
+    if (Array.isArray(boot.my_posts)) {
+      const activeOwnIds = new Set(boot.my_posts.map((p) => p.id));
+      const snap = cb.getState();
+      const filteredPosts = snap.posts.filter((p) => p.authorId !== boot.profile.id || activeOwnIds.has(p.id));
+      if (filteredPosts.length !== snap.posts.length) {
+        cb.apply({ posts: filteredPosts });
+      }
+    }
+
+    if (myPosts.length) cb.addPosts(myPosts);
+    if (feed?.items.length) cb.addPosts(feed.items);
+
     if (boot.saved_post_ids.length) {
-      const saved = await fetchPosts(boot.saved_post_ids.slice(0, 50));
+      const saved = await fetchPosts(boot.saved_post_ids.slice(0, 50)).catch(() => []);
       if (stale()) return;
       if (saved.length) cb.addPosts(saved);
     }
 
-    // Authors of everything just adopted, so cards render names and handles.
-    const authorIds = [...new Set(cb.getState().posts.slice(0, 80).map((p) => p.authorId))].filter(
+    const authorIds = [...new Set(cb.getState().posts.slice(0, 100).map((p) => p.authorId))].filter(
       (id) => id && !cb.getState().users[id],
     );
-    if (authorIds.length) {
-      const profiles = await fetchProfiles(authorIds);
-      if (stale()) return;
-      if (profiles.length) {
-        const users = { ...cb.getState().users };
-        for (const user of profiles) users[user.id] = user;
-        cb.apply({ users });
-      }
-    }
+    const profiles = authorIds.length ? await fetchProfiles(authorIds).catch(() => []) : [];
+    if (stale()) return;
 
-    const notifications = await fetchNotifications();
+    const latest = cb.getState();
+    cb.apply({
+      users: mergeUsers(latest.users, [...profiles, ...(pulse?.topVoices ?? [])]),
+      importedDramas: mergeDramas(latest.importedDramas, pulse?.dramas ?? []),
+      communities: mergeCommunities(latest.communities, pulse?.communities ?? []),
+    });
+
+    const notifications = applyPendingReadMarks(await fetchNotifications());
     if (stale()) return;
     cb.apply({ notifications });
   } catch (e) {
@@ -478,19 +656,251 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
   }
 }
 
-/** Fetch a post's comment thread from the backend and fold it into the cache. */
+/** Fetch a post + its full comment thread + authors from the backend and fold into the cache. */
+export async function adoptPostThread(
+  postId: string,
+  cb: Pick<AdoptionCallbacks, 'getState' | 'apply' | 'addPosts'>,
+): Promise<{ post: Post | null; comments: Comment[] }> {
+  if (!supabase || !social.isUuid(postId)) return { post: null, comments: [] };
+  adopting = true;
+  try {
+    const thread = await fetchPostThread(postId);
+    if (thread.post) cb.addPosts([thread.post]);
+    const current = cb.getState();
+    const byId = new Map(current.comments.map((c) => [c.id, c]));
+    for (const comment of thread.comments) byId.set(comment.id, comment);
+    cb.apply({
+      comments: [...byId.values()],
+      users: mergeUsers(current.users, thread.users),
+      importedDramas: mergeDramas(current.importedDramas, thread.dramas),
+    });
+    return { post: thread.post, comments: thread.comments };
+  } catch (e) {
+    reportError('sync.adoptPostThread', e);
+    return { post: null, comments: [] };
+  } finally {
+    adopting = false;
+  }
+}
+
+/** Backwards-compatible comment thread hydrator. */
 export async function adoptComments(postId: string, cb: Pick<AdoptionCallbacks, 'getState' | 'apply'>): Promise<Comment[]> {
-  if (!sessionReady()) return [];
+  if (!supabase || !social.isUuid(postId)) return [];
   const page = await fetchComments(postId);
   if (!page.items.length) return [];
+  const authorIds = [...new Set(page.items.map((c) => c.authorId))].filter((id) => id && !cb.getState().users[id]);
+  const authors = authorIds.length ? await fetchProfiles(authorIds).catch(() => []) : [];
   const current = cb.getState();
   const byId = new Map(current.comments.map((c) => [c.id, c]));
   for (const comment of page.items) byId.set(comment.id, comment);
-  cb.apply({ comments: [...byId.values()] });
+  cb.apply({
+    comments: [...byId.values()],
+    users: mergeUsers(current.users, authors),
+  });
   return page.items;
 }
 
-/** True while adoption writes are in flight (used by tests/diagnostics). */
+/** Hydrate a public profile by handle into the cache. */
+export async function adoptProfileByHandle(
+  handle: string,
+  cb: Pick<AdoptionCallbacks, 'getState' | 'apply' | 'addPosts'>,
+): Promise<User | null> {
+  if (!supabase) return null;
+  adopting = true;
+  try {
+    const res = await fetchProfileByHandle(handle);
+    if (!res) return null;
+    if (res.posts.length) cb.addPosts(res.posts);
+    const current = cb.getState();
+    cb.apply({
+      users: mergeUsers(current.users, [res.user]),
+      collections: mergeCollections(current.collections, res.collections),
+      importedDramas: mergeDramas(current.importedDramas, res.dramas),
+    });
+    return res.user;
+  } catch (e) {
+    reportError('sync.adoptProfileByHandle', e);
+    return null;
+  } finally {
+    adopting = false;
+  }
+}
+
+/** Hydrate public community shelves into the cache. */
+export async function adoptPublicCollections(cb: Pick<AdoptionCallbacks, 'getState' | 'apply'>): Promise<Collection[]> {
+  if (!supabase) return [];
+  adopting = true;
+  try {
+    const res = await fetchPublicCollections(40);
+    const current = cb.getState();
+    cb.apply({
+      collections: mergeCollections(current.collections, res.collections),
+      users: mergeUsers(current.users, res.owners),
+      importedDramas: mergeDramas(current.importedDramas, res.dramas),
+    });
+    return res.collections;
+  } catch (e) {
+    reportError('sync.adoptPublicCollections', e);
+    return [];
+  } finally {
+    adopting = false;
+  }
+}
+
+/** Refresh notification inbox on pull-to-refresh or Realtime push. */
+export async function adoptNotifications(cb: Pick<AdoptionCallbacks, 'getState' | 'apply'>): Promise<void> {
+  if (!sessionReady()) return;
+  try {
+    const notifications = applyPendingReadMarks(await fetchNotifications());
+    const missingActors = [...new Set(notifications.flatMap((n) => n.actorIds ?? []))].filter(
+      (id) => id && !cb.getState().users[id],
+    );
+    const profiles = missingActors.length ? await fetchProfiles(missingActors).catch(() => []) : [];
+    const current = cb.getState();
+    cb.apply({
+      notifications,
+      users: mergeUsers(current.users, profiles),
+    });
+
+    // Surface fresh unread server notifications that arrived while backgrounded or between socket reconnects.
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    for (const n of notifications) {
+      if (n.read) continue;
+      const ts = Date.parse(n.createdAt);
+      if (!Number.isNaN(ts) && ts >= cutoff) {
+        void presentServerNotificationBanner({
+          id: n.id,
+          group: n.group,
+          title: n.title,
+          body: n.body,
+          deepLink:
+            n.deepLink ??
+            (n.postId ? `/post/${n.postId}` : n.dramaId ? `/drama/${n.dramaId}` : '/(tabs)/activity'),
+        });
+      }
+    }
+  } catch (e) {
+    reportError('sync.adoptNotifications', e);
+  }
+}
+
+/**
+ * Subscribe to live Postgres Changes on `posts`, `post_media`, `comments`, and `notifications` so
+ * multi-user posts, media attachments, replies, reaction counts, and notifications update live.
+ */
+export function subscribeBackendRealtime(
+  cb: Pick<AdoptionCallbacks, 'getState' | 'apply' | 'addPosts'>,
+  userId?: string | null,
+): () => void {
+  if (!supabase) return () => {};
+  const channelName = `hallyu-live-${userId ?? 'anon'}-${Date.now()}`;
+  const channel = supabase
+    .channel(channelName)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, (payload) => {
+      const row = payload.new as { id?: string; state?: string } | undefined;
+      if (!row?.id) return;
+      if (payload.eventType === 'DELETE' || row.state === 'deleted') {
+        const current = cb.getState();
+        if (current.posts.some((p) => p.id === row.id)) {
+          adoptLocal({ type: 'deletePost', id: row.id });
+        }
+        return;
+      }
+      void fetchPosts([row.id])
+        .then(async (posts) => {
+          if (!posts.length) return;
+          cb.addPosts(posts);
+          const authorId = posts[0]!.authorId;
+          if (authorId && !cb.getState().users[authorId]) {
+            const profiles = await fetchProfiles([authorId]).catch(() => []);
+            if (profiles.length) cb.apply({ users: mergeUsers(cb.getState().users, profiles) });
+          }
+        })
+        .catch(() => {});
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'post_media' }, (payload) => {
+      const row = payload.new as { post_id?: string } | undefined;
+      if (!row?.post_id) return;
+      void fetchPosts([row.post_id])
+        .then((posts) => {
+          if (posts.length) cb.addPosts(posts);
+        })
+        .catch(() => {});
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, (payload) => {
+      const row = payload.new as ServerComment | undefined;
+      if (!row?.id) return;
+      const comment = toComment(row);
+      const current = cb.getState();
+      const byId = new Map(current.comments.map((c) => [c.id, c]));
+      byId.set(comment.id, comment);
+      cb.apply({ comments: [...byId.values()] });
+      if (comment.authorId && !current.users[comment.authorId]) {
+        void fetchProfiles([comment.authorId])
+          .then((profiles) => {
+            if (profiles.length) cb.apply({ users: mergeUsers(cb.getState().users, profiles) });
+          })
+          .catch(() => {});
+      }
+    });
+
+  if (userId && social.isUuid(userId)) {
+    channel.on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${userId}` },
+      (payload) => {
+        void adoptNotifications(cb);
+        if (payload.eventType === 'INSERT') {
+          const row = payload.new as {
+            id?: string;
+            group?: string;
+            title?: string | null;
+            body?: string | null;
+            deep_link?: string | null;
+          } | undefined;
+          if (row?.id) {
+            void presentServerNotificationBanner({
+              id: row.id,
+              group: row.group,
+              title: row.title,
+              body: row.body,
+              deepLink: row.deep_link,
+            });
+            if (row.group === 'system') {
+              void syncMyRecognition()
+                .then((res) => {
+                  if (!res) return;
+                  const snap = cb.getState();
+                  if (snap.profile.id !== userId) return;
+                  const patched: User = {
+                    ...snap.profile,
+                    verified: res.recognition.verificationTier !== 'none',
+                    verificationTier: res.recognition.verificationTier,
+                    verificationNote: res.recognition.verificationNote ?? undefined,
+                    verifiedAt: res.recognition.verifiedAt ?? undefined,
+                    isFounder: res.recognition.isFounder,
+                    featuredBadgeIds: res.recognition.featuredBadgeIds,
+                    awards: res.recognition.awards,
+                  };
+                  cb.apply({
+                    profile: patched,
+                    users: mergeUsers(snap.users, [patched]),
+                  });
+                })
+                .catch(() => {});
+            }
+          }
+        }
+      },
+    );
+  }
+
+  channel.subscribe();
+  return () => {
+    void supabase?.removeChannel(channel);
+  };
+}
+
 export function isAdopting(): boolean {
   return adopting;
 }

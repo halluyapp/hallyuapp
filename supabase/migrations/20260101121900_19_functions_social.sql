@@ -6,6 +6,11 @@
 -- Reactions: toggle / swap / clear in one round trip, returning fresh counts
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.toggle_reaction(
   p_target_type text,
   p_target_id uuid,
@@ -421,3 +426,6 @@ grant execute on function public.set_mute(text, uuid, boolean) to authenticated;
 grant execute on function public.mark_notifications_read(uuid[], public.notification_group) to authenticated;
 grant execute on function public.register_push_token(text, public.push_platform, text, text, text) to authenticated;
 grant execute on function public.report_content(text, uuid, text, text) to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

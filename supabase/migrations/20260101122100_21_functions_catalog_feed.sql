@@ -6,6 +6,11 @@
 -- Feed: ranked, block-aware, mute-aware
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.feed_posts(
   p_scope text default 'for_you',
   p_world text default null,
@@ -78,6 +83,13 @@ $$;
 -- Catalog search over the cached titles
 -- ---------------------------------------------------------------------------------------------
 
+-- `extensions` is in the pinned search_path because the fuzzy match below uses pg_trgm's `%`
+-- operator, which migration 00 installs into the extensions schema. A function's `set search_path`
+-- *replaces* the session's for the body; it does not extend it. Left out, the body does not merely
+-- depend on luck — it cannot resolve: `operator does not exist: text % text`, raised while the
+-- function is created if body validation is on, and on the first call if it was created with
+-- validation off. (Migration 34 replaces this function with an `ilike` version, so this definition
+-- only has to carry the window in between — during which the trigram index is usable.)
 create or replace function public.search_titles(
   p_query text,
   p_world text default null,
@@ -88,7 +100,7 @@ returns setof public.titles
 language sql
 stable
 security definer
-set search_path = public, pg_temp
+set search_path = public, extensions, pg_temp
 as $$
   select t.*
   from public.titles t
@@ -159,3 +171,6 @@ $$;
 grant execute on function public.feed_posts(text, text, uuid, integer, integer) to anon, authenticated;
 grant execute on function public.search_titles(text, text, integer, integer) to anon, authenticated;
 grant execute on function public.record_event(text, jsonb, uuid, uuid, text, text) to anon, authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

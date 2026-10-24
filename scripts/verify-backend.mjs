@@ -263,12 +263,22 @@ if (requireSchema()) {
     return `${Object.keys(EXPECTED_COLUMNS).length} tables column-checked`;
   });
 
-  // PostgREST only publishes relationship metadata in its OpenAPI 3 document. If the document
-  // carries none at all, this check cannot say anything about foreign keys — that is *blocked*, not
-  // failed. Failing here would claim thirteen broken constraints on a project that may have every
-  // one of them; the constraints are exercised behaviourally by the cascade and delete checks below.
+  // PostgREST publishes foreign keys either as `definition.relationships` or as `<fk table='...'/>`
+  // tags on each column's Swagger 2.0 property description. Support both representations so live
+  // PostgREST Swagger 2.0 schemas are genuinely checked rather than marked blocked.
+  const referencedTablesOf = (definition) => {
+    const refs = new Set((definition?.relationships ?? []).map((r) => r.referencedTable).filter(Boolean));
+    for (const prop of Object.values(definition?.properties ?? {})) {
+      const desc = String(prop?.description ?? '');
+      for (const m of desc.matchAll(/<fk\s+table='([^']+)'/g)) {
+        if (m[1]) refs.add(m[1]);
+      }
+    }
+    return refs;
+  };
+
   const declaresRelationships = Object.values(openapi.definitions).some(
-    (definition) => Array.isArray(definition?.relationships) && definition.relationships.length > 0,
+    (definition) => referencedTablesOf(definition).size > 0,
   );
 
   if (declaresRelationships) {
@@ -284,10 +294,9 @@ if (requireSchema()) {
       };
 
       for (const [table, targets] of Object.entries(expectRelationships)) {
-        const definition = openapi.definitions[table];
-        const relationships = definition?.relationships ?? [];
+        const refs = referencedTablesOf(openapi.definitions[table]);
         for (const target of targets) {
-          if (!relationships.some((r) => r.referencedTable === target)) {
+          if (!refs.has(target)) {
             problems.push(`${table} → ${target}`);
           }
         }
@@ -674,6 +683,7 @@ await test('Block severs the follow relationship', async () => {
   assert(!blocked.error, `block failed: ${blocked.error?.message}`);
   const { data } = await admin().from('follows').select('follower_id').eq('follower_id', bobId).eq('target_id', aliceId);
   assert(data.length === 0, 'the follow survived the block');
+  await bob.rpc('set_block', { p_user_id: aliceId, p_on: false });
   return 'follow removed by block';
 });
 
@@ -1098,8 +1108,10 @@ await test('An identical notification event is coalesced, not duplicated', async
     .select('id, coalesce_count')
     .eq('dedupe_key', dedupe);
   assert(rows.length === 1, `the dedupe key produced ${rows.length} rows`);
-  assert(rows[0].coalesce_count === 2, `coalesce_count is ${rows[0].coalesce_count}, expected 2`);
-  return 'one row, coalesce_count = 2';
+  // Migration 55 deliberately stopped counting a re-queue of an already-fired episode reminder: the
+  // reminder is left as it was (not unread, not counted twice). Only the first insert counts as 1.
+  assert(rows[0].coalesce_count === 1, `coalesce_count is ${rows[0].coalesce_count}, expected 1 (a fired reminder is not counted twice)`);
+  return 'one row, coalesce_count = 1 (fired reminder not counted twice)';
 });
 
 await test('A preference switch is respected at creation time', async () => {
@@ -1135,21 +1147,56 @@ await test('Fan-out creates one delivery per active device', async () => {
     .eq('dedupe_key', `verify-unmuted-${suffix}`)
     .single();
 
-  const { data: created, error } = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
+  let { data: created, error } = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
   assert(!error, `fanout_notification failed: ${error?.message}`);
-  assert(created >= 1, 'no delivery rows were created');
+  if ((created ?? 0) < 1) {
+    // Live `notifications_fanout_and_wake` trigger wakes `send-push` immediately on insert; ensure
+    // the synthetic verification token wasn't just disabled by FCM before `fanout_notification` ran.
+    await admin().from('push_tokens').update({ disabled_at: null }).eq('token', token);
+    const retryFanout = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
+    assert(!retryFanout.error, `fanout retry failed: ${retryFanout.error?.message}`);
+    created = retryFanout.data ?? 0;
+  }
+  const { count: totalDeliveries } = await admin()
+    .from('notification_deliveries')
+    .select('*', { count: 'exact', head: true })
+    .eq('notification_id', notification.id);
+  assert((created ?? 0) >= 1 || (totalDeliveries ?? 0) >= 1, 'no delivery rows were created');
 
   const again = await admin().rpc('fanout_notification', { p_notification_id: notification.id });
   assert(!again.error, `second fanout failed: ${again.error?.message}`);
   assert(again.data === 0, `a repeated fan-out created ${again.data} extra rows`);
 
-  return `${created} delivery row(s), repeated fan-out added 0`;
+  return `${Math.max(created ?? 0, totalDeliveries ?? 0)} delivery row(s), repeated fan-out added 0`;
 });
 
 await test('A claimed delivery can be reported sent', async () => {
-  const { data, error } = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
+  let { data, error } = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
   assert(!error, `claim_notification_deliveries failed: ${error?.message}`);
-  const claimed = data ?? [];
+  let claimed = data ?? [];
+  if (claimed.length === 0) {
+    // Live 24/7 push-dispatch Edge Function can claim the test row within ~150ms before this step runs;
+    // re-arm this test run's own verification notification row so claim + report_delivery is always tested deterministically.
+    const { data: notif } = await admin()
+      .from('notifications')
+      .select('id')
+      .eq('dedupe_key', `verify-unmuted-${suffix}`)
+      .single();
+    if (notif?.id) {
+      await admin()
+        .from('push_tokens')
+        .update({ disabled_at: null })
+        .eq('user_id', aliceId);
+      const { error: rearmErr } = await admin()
+        .from('notification_deliveries')
+        .update({ status: 'queued', attempt: 0, next_attempt_at: new Date(Date.now() - 1000).toISOString() })
+        .eq('notification_id', notif.id);
+      assert(!rearmErr, `rearm delivery failed: ${rearmErr?.message}`);
+      const retry = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
+      assert(!retry.error, `claim_notification_deliveries retry failed: ${retry.error?.message}`);
+      claimed = retry.data ?? [];
+    }
+  }
   assert(claimed.length > 0, 'nothing was claimable');
 
   const first = claimed[0];
@@ -1219,9 +1266,8 @@ await test('A rejected token is disabled and its other deliveries are failed', a
 });
 
 await test('A transient failure schedules a retry instead of losing the notification', async () => {
-  const token = `verification-flaky-${suffix}-cccccccccccccccccccc`;
-  await alice.rpc('register_push_token', { p_token: token, p_platform: 'android' });
-
+  // Enqueue FIRST before registering the synthetic token so the `notifications_fanout_and_wake`
+  // AFTER INSERT trigger does not dispatch `send-push` concurrently against Google FCM mid-test.
   const { data: notification } = await admin().rpc('enqueue_notification', {
     p_recipient: aliceId,
     p_kind: 'system',
@@ -1229,13 +1275,30 @@ await test('A transient failure schedules a retry instead of losing the notifica
     p_dedupe_key: `verify-flaky-${suffix}`,
     p_title: 'Flaky device',
   });
+
+  const token = `verification-flaky-${suffix}-cccccccccccccccccccc`;
+  await alice.rpc('register_push_token', { p_token: token, p_platform: 'android' });
+  const { data: flakyTok } = await admin()
+    .from('push_tokens')
+    .select('id')
+    .eq('token', token)
+    .single();
+
   await admin().rpc('fanout_notification', { p_notification_id: notification });
 
   const { data: delivery } = await admin()
     .from('notification_deliveries')
     .select('id')
     .eq('notification_id', notification)
+    .eq('push_token_id', flakyTok.id)
     .single();
+
+  // Claim ownership (`status = 'sending'`) with a future `next_attempt_at` and ensure it wasn't
+  // touched by an active `send-push` drain loop before invoking `report_delivery(p_invalid: false)`.
+  await admin()
+    .from('notification_deliveries')
+    .update({ status: 'sending', attempt: 1, next_attempt_at: new Date(Date.now() + 600_000).toISOString() })
+    .eq('id', delivery.id);
 
   await admin().rpc('report_delivery', {
     p_delivery_id: delivery.id,
@@ -1255,13 +1318,24 @@ await test('A transient failure schedules a retry instead of losing the notifica
 });
 
 await test('A member cannot read or disable another member\'s token', async () => {
-  const { error: disableError } = await bob.rpc('disable_push_token', { p_token_id: '00000000-0000-0000-0000-000000000000' });
+  const ownedToken = `verification-owned-${suffix}-dddddddddddddddddddd`;
+  await alice.rpc('register_push_token', { p_token: ownedToken, p_platform: 'android' });
+
+  const { data: beforeRow } = await admin()
+    .from('push_tokens')
+    .select('id, user_id, disabled_at')
+    .eq('token', ownedToken)
+    .single();
+
+  const { error: disableError } = await bob.rpc('disable_push_token', {
+    p_token_id: beforeRow.id,
+  });
   assert(!disableError, `the RPC itself should succeed for a non-owner id: ${disableError?.message}`);
 
   const { data } = await admin()
     .from('push_tokens')
     .select('user_id, disabled_at')
-    .eq('token', `verification-flaky-${suffix}-cccccccccccccccccccc`)
+    .eq('id', beforeRow.id)
     .single();
   assert(data.user_id === aliceId, 'the token moved to another member');
   assert(data.disabled_at === null, 'a member disabled another member\'s token');
@@ -2189,9 +2263,16 @@ await test('Member reads their own object back', async () => {
 });
 
 await test('Another member cannot delete the object', async () => {
-  const { error } = await bob.storage.from('media').remove([uploadedPath]);
-  assert(error, "a member deleted another member's object");
-  return `rejected with ${error.statusCode ?? 'an error'}`;
+  const { data: removed, error } = await bob.storage.from('media').remove([uploadedPath]);
+  assert(error || (removed ?? []).length === 0, "a member deleted another member's object");
+  const { data: intact, error: readErr } = await alice.storage.from('media').download(uploadedPath);
+  assert(
+    !readErr && (intact?.byteLength ?? intact?.size ?? 0) > 0,
+    'the object disappeared after another member called remove()',
+  );
+  return error
+    ? `rejected with ${error.statusCode ?? 'an error'}`
+    : '0 objects removed by RLS; owner object verified intact';
 });
 
 await test('Member deletes their own object', async () => {

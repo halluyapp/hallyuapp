@@ -22,6 +22,11 @@
 -- Lifecycle columns
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 alter table public.notifications
   add column if not exists dedupe_key     text,
   add column if not exists coalesce_count integer     not null default 1,
@@ -579,3 +584,6 @@ $$;
 
 revoke all on function public.notification_summary() from public, anon, authenticated;
 grant execute on function public.notification_summary() to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

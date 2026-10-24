@@ -18,7 +18,7 @@ import { pathToFileURL } from 'node:url';
 const out = mkdtempSync(join(tmpdir(), 'hallyu-fandoms-'));
 try {
   execSync(`node node_modules/typescript/bin/tsc lib/fandoms.ts lib/model.ts --outDir ${out} --module esnext --target es2020 --moduleResolution bundler --skipLibCheck`, { stdio: 'inherit' });
-  const { FANDOMS, FANDOM_IDS, dramaFandom, dramaFormat, formatLabel, dramaLabel, inferFormat, isFilm, runtimeLabel, fandomLine, toFandoms, contentContext, inWorlds, fandomById } = await import(pathToFileURL(join(out, 'fandoms.js')).href);
+  const { FANDOMS, FANDOM_IDS, classifyWorldFormat, isValidWorldDrama, dramaFandom, dramaFormat, formatLabel, dramaLabel, inferFormat, isFilm, runtimeLabel, fandomLine, toFandoms, contentContext, inWorlds, fandomById } = await import(pathToFileURL(join(out, 'fandoms.js')).href);
 
   let failures = 0;
   const ok = (name, cond) => {
@@ -31,7 +31,13 @@ try {
   ok('KR origin country alone is enough', inferFormat({ media: 'tv', countries: ['KR'] }) === 'kdrama');
   ok('Chinese series → C-Drama', inferFormat({ media: 'tv', language: 'zh' }) === 'cdrama');
   ok('Cantonese counts as C-Drama', inferFormat({ media: 'tv', language: 'yue' }) === 'cdrama');
-  ok('Japanese series → Anime', inferFormat({ media: 'tv', language: 'ja' }) === 'anime');
+  ok('Japanese animated series → Anime', inferFormat({ media: 'tv', language: 'ja', genres: ['Animation', 'Fantasy'] }) === 'anime');
+  ok('Japanese live-action series rejected from Anime & Hollywood', classifyWorldFormat({ media: 'tv', language: 'ja', countries: ['JP'], genres: ['Comedy', 'Romance'] }) === null);
+  ok('Japanese live-action film rejected from Anime & Hollywood', classifyWorldFormat({ media: 'movie', language: 'ja', countries: ['JP'], genres: ['Melodrama'] }) === null);
+  ok('US/JP English live-action film → Hollywood film', classifyWorldFormat({ media: 'movie', language: 'en', countries: ['US', 'JP'], genres: ['Action'] }) === 'hollywood-movie');
+  ok('Tamil / non-Western international film rejected from Hollywood', classifyWorldFormat({ media: 'movie', language: 'ta', countries: ['IN'], genres: ['Action'] }) === null);
+  ok('Spanish series rejected from Hollywood', classifyWorldFormat({ media: 'tv', language: 'es', countries: ['ES'], genres: ['Crime'] }) === null);
+  ok('isValidWorldDrama rejects misclassified live-action anime row', isValidWorldDrama({ mediaType: 'tv', format: 'anime', originalLanguage: 'ja', region: 'JP', genres: ['Comedy', 'Romance'] }) === false);
   ok('English film → Hollywood film', inferFormat({ media: 'movie', language: 'en' }) === 'hollywood-movie');
   ok('English series → Hollywood series', inferFormat({ media: 'tv', language: 'en' }) === 'hollywood-series');
   ok('no language: film stays a film', inferFormat({ media: 'movie' }) === 'hollywood-movie');

@@ -5,9 +5,10 @@ import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, motion, radius, shadows, sizes, space } from '../../constants/theme';
+import { colors, fonts, motion, radius, shadows, sizes, space } from '../../constants/theme';
 import { haptic, useApp, useLayout, useReduceMotion, useRequireMember } from '../../lib/hooks';
 import { springs } from '../../lib/motion';
+import { emitTabReTap, getActiveComposerContext, type TabRouteName } from '../../lib/tabEvents';
 import { Avatar } from '../ui/Avatar';
 import { Text } from '../ui/Text';
 import { CreateSheet } from '../create/CreateSheet';
@@ -24,11 +25,9 @@ const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap; 
 ];
 
 /**
- * Floating glass pill (spec 3.1): hovering 16px above the safe area, glass fill + border,
- * shadow-2. Active item turns crimson, inactive stays text-2. Create is a 56dp crimson gradient
- * circle elevated above the pill with a soft glow; You is the member's avatar (24dp); Activity
- * carries an unread dot. Hides on scroll down, returns on scroll up; a tap flashes the item
- * for 1.5s. On medium+ widths it becomes the left rail.
+ * Floating frosted pill (spec 3.1): hovering 16px above the safe area, frosted dark glass fill + border,
+ * shadow-2. Single-tap on Create opens the contextual CreateSheet immediately; long-press jumps straight
+ * to quick post. Re-tapping an active tab smooth-scrolls its screen back to the top.
  */
 export function TabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
@@ -51,14 +50,20 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
     flashTimer.current = setTimeout(() => setFlash(null), 1500);
     if (key === 'create') {
       haptic.light();
-      require('create a post', () => router.push('/create/post'));
+      require('create a post', () => setCreate(true));
       return;
     }
     const route = state.routes.find((r) => r.name === key);
     if (!route) return;
     const focused = currentKey === key;
     const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-    if (!focused && !event.defaultPrevented) navigation.navigate(key);
+    if (!focused && !event.defaultPrevented) {
+      haptic.select();
+      navigation.navigate(key);
+    } else if (focused) {
+      haptic.select();
+      emitTabReTap(key as TabRouteName);
+    }
   };
 
   const items = TABS.map((t) => {
@@ -71,7 +76,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
           onPress={() => go(t.key)}
           onLongPress={() => {
             haptic.medium();
-            require('create a post', () => setCreate(true));
+            require('create a post', () => router.push('/create/post'));
           }}
         />
       );
@@ -110,12 +115,11 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
           {items}
         </Animated.View>
       )}
-      <CreateSheet visible={create} onClose={() => setCreate(false)} />
+      <CreateSheet visible={create} onClose={() => setCreate(false)} context={getActiveComposerContext()} />
     </>
   );
 }
 
-/** A tab: accent when current, text-2 when not; a tap flashes a crimson highlight for 1.5s. */
 function TabItem({
   label,
   icon,
@@ -174,7 +178,11 @@ function TabItem({
         ) : (
           <Ionicons name={icon} size={24} color={tint} />
         )}
-        {unread > 0 ? <View style={styles.unread} /> : null}
+        {unread > 0 ? (
+          <View style={styles.unreadBadge}>
+            <Text style={styles.unreadText}>{unread > 99 ? '99+' : String(unread)}</Text>
+          </View>
+        ) : null}
       </Animated.View>
       {rail ? null : (
         <Text variant="tabLabel" style={{ color: tint }} maxFontSizeMultiplier={1.4} numberOfLines={1}>
@@ -185,7 +193,6 @@ function TabItem({
   );
 }
 
-/** The Create key: a 56dp crimson gradient circle, lifted above the pill, always glowing. */
 function CreateTab({ rail, onPress, onLongPress }: { rail: boolean; onPress: () => void; onLongPress: () => void }) {
   const reduce = useReduceMotion();
   const press = useRef(new Animated.Value(1)).current;
@@ -199,7 +206,7 @@ function CreateTab({ rail, onPress, onLongPress }: { rail: boolean; onPress: () 
       delayLongPress={280}
       accessibilityRole="button"
       accessibilityLabel="Create"
-      accessibilityHint="Opens the composer. Long press to choose a post type."
+      accessibilityHint="Tap to choose what to post. Hold for a quick post."
       style={[styles.item, rail ? styles.railItem : null]}
     >
       <Animated.View style={[styles.createLift, rail ? null : { transform: [{ translateY: -12 }, { scale: press }] }]}>
@@ -217,7 +224,6 @@ function CreateTab({ rail, onPress, onLongPress }: { rail: boolean; onPress: () 
 }
 
 const styles = StyleSheet.create({
-  /** The floating glass pill: 16px above the safe area, glass fill, 1px glass border, shadow-2. */
   bar: {
     position: 'absolute',
     left: space.x4,
@@ -225,9 +231,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     borderRadius: radius.full,
-    backgroundColor: colors.glass,
+    backgroundColor: 'rgba(15, 15, 19, 0.92)',
     borderWidth: 1,
-    borderColor: colors.glassBorder,
+    borderColor: 'rgba(255, 255, 255, 0.11)',
     overflow: 'visible',
     ...shadows.float,
   },
@@ -243,7 +249,6 @@ const styles = StyleSheet.create({
   avatarRing: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
   avatarRingOn: { borderColor: colors.accent },
   createLift: { alignItems: 'center', justifyContent: 'center' },
-  /** 56dp circle, radius 28, glow: 0 0 24px rgba(225,29,72,0.4). */
   create: {
     width: sizes.createButton,
     height: sizes.createButton,
@@ -251,10 +256,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: colors.accent,
-    shadowOpacity: 0.4,
+    shadowOpacity: 0.42,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 0 },
     elevation: 12,
   },
-  unread: { position: 'absolute', top: -1, right: -2, width: 9, height: 9, borderRadius: 5, backgroundColor: colors.accent, borderWidth: 2, borderColor: colors.canvas },
+  unreadBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: colors.accent,
+    borderWidth: 1.5,
+    borderColor: colors.canvas,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unreadText: {
+    fontFamily: fonts.bold,
+    fontSize: 9.5,
+    lineHeight: 11,
+    color: colors.onAccent,
+  },
 });
