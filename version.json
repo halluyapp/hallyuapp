@@ -1,0 +1,13 @@
+{
+  "app": "hallyu-web",
+  "version": "1.0.38",
+  "commit": "51e71b48f00600557c7e7a18be408497f14c10e5",
+  "commitShort": "51e71b4",
+  "builtAt": "2026-10-24T11:10:52Z",
+  "swBuildId": "51e71b4-20261024T11105",
+  "basePath": "/hallyuapp",
+  "canonicalSiteUrl": "https://halluyapp.github.io/hallyuapp",
+  "entryBundles": [
+    "index-b7ed45f33dcccf16f5ab8440c2656511.js"
+  ]
+}
