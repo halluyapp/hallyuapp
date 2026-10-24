@@ -25,7 +25,7 @@
     "test:apply": "node scripts/test-apply-migrations.mjs",
     "test:backend-surface": "node scripts/verify-backend-surface.mjs",
     "test:secrets": "node scripts/verify-no-secrets.mjs",
-    "test:db-exec": "node scripts/localdb/apply.mjs . && node scripts/localdb/check.mjs . && node scripts/localdb/surface.mjs && node scripts/localdb/check-book-diary.mjs . && node scripts/localdb/check-notify-timezone.mjs .",
+    "test:db-exec": "node scripts/localdb/apply.mjs . && node scripts/localdb/check.mjs . && node scripts/localdb/surface.mjs && node scripts/localdb/check-book-diary.mjs . && node scripts/localdb/check-notify-timezone.mjs . && node scripts/localdb/check-security-grants.mjs .",
     "test:backend": "node scripts/verify-backend.mjs",
     "migrate:live": "node scripts/ci/apply-migrations.mjs .",
     "test:tracker": "node --test scripts/test-tracker-links-and-import.mjs",
