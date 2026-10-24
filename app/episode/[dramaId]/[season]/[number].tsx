@@ -273,7 +273,10 @@ export default function EpisodeRoom() {
           episode: number,
           source: 'mark_watched',
           clientKey: `mark-${drama.id}-s${season}e${number}-${localDateKey()}`,
-        }).catch(() => undefined);
+        }).catch(() => {
+          // Progress is saved locally; the diary write failed. Say so instead of failing silently.
+          toast.show({ message: 'Saved your progress, but the diary entry did not save. Try again later.', tone: 'danger' });
+        });
       }
       toast.show({ message: number >= total ? `${drama.title} completed 🎉` : `Episode ${number} marked watched`, tone: 'success', icon: 'checkmark-circle' });
     });
