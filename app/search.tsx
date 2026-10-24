@@ -147,7 +147,7 @@ export default function Search() {
       header={
         <TopBar
           mode="stack"
-          center={<SearchField ref={inputRef} value={q} onChangeText={setQ} placeholder="Dramas, actors, people, posts, #tags" style={{ flex: 1, height: 40 }} onSubmitEditing={() => Keyboard.dismiss()} />}
+          center={<SearchField ref={inputRef} value={q} onChangeText={setQ} placeholder="Describe a mood, or search dramas, actors, #tags" style={{ flex: 1, height: 40 }} onSubmitEditing={() => Keyboard.dismiss()} />}
           right={<Button label="Cancel" variant="ghost" size="sm" onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/explore'))} />}
         />
       }
@@ -156,6 +156,26 @@ export default function Search() {
 
       {idle ? (
         <ScrollView contentContainerStyle={padding} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+          {/* Vibe Finder entry: describe a mood in a sentence. Examples fill the box and show results. */}
+          <View style={styles.group}>
+            <Text variant="overline" tone="accent">
+              VIBE FINDER
+            </Text>
+            <Text variant="body" tone="secondary" style={{ marginTop: space.x1 }}>
+              Describe the drama you’re in the mood for, in a sentence. Hallyu reads it with filters on this device (no AI model is connected yet).
+            </Text>
+            <ChipRow style={{ marginTop: space.x2 }}>
+              {[
+                'A dark historical K-Drama with political intrigue and revenge',
+                'A completed C-Drama with a powerful female lead',
+                'Something funny and comforting after a stressful day',
+                'Anime with clever battles and little romance',
+                'A short series with a satisfying ending',
+              ].map((example) => (
+                <Chip key={example} label={example} onPress={() => { haptic.select(); setQ(example); }} />
+              ))}
+            </ChipRow>
+          </View>
           {/* Multi-Filter Catalog Discovery + Tonight's Pick */}
           <View style={styles.group}>
             <View style={styles.groupHead}>
