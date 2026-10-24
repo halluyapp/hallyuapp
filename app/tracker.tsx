@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { Button } from '../components/ui/Button';
 import { Screen } from '../components/ui/Screen';
 import { EmptyState } from '../components/ui/States';
@@ -8,7 +8,16 @@ import { Text } from '../components/ui/Text';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, radius, space } from '../constants/theme';
 import { useAuth } from '../lib/auth';
-import { fetchTrackerSummary, localDateKey, TrackerSummary } from '../lib/api/tracker';
+import {
+  exportTrackerData,
+  fetchTrackerBadges,
+  fetchTrackerSummary,
+  fetchYearReview,
+  localDateKey,
+  TrackerBadge,
+  TrackerSummary,
+  YearReview,
+} from '../lib/api/tracker';
 
 /** Tracker — today, streaks, totals and a year of days at a glance. Private to you. */
 export default function Tracker() {
@@ -17,15 +26,37 @@ export default function Tracker() {
   const [summary, setSummary] = useState<TrackerSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [review, setReview] = useState<YearReview | null>(null);
+  const [badges, setBadges] = useState<TrackerBadge[]>([]);
+  const [exporting, setExporting] = useState(false);
 
   const load = () => {
     setLoading(true);
-    fetchTrackerSummary(localDateKey())
-      .then((s) => {
+    Promise.all([fetchTrackerSummary(localDateKey()), fetchYearReview(), fetchTrackerBadges()])
+      .then(([s, y, b]) => {
         setSummary(s);
+        setReview(y);
+        setBadges(b ?? []);
         setFailed(!s);
       })
       .finally(() => setLoading(false));
+  };
+
+  const exportData = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const data = await exportTrackerData();
+      if (!data) {
+        Alert.alert('Export failed', 'We could not prepare your export. Try again in a moment.');
+        return;
+      }
+      await Share.share({ title: 'Hallyu tracker export', message: JSON.stringify(data, null, 2) });
+    } catch {
+      Alert.alert('Export failed', 'The export was not shared.');
+    } finally {
+      setExporting(false);
+    }
   };
 
   useEffect(() => {
@@ -104,7 +135,43 @@ export default function Tracker() {
           <Text variant="caption" tone="tertiary">Brighter squares mean more entries that day.</Text>
         </View>
 
+        {review ? (
+          <View style={styles.panel}>
+            <Text variant="headline">Year in review {review.year}</Text>
+            <View style={styles.grid}>
+              <Stat label="Entries" value={String(review.entries)} />
+              <Stat label="Days watched" value={String(review.daysWatched)} />
+              <Stat label="Hours" value={formatHours(review.minutes)} />
+              <Stat label="Best day" value={review.bestDay ? `${review.bestDay} (${review.bestDayEntries})` : '-'} />
+              <Stat label="Pages read" value={String(review.pagesRead)} />
+              <Stat label="Books finished" value={String(review.booksFinished)} />
+            </View>
+            {review.topTitles.length > 0 ? (
+              <View style={{ gap: space.x2 }}>
+                <Text variant="caption" tone="tertiary">MOST LOGGED</Text>
+                {review.topTitles.map((t) => (
+                  <Text key={t.title} variant="body">{`${t.title} · ${t.entries}`}</Text>
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {badges.length > 0 ? (
+          <View style={styles.panel}>
+            <Text variant="headline">Badges</Text>
+            {badges.map((b) => (
+              <View key={b.id} style={{ gap: space.x1 }}>
+                <Text variant="body">{`${b.name}${b.earned ? ' · earned' : ''}`}</Text>
+                <Text variant="caption" tone="tertiary">{`${b.detail} · ${Math.min(b.progress, b.target)}/${b.target}`}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         <Button label="Open diary" variant="secondary" block onPress={() => router.push('/diary')} />
+        <Button label="Import a diary CSV" variant="secondary" block onPress={() => router.push('/import')} />
+        <Button label={exporting ? 'Preparing export…' : 'Export my data'} variant="secondary" block disabled={exporting} onPress={exportData} />
       </ScrollView>
     </Screen>
   );

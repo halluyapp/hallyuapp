@@ -156,3 +156,233 @@ export async function fetchTrackerSummary(today = localDateKey()): Promise<Track
   if (error || !data || typeof data !== 'object') return null;
   return normalizeTrackerSummary(data as Record<string, unknown>);
 }
+
+// ---------------------------------------------------------------------------
+// Year in Review, badges, export and CSV import (Migration 53).
+// ---------------------------------------------------------------------------
+
+export interface YearReview {
+  year: number;
+  entries: number;
+  daysWatched: number;
+  minutes: number;
+  bestDay: string | null;
+  bestDayEntries: number;
+  topTitles: { title: string; entries: number; posterUrl: string | null }[];
+  pagesRead: number;
+  booksFinished: number;
+}
+
+export interface TrackerBadge {
+  id: string;
+  name: string;
+  detail: string;
+  earned: boolean;
+  progress: number;
+  target: number;
+}
+
+export async function fetchYearReview(year?: number): Promise<YearReview | null> {
+  if (!supabase || !(await ensureBackendSessionToken())) return null;
+  const { data, error } = await supabase.rpc('year_review', { p_year: year ?? null });
+  if (error || !data || typeof data !== 'object') return null;
+  const r = data as Record<string, unknown>;
+  const top = Array.isArray(r.top_titles) ? (r.top_titles as Record<string, unknown>[]) : [];
+  return {
+    year: num(r.year) ?? new Date().getFullYear(),
+    entries: num(r.entries) ?? 0,
+    daysWatched: num(r.days_watched) ?? 0,
+    minutes: num(r.minutes) ?? 0,
+    bestDay: r.best_day ? String(r.best_day) : null,
+    bestDayEntries: num(r.best_day_entries) ?? 0,
+    topTitles: top.map((t) => ({
+      title: String(t.title ?? 'Untitled'),
+      entries: num(t.entries) ?? 0,
+      posterUrl: t.poster_url ? String(t.poster_url) : null,
+    })),
+    pagesRead: num(r.pages_read) ?? 0,
+    booksFinished: num(r.books_finished) ?? 0,
+  };
+}
+
+export async function fetchTrackerBadges(): Promise<TrackerBadge[] | null> {
+  if (!supabase || !(await ensureBackendSessionToken())) return null;
+  const { data, error } = await supabase.rpc('tracker_badges');
+  if (error || !Array.isArray(data)) return null;
+  return (data as Record<string, unknown>[]).map((b) => ({
+    id: String(b.id),
+    name: String(b.name),
+    detail: String(b.detail),
+    earned: Boolean(b.earned),
+    progress: num(b.progress) ?? 0,
+    target: num(b.target) ?? 1,
+  }));
+}
+
+/** Full owner-only export as a JSON-serialisable object. Nothing is published. */
+export async function exportTrackerData(): Promise<Record<string, unknown> | null> {
+  if (!supabase || !(await ensureBackendSessionToken())) return null;
+  const { data, error } = await supabase.rpc('tracker_export');
+  if (error || !data || typeof data !== 'object') return null;
+  return data as Record<string, unknown>;
+}
+
+export interface ImportRow {
+  title: string;
+  year: number | null;
+  watchedOn: string;
+  rating: number | null;
+}
+
+export interface ImportMatch extends ImportRow {
+  titleId: string | null;
+}
+
+/** Parses a Letterboxd-style diary CSV (Date, Name, Year, Rating...). Quoted fields are supported. */
+export function parseDiaryCsv(text: string): { rows: ImportRow[]; skipped: number } {
+  const lines = splitCsv(text.replace(/^\uFEFF/, ''));
+  if (lines.length === 0) return { rows: [], skipped: 0 };
+  const header = lines[0].map((h) => h.trim().toLowerCase());
+  const idx = (names: string[]) => header.findIndex((h) => names.includes(h));
+  const iDate = idx(['date', 'watched on', 'watched_on', 'watched']);
+  const iName = idx(['name', 'title']);
+  const iYear = idx(['year']);
+  const iRating = idx(['rating']);
+  if (iDate < 0 || iName < 0) return { rows: [], skipped: lines.length - 1 };
+
+  const rows: ImportRow[] = [];
+  let skipped = 0;
+  for (const cols of lines.slice(1)) {
+    const title = (cols[iName] ?? '').trim();
+    const watchedOn = normalizeDate(cols[iDate] ?? '');
+    if (!title || !watchedOn) {
+      skipped += 1;
+      continue;
+    }
+    const year = iYear >= 0 ? Number.parseInt(cols[iYear] ?? '', 10) : Number.NaN;
+    const rawRating = iRating >= 0 ? Number.parseFloat(cols[iRating] ?? '') : Number.NaN;
+    rows.push({
+      title,
+      year: Number.isFinite(year) ? year : null,
+      watchedOn,
+      // Diary ratings are often half-stars (0.5–5); the tracker stores whole stars 1–5.
+      rating: Number.isFinite(rawRating) && rawRating > 0 ? Math.min(5, Math.max(1, Math.round(rawRating))) : null,
+    });
+  }
+  return { rows, skipped };
+}
+
+function normalizeDate(value: string): string | null {
+  const v = value.trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (iso) return v;
+  const parsed = new Date(v);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return localDateKey(parsed);
+}
+
+function splitCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') {
+        field += '"';
+        i += 1;
+      } else if (ch === '"') {
+        quoted = false;
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i += 1;
+      row.push(field);
+      if (row.some((c) => c.trim() !== '')) rows.push(row);
+      row = [];
+      field = '';
+    } else {
+      field += ch;
+    }
+  }
+  row.push(field);
+  if (row.some((c) => c.trim() !== '')) rows.push(row);
+  return rows;
+}
+
+/** Matches rows to tracked titles by exact title and year. Never writes. */
+export async function matchImportRows(rows: ImportRow[]): Promise<ImportMatch[] | null> {
+  if (!supabase || !(await ensureBackendSessionToken())) return null;
+  const out: ImportMatch[] = [];
+  for (let start = 0; start < rows.length; start += 500) {
+    const chunk = rows.slice(start, start + 500);
+    const { data, error } = await supabase.rpc('tracker_import_match', {
+      p_items: chunk.map((r) => ({ title: r.title, year: r.year })),
+    });
+    if (error || !data || typeof data !== 'object') return null;
+    const results = Array.isArray((data as Record<string, unknown>).results)
+      ? ((data as Record<string, unknown>).results as Record<string, unknown>[])
+      : [];
+    chunk.forEach((row, i) => {
+      const found = results.find((x) => num(x.index) === i);
+      out.push({ ...row, titleId: found && found.matched ? String(found.title_id) : null });
+    });
+  }
+  return out;
+}
+
+/** Writes matched rows in batches of 500. Duplicates are skipped by the server. */
+export async function importMatchedRows(
+  matches: ImportMatch[],
+): Promise<{ inserted: number; duplicates: number; rejected: number } | null> {
+  if (!supabase || !(await ensureBackendSessionToken())) return null;
+  const payload = matches
+    .filter((m) => m.titleId)
+    .map((m) => ({ title_id: m.titleId, watched_on: m.watchedOn, rating: m.rating }));
+  let inserted = 0;
+  let duplicates = 0;
+  let rejected = 0;
+  for (let start = 0; start < payload.length; start += 500) {
+    const { data, error } = await supabase.rpc('log_watch_batch', { p_rows: payload.slice(start, start + 500) });
+    if (error || !data || typeof data !== 'object') return null;
+    const r = data as Record<string, unknown>;
+    inserted += num(r.inserted) ?? 0;
+    duplicates += num(r.duplicates) ?? 0;
+    rejected += Array.isArray(r.rejected) ? r.rejected.length : 0;
+  }
+  return { inserted, duplicates, rejected };
+}
+
+export interface AdminTrackerOverview {
+  perDayLast14: { day: string; entries: number }[];
+  membersLogging30: number;
+  entriesTotal: number;
+  shelfBooksTotal: number;
+  streakDistribution: Record<string, number>;
+}
+
+/** Staff-only aggregate view. Returns null for non-staff; no member diary is exposed. */
+export async function fetchAdminTrackerOverview(): Promise<AdminTrackerOverview | null> {
+  if (!supabase || !(await ensureBackendSessionToken())) return null;
+  const { data, error } = await supabase.rpc('admin_tracker_overview');
+  if (error || !data || typeof data !== 'object') return null;
+  const r = data as Record<string, unknown>;
+  const perDay = Array.isArray(r.per_day_last_14) ? (r.per_day_last_14 as Record<string, unknown>[]) : [];
+  const buckets = (r.streak_distribution && typeof r.streak_distribution === 'object'
+    ? r.streak_distribution
+    : {}) as Record<string, unknown>;
+  return {
+    perDayLast14: perDay.map((d) => ({ day: String(d.day), entries: num(d.entries) ?? 0 })),
+    membersLogging30: num(r.members_logging_last_30) ?? 0,
+    entriesTotal: num(r.entries_total) ?? 0,
+    shelfBooksTotal: num(r.shelf_books_total) ?? 0,
+    streakDistribution: Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, num(v) ?? 0])),
+  };
+}

@@ -59,6 +59,7 @@ import { Text } from '../ui/Text';
 import { TextField } from '../ui/TextField';
 import { useToast } from '../ui/Toast';
 import { TopBar } from '../ui/TopBar';
+import { TrackerOverviewPanel } from './TrackerOverviewPanel';
 
 export type AdminSection =
   | 'overview'
@@ -71,6 +72,7 @@ export type AdminSection =
   | 'creators'
   | 'reports'
   | 'communities'
+  | 'tracker'
   | 'audit';
 
 export function resolveAdminSection(raw?: string, fallback: AdminSection = 'overview'): AdminSection {
@@ -86,6 +88,7 @@ export function resolveAdminSection(raw?: string, fallback: AdminSection = 'over
   if (clean === 'creators' || clean === 'video') return 'creators';
   if (clean === 'reports' || clean === 'moderation') return 'reports';
   if (clean === 'communities' || clean === 'rooms') return 'communities';
+  if (clean === 'tracker' || clean === 'diary') return 'tracker';
   if (clean === 'audit' || clean === 'logs') return 'audit';
   return fallback;
 }
@@ -342,6 +345,7 @@ export function AdminDashboard({
             badge: pendingVideoCount,
           },
           { key: 'communities' as AdminSection, label: 'Community Rooms', short: 'Rooms', icon: 'chatbubbles-outline' as const },
+          { key: 'tracker' as AdminSection, label: 'Watch Tracker', short: 'Tracker', icon: 'stats-chart-outline' as const },
         ],
       },
     ],
@@ -725,6 +729,7 @@ export function AdminDashboard({
             dot: openReportsCount > 0,
           },
           { key: 'communities' as AdminSection, label: 'Rooms' },
+          { key: 'tracker' as AdminSection, label: 'Tracker' },
           { key: 'overview' as AdminSection, label: 'KPIs' },
           { key: 'launch' as AdminSection, label: 'Launch 10' },
           { key: 'users' as AdminSection, label: 'Users' },
@@ -763,6 +768,7 @@ export function AdminDashboard({
             dot: pendingVideoCount > 0,
           },
           { key: 'communities' as AdminSection, label: 'Rooms' },
+          { key: 'tracker' as AdminSection, label: 'Tracker' },
           { key: 'audit' as AdminSection, label: 'Audit' },
         ];
 
@@ -1849,6 +1855,8 @@ export function AdminDashboard({
                   </View>
                 ))
               ) : null}
+
+              {section === 'tracker' ? <TrackerOverviewPanel /> : null}
 
               {/* ── 11. UNIFIED IMMUTABLE AUDIT LEDGER ────────────────────────────────── */}
               {section === 'audit' ? (
