@@ -19,36 +19,42 @@ export type Database = {
       book_titles: {
         Row: {
           authors: string[];
+          client_key: string | null;
           cover_url: string | null;
           created_at: string;
           external_id: string;
           first_publish_year: number | null;
           id: string;
           isbn13: string | null;
+          owner_id: string | null;
           page_count: number | null;
           source: string;
           title: string;
         };
         Insert: {
           authors?: string[];
+          client_key?: string | null;
           cover_url?: string | null;
           created_at?: string;
           external_id: string;
           first_publish_year?: number | null;
           id?: string;
           isbn13?: string | null;
+          owner_id?: string | null;
           page_count?: number | null;
           source?: string;
           title: string;
         };
         Update: {
           authors?: string[];
+          client_key?: string | null;
           cover_url?: string | null;
           created_at?: string;
           external_id?: string;
           first_publish_year?: number | null;
           id?: string;
           isbn13?: string | null;
+          owner_id?: string | null;
           page_count?: number | null;
           source?: string;
           title?: string;
@@ -65,6 +71,7 @@ export type Database = {
           rating: number | null;
           shelf: string;
           started_on: string | null;
+          total_pages_override: number | null;
           updated_at: string;
           user_id: string;
         };
@@ -77,6 +84,7 @@ export type Database = {
           rating?: number | null;
           shelf?: string;
           started_on?: string | null;
+          total_pages_override?: number | null;
           updated_at?: string;
           user_id: string;
         };

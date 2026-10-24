@@ -13,9 +13,11 @@ import { useAuth } from '../lib/auth';
 import {
   importMatchedRows,
   ImportMatch,
+  ImportResult,
   matchImportRows,
   parseDiaryCsv,
 } from '../lib/api/tracker';
+import { friendlyImportReason, summarizeRejections } from '../lib/diaryRules';
 
 /**
  * CSV import (Letterboxd-style diary). Paste the CSV text, check matches, then import.
@@ -28,6 +30,7 @@ export default function ImportScreen() {
   const toast = useToast();
   const [csv, setCsv] = useState('');
   const [matches, setMatches] = useState<ImportMatch[] | null>(null);
+  const [outcome, setOutcome] = useState<ImportResult | null>(null);
   const [skipped, setSkipped] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,14 +73,18 @@ export default function ImportScreen() {
     const matched = matches.filter((m) => m.titleId);
     if (matched.length === 0) return;
     setBusy(true);
+    setError(null);
     const result = await importMatchedRows(matches);
     setBusy(false);
-    if (!result) {
-      setError('The import did not finish. Re-running is safe: rows already imported are skipped.');
+    if ('error' in result) {
+      setError(`${result.error} Re-running is safe: rows already imported are skipped.`);
       return;
     }
-    toast.show(`Imported ${result.inserted}. ${result.duplicates} already in your diary.`);
-    router.back();
+    setOutcome(result);
+    if (result.rejected === 0) {
+      toast.show(`Imported ${result.inserted}. ${result.duplicates} already in your diary.`);
+      router.back();
+    }
   };
 
   const matchedCount = matches?.filter((m) => m.titleId).length ?? 0;
@@ -109,6 +116,28 @@ export default function ImportScreen() {
         </View>
 
         {error ? <Text variant="body" tone="danger">{error}</Text> : null}
+
+        {outcome ? (
+          <View style={styles.panel}>
+            <Text variant="headline">{`Imported ${outcome.inserted}`}</Text>
+            <Text variant="body" tone="secondary">
+              {`${outcome.duplicates} already in your diary. ${outcome.rejected} not imported.`}
+            </Text>
+            {summarizeRejections(outcome.rejections).map((group) => (
+              <View key={group.reason} style={{ gap: 2 }}>
+                <Text variant="body">{`${group.count} × ${friendlyImportReason(group.reason)}`}</Text>
+                <Text variant="caption" tone="tertiary">
+                  {outcome.rejections
+                    .filter((r) => r.reason === group.reason)
+                    .slice(0, 5)
+                    .map((r) => `${r.title} (${r.watchedOn})`)
+                    .join(', ')}
+                </Text>
+              </View>
+            ))}
+            <Button label="Done" block variant="secondary" onPress={() => router.back()} />
+          </View>
+        ) : null}
 
         {matches ? (
           <View style={styles.panel}>

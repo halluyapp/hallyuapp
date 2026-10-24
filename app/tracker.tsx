@@ -8,6 +8,7 @@ import { Text } from '../components/ui/Text';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, radius, space } from '../constants/theme';
 import { useAuth } from '../lib/auth';
+import { runtimeCoverageLine } from '../lib/diaryRules';
 import {
   exportTrackerData,
   fetchTrackerBadges,
@@ -32,7 +33,7 @@ export default function Tracker() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([fetchTrackerSummary(localDateKey()), fetchYearReview(), fetchTrackerBadges()])
+    Promise.all([fetchTrackerSummary(localDateKey()), fetchYearReview(new Date().getFullYear()), fetchTrackerBadges()])
       .then(([s, y, b]) => {
         setSummary(s);
         setReview(y);
@@ -120,6 +121,9 @@ export default function Tracker() {
           <Stat label="Total entries" value={String(summary?.totalEntries ?? 0)} />
           <Stat label="Hours watched" value={formatHours(summary?.totalMinutes ?? 0)} />
         </View>
+        {summary ? (
+          <Text variant="caption" tone="tertiary">{runtimeCoverageLine(summary.runtimeKnownEntries, summary.runtimeUnknownEntries) ?? ''}</Text>
+        ) : null}
 
         <View style={styles.panel}>
           <Text variant="headline">Last 365 days</Text>
@@ -146,6 +150,9 @@ export default function Tracker() {
               <Stat label="Pages read" value={String(review.pagesRead)} />
               <Stat label="Books finished" value={String(review.booksFinished)} />
             </View>
+            {review.runtimeUnknownEntries > 0 ? (
+              <Text variant="caption" tone="tertiary">{`${review.runtimeUnknownEntries} of ${review.entries} entries have no runtime, so Hours leaves them out.`}</Text>
+            ) : null}
             {review.topTitles.length > 0 ? (
               <View style={{ gap: space.x2 }}>
                 <Text variant="caption" tone="tertiary">MOST LOGGED</Text>

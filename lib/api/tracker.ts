@@ -41,6 +41,9 @@ export interface TrackerSummary {
   todayCount: number;
   totalEntries: number;
   totalMinutes: number;
+  /** Entries whose runtime is known. Minutes only count these. */
+  runtimeKnownEntries: number;
+  runtimeUnknownEntries: number;
   daysActive: number;
   currentStreak: number;
   longestStreak: number;
@@ -106,6 +109,8 @@ export function normalizeTrackerSummary(raw: Record<string, unknown>): TrackerSu
     todayCount: num(raw.today_count) ?? 0,
     totalEntries: num(raw.total_entries) ?? 0,
     totalMinutes: num(raw.total_minutes) ?? 0,
+    runtimeKnownEntries: num(raw.runtime_known_entries) ?? 0,
+    runtimeUnknownEntries: num(raw.runtime_unknown_entries) ?? 0,
     daysActive: num(raw.days_active) ?? 0,
     currentStreak: num(raw.current_streak) ?? 0,
     longestStreak: num(raw.longest_streak) ?? 0,
@@ -138,20 +143,57 @@ export async function deleteWatchEntry(entryId: string): Promise<boolean> {
   return !error && data === true;
 }
 
-export async function fetchDiaryPage(
-  before?: string | null,
-  limit = 30,
-): Promise<{ entries: DiaryEntry[]; hasMore: boolean } | null> {
-  if (!supabase || !(await ensureBackendSessionToken())) return null;
-  const { data, error } = await supabase.rpc('watch_diary_page', {
-    p_before: before ?? null,
+export type DiaryPageResult =
+  | { ok: true; entries: DiaryEntry[]; hasMore: boolean; next: DiaryCursor | null }
+  | { ok: false; error: string };
+
+/**
+ * One newest-first page of the diary. Pass the `next` cursor from the previous page; the cursor is
+ * (watched_on, watched_at, id), so rows that share a timestamp are never skipped or repeated.
+ */
+export async function fetchDiaryPage(cursor?: DiaryCursor | null, limit = 30): Promise<DiaryPageResult> {
+  if (!supabase) return { ok: false, error: 'offline' };
+  if (!(await ensureBackendSessionToken())) return { ok: false, error: 'signed_out' };
+  const { data, error } = await supabase.rpc('watch_diary_page_keyset', {
     p_limit: limit,
+    p_before_on: cursor?.watchedOn ?? null,
+    p_before_at: cursor?.watchedAt ?? null,
+    p_before_id: cursor?.id ?? null,
   });
-  if (error || !data || typeof data !== 'object') return null;
-  const rows = Array.isArray((data as Record<string, unknown>).entries)
-    ? ((data as Record<string, unknown>).entries as Record<string, unknown>[])
-    : [];
-  return { entries: rows.map(normalizeDiaryEntry), hasMore: rows.length === limit };
+  if (error || !data || typeof data !== 'object') return { ok: false, error: error?.message ?? 'Could not load your diary.' };
+  const r = data as Record<string, unknown>;
+  const rows = Array.isArray(r.entries) ? (r.entries as Record<string, unknown>[]) : [];
+  const nx = r.next && typeof r.next === 'object' ? (r.next as Record<string, unknown>) : null;
+  return {
+    ok: true,
+    entries: rows.map(normalizeDiaryEntry),
+    hasMore: r.has_more === true,
+    next: nx ? { watchedOn: String(nx.watched_on), watchedAt: String(nx.watched_at), id: String(nx.id) } : null,
+  };
+}
+
+export interface DiaryCursor {
+  watchedOn: string;
+  watchedAt: string;
+  id: string;
+}
+
+export interface DiaryEdit {
+  rating?: number | null;
+  note?: string | null;
+  watchedOn?: string;
+}
+
+/** Edits an entry's rating, note or day. The server applies the same duplicate and cap rules as logging. */
+export async function updateWatchEntry(entryId: string, edit: DiaryEdit): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!supabase) return { ok: false, error: 'offline' };
+  if (!(await ensureBackendSessionToken())) return { ok: false, error: 'signed_out' };
+  const patch: Record<string, unknown> = {};
+  if ('rating' in edit) patch.rating = edit.rating ?? null;
+  if ('note' in edit) patch.note = edit.note ?? '';
+  if (edit.watchedOn !== undefined) patch.watched_on = edit.watchedOn;
+  const { error } = await supabase.rpc('update_watch_entry', { p_entry_id: entryId, p_patch: patch });
+  return error ? { ok: false, error: error.message } : { ok: true };
 }
 
 export async function fetchTrackerSummary(today = localDateKey()): Promise<TrackerSummary | null> {
@@ -170,6 +212,7 @@ export interface YearReview {
   entries: number;
   daysWatched: number;
   minutes: number;
+  runtimeUnknownEntries: number;
   bestDay: string | null;
   bestDayEntries: number;
   topTitles: { title: string; entries: number; posterUrl: string | null }[];
@@ -197,6 +240,7 @@ export async function fetchYearReview(year?: number): Promise<YearReview | null>
     entries: num(r.entries) ?? 0,
     daysWatched: num(r.days_watched) ?? 0,
     minutes: num(r.minutes) ?? 0,
+    runtimeUnknownEntries: num(r.runtime_unknown_entries) ?? 0,
     bestDay: r.best_day ? String(r.best_day) : null,
     bestDayEntries: num(r.best_day_entries) ?? 0,
     topTitles: top.map((t) => ({
@@ -257,26 +301,43 @@ export async function matchImportRows(rows: ImportRow[]): Promise<ImportMatch[] 
   return out;
 }
 
-/** Writes matched rows in batches of 500. Duplicates are skipped by the server. */
-export async function importMatchedRows(
-  matches: ImportMatch[],
-): Promise<{ inserted: number; duplicates: number; rejected: number } | null> {
-  if (!supabase || !(await ensureBackendSessionToken())) return null;
-  const payload = matches
-    .filter((m) => m.titleId)
-    .map((m) => ({ title_id: m.titleId, watched_on: m.watchedOn, rating: m.rating }));
-  let inserted = 0;
-  let duplicates = 0;
-  let rejected = 0;
+export interface ImportResult {
+  inserted: number;
+  duplicates: number;
+  rejected: number;
+  /** Each rejected row, identified by its title and date, with the server's reason. */
+  rejections: { index: number; title: string; watchedOn: string; reason: string }[];
+}
+
+/**
+ * Writes matched rows in batches of 500. Duplicates are skipped by the server; every rejected row
+ * comes back with its reason so the member can see what did not import.
+ */
+export async function importMatchedRows(matches: ImportMatch[]): Promise<ImportResult | { error: string }> {
+  if (!supabase || !(await ensureBackendSessionToken())) return { error: 'Sign in to import.' };
+  const sendable = matches.filter((m) => m.titleId);
+  const payload = sendable.map((m) => ({ title_id: m.titleId, watched_on: m.watchedOn, rating: m.rating }));
+  const result: ImportResult = { inserted: 0, duplicates: 0, rejected: 0, rejections: [] };
   for (let start = 0; start < payload.length; start += 500) {
     const { data, error } = await supabase.rpc('log_watch_batch', { p_rows: payload.slice(start, start + 500) });
-    if (error || !data || typeof data !== 'object') return null;
+    if (error || !data || typeof data !== 'object') return { error: error?.message ?? 'The import did not complete. Nothing after this point was saved.' };
     const r = data as Record<string, unknown>;
-    inserted += num(r.inserted) ?? 0;
-    duplicates += num(r.duplicates) ?? 0;
-    rejected += Array.isArray(r.rejected) ? r.rejected.length : 0;
+    result.inserted += num(r.inserted) ?? 0;
+    result.duplicates += num(r.duplicates) ?? 0;
+    const rejected = Array.isArray(r.rejected) ? (r.rejected as Record<string, unknown>[]) : [];
+    result.rejected += rejected.length;
+    for (const row of rejected) {
+      const globalIndex = start + (num(row.index) ?? 0);
+      const source = sendable[globalIndex];
+      result.rejections.push({
+        index: globalIndex,
+        title: source?.title ?? 'Unknown title',
+        watchedOn: source?.watchedOn ?? '',
+        reason: String(row.reason ?? ''),
+      });
+    }
   }
-  return { inserted, duplicates, rejected };
+  return result;
 }
 
 export interface AdminTrackerOverview {

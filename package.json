@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "ios": "expo run:ios",
-    "check": "npm run typecheck && npm run lint && npm run test:fandoms && npm run test:audit && npm run test:prerelease && npm run test:recognition && npm run test:upgrade && npm run test:sql && npm run test:db-types && npm run test:signatures && npm run test:apply && npm run test:backend-surface && npm run test:secrets && npm run test:tracker && npm run test:home-render",
+    "check": "npm run typecheck && npm run lint && npm run test:fandoms && npm run test:audit && npm run test:prerelease && npm run test:recognition && npm run test:upgrade && npm run test:sql && npm run test:db-types && npm run test:signatures && npm run test:apply && npm run test:backend-surface && npm run test:secrets && npm run test:tracker && npm run test:home-render && npm run test:book-diary",
     "test:recognition": "node --test scripts/test-recognition-and-admin.mjs",
     "test:prerelease": "node --test scripts/test-prerelease-regressions.mjs",
     "test:prerelease:live": "node scripts/verify-prerelease-live.mjs",
@@ -25,10 +25,11 @@
     "test:apply": "node scripts/test-apply-migrations.mjs",
     "test:backend-surface": "node scripts/verify-backend-surface.mjs",
     "test:secrets": "node scripts/verify-no-secrets.mjs",
-    "test:db-exec": "node scripts/localdb/apply.mjs . && node scripts/localdb/check.mjs . && node scripts/localdb/surface.mjs",
+    "test:db-exec": "node scripts/localdb/apply.mjs . && node scripts/localdb/check.mjs . && node scripts/localdb/surface.mjs && node scripts/localdb/check-book-diary.mjs .",
     "test:backend": "node scripts/verify-backend.mjs",
     "migrate:live": "node scripts/ci/apply-migrations.mjs .",
-    "test:tracker": "node --test scripts/test-tracker-links-and-import.mjs"
+    "test:tracker": "node --test scripts/test-tracker-links-and-import.mjs",
+    "test:book-diary": "node --test scripts/test-book-diary.mjs"
   },
   "dependencies": {
     "@expo/cli": "^0.18.31",
