@@ -16,6 +16,60 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type Database = {
   public: {
     Tables: {
+      track_entries: {
+        Row: {
+          client_key: string | null;
+          created_at: string;
+          episode: number | null;
+          id: string;
+          is_rewatch: boolean;
+          note: string | null;
+          rating: number | null;
+          season: number | null;
+          source: string;
+          title_id: string;
+          unit: string;
+          user_id: string;
+          visibility: string;
+          watched_at: string;
+          watched_on: string;
+        };
+        Insert: {
+          client_key?: string | null;
+          created_at?: string;
+          episode?: number | null;
+          id?: string;
+          is_rewatch?: boolean;
+          note?: string | null;
+          rating?: number | null;
+          season?: number | null;
+          source?: string;
+          title_id: string;
+          unit?: string;
+          user_id: string;
+          visibility?: string;
+          watched_at?: string;
+          watched_on: string;
+        };
+        Update: {
+          client_key?: string | null;
+          created_at?: string;
+          episode?: number | null;
+          id?: string;
+          is_rewatch?: boolean;
+          note?: string | null;
+          rating?: number | null;
+          season?: number | null;
+          source?: string;
+          title_id?: string;
+          unit?: string;
+          user_id?: string;
+          visibility?: string;
+          watched_at?: string;
+          watched_on?: string;
+        };
+        Relationships: [];
+      };
       app_releases: {
         Row: {
           apk_url: string;

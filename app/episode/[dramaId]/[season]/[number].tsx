@@ -24,6 +24,7 @@ import { TopBar } from '../../../../components/ui/TopBar';
 import { colors, fonts, radius, space } from '../../../../constants/theme';
 import { connectLiveEpisodeRoom, type LiveRoomConnection, type LiveRoomViewer } from '../../../../lib/api/features';
 import { fetchDramasByUuids } from '../../../../lib/api/feed';
+import { localDateKey, logWatch } from '../../../../lib/api/tracker';
 import { isUuid } from '../../../../lib/api/social';
 import { catalog } from '../../../../lib/catalog';
 import { adoptDramas } from '../../../../lib/catalogSync';
@@ -263,6 +264,17 @@ export default function EpisodeRoom() {
     require('mark episodes watched', () => {
       haptic.success();
       dispatch({ type: 'progress', dramaId: drama.id, season, episode: number, total });
+      // Also write a dated diary entry. Retry-safe: the client key dedupes repeat taps.
+      if (isUuid(drama.id)) {
+        logWatch({
+          titleId: drama.id,
+          watchedOn: localDateKey(),
+          season,
+          episode: number,
+          source: 'mark_watched',
+          clientKey: `mark-${drama.id}-s${season}e${number}-${localDateKey()}`,
+        }).catch(() => undefined);
+      }
       toast.show({ message: number >= total ? `${drama.title} completed 🎉` : `Episode ${number} marked watched`, tone: 'success', icon: 'checkmark-circle' });
     });
 
