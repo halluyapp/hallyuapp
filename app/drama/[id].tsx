@@ -5,9 +5,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Animated, FlatList, Linking, Pressable, StyleSheet, View } from 'react-native';
 import { ShareCardModal } from '../../components/share/ShareCardModal';
 import { fetchTitleRatingSummary, rateTitleOnServer } from '../../lib/api/features';
+import { crossCheckRuntimes } from '../../lib/api/megan';
 import { fetchDramasByUuids } from '../../lib/api/feed';
 import { isUuid } from '../../lib/api/social';
 import { setActiveComposerContext } from '../../lib/tabEvents';
+import { officialWatchLink } from '../../lib/whereToWatch';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AddToCollectionSheet } from '../../components/collections/AddToCollectionSheet';
 import { CollectionCard } from '../../components/collections/CollectionCard';
@@ -171,6 +173,11 @@ export default function DramaHub() {
   );
 
   const posts = useMemo(() => (drama ? postsForDrama(state, drama.id, sort) : []), [state, drama, sort]);
+  /** First unveiled member/Hallyu video for this title. Plays only content hosted on Hallyu. */
+  const hallyuPlayable = useMemo(
+    () => posts.find((p) => !!p.video && p.spoiler === 'none' && !postVeiled(state, p)) ?? null,
+    [posts, state],
+  );
   const typed = useMemo(() => (filter === 'all' ? posts.filter((p) => p.type !== 'short') : posts.filter((p) => p.type === filter)), [posts, filter]);
   // "Safe for me" hides what would be veiled for this viewer, so a mid-series read isn't a wall of veils.
   const veiledCount = useMemo(() => typed.filter((p) => p.spoiler !== 'none' || postVeiled(state, p)).length, [state, typed]);
@@ -194,6 +201,33 @@ export default function DramaHub() {
   }, [state, drama, liveRecs.data]);
   const inCollections = useMemo(() => (drama ? collectionsContaining(state, drama.id) : []), [state, drama]);
   const publicCols = useMemo(() => (drama ? state.collections.filter((c) => c.visibility === 'public' && c.items.some((i) => i.dramaId === drama.id)).slice(0, 6) : []), [state.collections, drama]);
+
+  // Runtime cross-check against a second metadata source (Megan, via the server). Informational only.
+  const crossRows = useMemo(
+    () =>
+      drama && !film
+        ? drama.episodes.filter((e) => e.season === season && e.runtime).map((e) => ({ episode: e.number, runtime: e.runtime as number }))
+        : [],
+    [drama, film, season],
+  );
+  const providerId = drama?.provider?.id;
+  const [runtimeNote, setRuntimeNote] = useState<string | null>(null);
+  useEffect(() => {
+    setRuntimeNote(null);
+    if (!providerId || crossRows.length < 2) return;
+    let cancelled = false;
+    crossCheckRuntimes(providerId, season, crossRows).then((r) => {
+      if (cancelled || !r.ok) return;
+      setRuntimeNote(
+        r.value.agrees
+          ? `Runtimes match a second source for ${r.value.compared} episodes.`
+          : `Runtimes differ from a second source for ${r.value.mismatches.length} of ${r.value.compared} episodes.`,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerId, season, crossRows]);
 
   if (!drama) {
     return (
@@ -376,6 +410,7 @@ export default function DramaHub() {
         <FollowButton kind="dramas" id={drama.id} name={drama.title} style={{ flex: 1 }} />
         <WatchStatusButton drama={drama} style={{ flex: 1.4 }} />
         {drama.trailerUrl ? <IconButton icon="play-circle-outline" label="Watch trailer" filled onPress={openTrailer} /> : null}
+        {hallyuPlayable ? <IconButton icon="play" label="Play on Hallyu" filled onPress={() => router.push(`/post/${hallyuPlayable.id}`)} /> : null}
         <IconButton icon="albums-outline" label="Add to collection" filled onPress={() => require('save to a collection', () => setCollect(true))} />
         {following ? (
           <IconButton
@@ -477,6 +512,7 @@ export default function DramaHub() {
             ) : null}
             {drama.streamingOn?.map((providerName) => {
               const low = providerName.toLowerCase();
+              const official = officialWatchLink(providerName, drama.title);
               const brandDot = low.includes('netflix')
                 ? '#E50914'
                 : low.includes('crunchyroll')
@@ -490,14 +526,34 @@ export default function DramaHub() {
                         : low.includes('prime')
                           ? '#00A8E1'
                           : colors.textSecondary;
-              return (
-                <View key={providerName} style={[styles.streamPill, { borderColor: `${brandDot}55` }]}>
-                  <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: brandDot }} />
-                  <Text variant="caption" style={{ color: colors.textPrimary }}>
-                    {providerName}
-                  </Text>
-                </View>
-              );
+              const pillBody = (
+                  <>
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: brandDot }} />
+                    <Text variant="caption" style={{ color: colors.textPrimary }}>
+                      {providerName}
+                    </Text>
+                    {official ? <Ionicons name="open-outline" size={12} color={colors.textSecondary} /> : null}
+                  </>
+                );
+                if (!official) {
+                  return (
+                    <View key={providerName} style={[styles.streamPill, { borderColor: `${brandDot}55` }]}>
+                      {pillBody}
+                    </View>
+                  );
+                }
+                return (
+                  <Pressable
+                    key={providerName}
+                    onPress={() => Linking.openURL(official.url).catch(() => toast.show({ message: `Could not open ${official.label}` }))}
+                    accessibilityRole="link"
+                    accessibilityHint={official.hint}
+                    accessibilityLabel={`Open ${official.label} to watch ${drama.title}`}
+                    style={[styles.streamPill, { borderColor: `${brandDot}55` }]}
+                  >
+                    {pillBody}
+                  </Pressable>
+                );
             })}
           </View>
         ) : null}
@@ -811,6 +867,7 @@ export default function DramaHub() {
           <View style={styles.sortRow}>
             <Text variant="caption" tone="secondary">
               {eps.length ? `${eps.length} episodes${item ? ` · ${item.season === season ? item.currentEpisode : 0} watched` : ''}` : enrich.loading ? 'Loading episodes…' : 'Episode list not available yet'}
+              {runtimeNote ? `\n${runtimeNote}` : ''}
             </Text>
             {item && eps.length ? (
               <Button

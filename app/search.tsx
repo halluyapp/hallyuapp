@@ -14,6 +14,7 @@ import { Screen, useListPadding } from '../components/ui/Screen';
 import { Segmented } from '../components/ui/Segmented';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, InlineNotice } from '../components/ui/States';
+import { MeganFallback } from '../components/search/MeganFallback';
 import { Text } from '../components/ui/Text';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, space } from '../constants/theme';
@@ -426,6 +427,7 @@ export default function Search() {
               {!total && !remote.loading ? (
                 <EmptyState icon="search-outline" title={`Nothing for “${debounced}”`} body={isTag ? 'No posts carry this tag yet. Be the first — tag it in a post.' : 'Check the spelling, try the original or English title, or search an actor’s name.'} actionLabel={isTag ? 'Post with this tag' : 'Browse Explore'} onAction={() => (isTag ? router.push({ pathname: '/create/post', params: { tag: debounced.slice(1) } }) : router.replace('/(tabs)/explore'))} />
               ) : null}
+              {!total && !remote.loading && !isTag && debounced.length >= 2 ? <MeganFallback query={debounced} /> : null}
               {debounced.length === 1 ? (
                 <Text variant="caption" tone="tertiary" style={{ paddingHorizontal: space.margin, marginTop: space.x3 }}>
                   Keep typing…

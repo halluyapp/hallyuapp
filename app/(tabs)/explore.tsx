@@ -25,6 +25,8 @@ import { catalog, invalidateCatalogLists, friendlyCatalogCopy } from '../../lib/
 import { adoptActors, adoptDramas } from '../../lib/catalogSync';
 import { buildExploreRails } from '../../lib/exploreRails';
 import { discoverCatalogTitles } from '../../lib/api/features';
+import { exploreWatchLinks } from '../../lib/whereToWatch';
+import { Linking } from 'react-native';
 import { FANDOMS, fandomById } from '../../lib/fandoms';
 import { haptic, Loadable, useApp, useCatalogHealth, useLayout, useLoad, useNetwork } from '../../lib/hooks';
 import { useToast } from '../../components/ui/Toast';
@@ -433,6 +435,22 @@ export default function Explore() {
         ) : null}
 
         <LiveRail eyebrow="Streaming" title="On Netflix" state={netflixState} size="m" />
+
+        <View style={styles.section}>
+          <SectionHeader eyebrow="Where to watch" title="Official apps and sites" />
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16 }}>
+            {exploreWatchLinks().map((link) => (
+              <Chip
+                key={link.service}
+                label={`${link.label} ↗`}
+                onPress={() => Linking.openURL(link.url).catch(() => toast.show({ message: `Could not open ${link.label}` }))}
+              />
+            ))}
+          </View>
+          <Text variant="caption" tone="tertiary" style={{ paddingHorizontal: 16 }}>
+            These open the official service. Hallyu does not play third-party streams.
+          </Text>
+        </View>
 
         {shortList.length ? (
           <View style={styles.section}>

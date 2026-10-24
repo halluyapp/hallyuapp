@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { BookShelfSvg } from '../components/shelf/BookShelfSvg';
 import { Button } from '../components/ui/Button';
 import { Screen } from '../components/ui/Screen';
 import { EmptyState } from '../components/ui/States';
@@ -221,32 +222,21 @@ export default function Shelf() {
                 <Text variant="caption" tone="tertiary" style={styles.shelfLabel}>{shelf.label}</Text>
                 <Text variant="caption" tone="tertiary">{items.length}</Text>
               </View>
-              <View style={styles.spines}>
-                {items.map((b) => (
-                  <Pressable
-                    key={b.bookId}
-                    onPress={() => {
-                      haptic.light();
-                      setSelectedId(b.bookId);
-                      setPagesText('');
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${b.title}, ${b.shelf}`}
-                    style={[
-                      styles.spine,
-                      {
-                        width: spineWidth(b.pageCount),
-                        backgroundColor: spineColor(b.title),
-                        borderWidth: selectedId === b.bookId ? 2 : 0,
-                        borderColor: colors.textPrimary,
-                      },
-                    ]}
-                  >
-                    <Text variant="caption" style={styles.spineText} numberOfLines={1}>{b.title}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <View style={styles.board} />
+              {items.length ? (
+                <BookShelfSvg
+                  spines={items.map((b) => ({
+                    id: b.bookId,
+                    title: b.title,
+                    width: spineWidth(b.pageCount),
+                    color: spineColor(b.title),
+                    selected: selectedId === b.bookId,
+                  }))}
+                  onPress={(id) => {
+                    setSelectedId(id);
+                    setPagesText('');
+                  }}
+                />
+              ) : null}
             </View>
           );
         })}
@@ -337,25 +327,6 @@ const styles = StyleSheet.create({
   shelfBlock: { gap: space.x2 },
   shelfHead: { flexDirection: 'row', justifyContent: 'space-between' },
   shelfLabel: { textTransform: 'uppercase', letterSpacing: 0.6 },
-  spines: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    minHeight: 150,
-    paddingHorizontal: space.x2,
-    gap: 2,
-    flexWrap: 'wrap',
-  },
-  spine: {
-    height: 140,
-    borderTopLeftRadius: 3,
-    borderTopRightRadius: 3,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: space.x2,
-    overflow: 'hidden',
-  },
-  spineText: { color: '#FFFFFF', transform: [{ rotate: '-90deg' }], width: 120, textAlign: 'center' },
-  board: { height: 10, borderRadius: 2, backgroundColor: '#8B5E3C' },
   panel: { gap: space.x2, padding: space.x4, borderRadius: radius.lg, backgroundColor: colors.surface1 },
   logRow: { flexDirection: 'row', alignItems: 'center', gap: space.x2 },
   moveRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.x2 },
