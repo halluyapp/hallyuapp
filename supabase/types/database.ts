@@ -16,6 +16,114 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type Database = {
   public: {
     Tables: {
+      book_titles: {
+        Row: {
+          authors: string[];
+          cover_url: string | null;
+          created_at: string;
+          external_id: string;
+          first_publish_year: number | null;
+          id: string;
+          isbn13: string | null;
+          page_count: number | null;
+          source: string;
+          title: string;
+        };
+        Insert: {
+          authors?: string[];
+          cover_url?: string | null;
+          created_at?: string;
+          external_id: string;
+          first_publish_year?: number | null;
+          id?: string;
+          isbn13?: string | null;
+          page_count?: number | null;
+          source?: string;
+          title: string;
+        };
+        Update: {
+          authors?: string[];
+          cover_url?: string | null;
+          created_at?: string;
+          external_id?: string;
+          first_publish_year?: number | null;
+          id?: string;
+          isbn13?: string | null;
+          page_count?: number | null;
+          source?: string;
+          title?: string;
+        };
+        Relationships: [];
+      };
+      shelf_items: {
+        Row: {
+          added_at: string;
+          book_id: string;
+          current_page: number;
+          finished_on: string | null;
+          note: string | null;
+          rating: number | null;
+          shelf: string;
+          started_on: string | null;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          added_at?: string;
+          book_id: string;
+          current_page?: number;
+          finished_on?: string | null;
+          note?: string | null;
+          rating?: number | null;
+          shelf?: string;
+          started_on?: string | null;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          added_at?: string;
+          book_id?: string;
+          current_page?: number;
+          finished_on?: string | null;
+          note?: string | null;
+          rating?: number | null;
+          shelf?: string;
+          started_on?: string | null;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      reading_logs: {
+        Row: {
+          book_id: string;
+          client_key: string | null;
+          created_at: string;
+          id: string;
+          pages: number;
+          read_on: string;
+          user_id: string;
+        };
+        Insert: {
+          book_id: string;
+          client_key?: string | null;
+          created_at?: string;
+          id?: string;
+          pages: number;
+          read_on: string;
+          user_id: string;
+        };
+        Update: {
+          book_id?: string;
+          client_key?: string | null;
+          created_at?: string;
+          id?: string;
+          pages?: number;
+          read_on?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
       track_entries: {
         Row: {
           client_key: string | null;

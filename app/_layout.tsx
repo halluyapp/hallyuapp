@@ -156,6 +156,7 @@ export default function RootLayout() {
                 <Stack.Screen name="notifications" />
                 <Stack.Screen name="diary" />
                 <Stack.Screen name="tracker" />
+                <Stack.Screen name="shelf" />
                 <Stack.Screen name="admin" />
                 <Stack.Screen name="settings/moderation" />
                 <Stack.Screen name="settings/bug-report" />
