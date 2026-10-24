@@ -2217,10 +2217,12 @@ export type Database = {
           last_seen_at: string;
           locale: string | null;
           platform: Database['public']['Enums']['push_platform'];
+          time_zone: string | null;
           token: string;
           user_id: string;
         };
         Insert: {
+          time_zone?: string | null;
           app_version?: string | null;
           created_at?: string;
           device_name?: string | null;
@@ -2233,6 +2235,7 @@ export type Database = {
           user_id: string;
         };
         Update: {
+          time_zone?: string | null;
           app_version?: string | null;
           created_at?: string;
           device_name?: string | null;
@@ -3639,8 +3642,17 @@ export type Database = {
           p_device_name?: string;
           p_locale?: string;
           p_platform: Database['public']['Enums']['push_platform'];
+          p_time_zone?: string;
           p_token: string;
         };
+        Returns: string;
+      };
+      is_valid_time_zone: {
+        Args: { p_zone: string };
+        Returns: boolean;
+      };
+      member_time_zone: {
+        Args: { p_user_id: string };
         Returns: string;
       };
       report_content: {

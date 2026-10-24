@@ -11,6 +11,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { reportError } from '../analytics';
 import { VAPID_PUBLIC_KEY } from '../links';
+import { deviceLocale, deviceTimeZone } from '../deviceTimeZone';
 import { ensureAndroidNotificationChannels } from '../reminders';
 import { supabase } from './client';
 
@@ -212,12 +213,15 @@ export async function registerPushTokenValue(
       }`
     : '1.0.215';
 
+  // Every argument is sent, with null when absent. A missing key would let PostgREST pick the
+  // older five-argument overload and drop the zone.
   const { error } = await supabase.rpc('register_push_token', {
     p_token: token,
     p_platform: resolvedPlatform,
-    p_device_name: deviceName,
+    p_device_name: deviceName ?? null,
     p_app_version: versionString,
-    p_locale: Intl.DateTimeFormat().resolvedOptions().locale || undefined,
+    p_locale: deviceLocale(),
+    p_time_zone: deviceTimeZone(),
   });
   if (error) {
     setPushState({
