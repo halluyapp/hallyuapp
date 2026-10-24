@@ -98,6 +98,8 @@ export default function NotificationSettings() {
           ? 'On iPhone/iPad, tap Share → Add to Home Screen in Safari to unlock Apple lock-screen push alerts'
           : 'Tap to enable instant episode drops, replies, DMs & creator clips';
 
+  // Each registration state gets an honest label. A build without native push credentials cannot
+  // register no matter how often the member taps, so it says so instead of offering "Tap to sync".
   const remoteValue =
     pushReg.status === 'registered'
       ? `Active (${pushReg.tokenType === 'webpush' ? 'WEB PUSH' : 'FCM'})`
@@ -105,14 +107,24 @@ export default function NotificationSettings() {
         ? 'Connecting…'
         : pushReg.status === 'permission_denied'
           ? 'Permission needed'
-          : 'Tap to sync';
+          : pushReg.status === 'missing_native_push_credentials'
+            ? 'Not available in this build'
+            : pushReg.status === 'unsupported'
+              ? 'Not supported here'
+              : pushReg.status === 'backend_error'
+                ? 'Could not save — tap to retry'
+                : 'Tap to sync';
 
   const remoteDetail =
     pushReg.status === 'registered'
       ? `Connected (${pushReg.tokenPreview ?? 'verified'}) — delivers alerts even when Hallyu is closed`
-      : pushReg.lastError
-        ? `${pushReg.lastError}`
-        : 'Syncs this device for instant background & lock-screen delivery';
+      : pushReg.status === 'missing_native_push_credentials'
+        ? 'This app build was made without its Firebase push configuration, so background and lock-screen alerts cannot reach this device. Install the latest official release to enable them.'
+        : pushReg.status === 'backend_error'
+          ? 'Your device gave us a push token, but saving it failed. Check your connection and tap to retry.'
+          : pushReg.status === 'unsupported'
+            ? 'This browser or device cannot receive push notifications.'
+            : 'Syncs this device for instant background & lock-screen delivery';
 
   const handleRequestPermission = async () => {
     if (Platform.OS === 'web') {

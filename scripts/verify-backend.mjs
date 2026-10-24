@@ -1108,8 +1108,10 @@ await test('An identical notification event is coalesced, not duplicated', async
     .select('id, coalesce_count')
     .eq('dedupe_key', dedupe);
   assert(rows.length === 1, `the dedupe key produced ${rows.length} rows`);
-  assert(rows[0].coalesce_count === 2, `coalesce_count is ${rows[0].coalesce_count}, expected 2`);
-  return 'one row, coalesce_count = 2';
+  // Migration 55 deliberately stopped counting a re-queue of an already-fired episode reminder: the
+  // reminder is left as it was (not unread, not counted twice). Only the first insert counts as 1.
+  assert(rows[0].coalesce_count === 1, `coalesce_count is ${rows[0].coalesce_count}, expected 1 (a fired reminder is not counted twice)`);
+  return 'one row, coalesce_count = 1 (fired reminder not counted twice)';
 });
 
 await test('A preference switch is respected at creation time', async () => {

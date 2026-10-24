@@ -15,6 +15,7 @@ import { Segmented } from '../components/ui/Segmented';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, InlineNotice } from '../components/ui/States';
 import { MeganFallback } from '../components/search/MeganFallback';
+import { VibeFinderSection } from '../components/search/VibeFinderSection';
 import { Text } from '../components/ui/Text';
 import { TopBar } from '../components/ui/TopBar';
 import { colors, space } from '../constants/theme';
@@ -367,6 +368,7 @@ export default function Search() {
           contentContainerStyle={padding}
           renderItem={() => (
             <View>
+              {(scope === 'all' || scope === 'dramas') && !isTag ? <VibeFinderSection text={debounced} /> : null}
               {!online ? (
                 <View style={{ paddingHorizontal: space.margin, marginTop: space.x3 }}>
                   <InlineNotice tone="warning" icon="cloud-offline-outline" text="You’re offline — showing what’s on this device." />

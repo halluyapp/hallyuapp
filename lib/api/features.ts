@@ -6,6 +6,7 @@
  *  - Multi-Filter Catalog Discovery & Tonight's Pick (`discover_catalog`)
  *  - Live Episode Watch Rooms (`supabase.channel` Presence + Broadcast reactions)
  */
+import { closeChannelsForTopic } from '../realtimeTeardown';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import type {
   ConversationSummary,
@@ -427,26 +428,29 @@ export function connectLiveEpisodeRoom(
   }
 
   const topic = `episode-watch-room:${roomKey.trim()}`;
-  for (const existing of supabase.getChannels()) {
-    if (existing.topic === topic || existing.topic === `realtime:${topic}`) {
-      void supabase.removeChannel(existing).catch(() => {});
-    }
-  }
+  // The new channel is only built once the previous one on this topic has fully closed (see
+  // lib/realtimeTeardown.ts). Otherwise supabase.channel(topic) returns the still-subscribed old one.
+  const hadPrevious = supabase.getChannels().some((c) => c.topic === topic || c.topic === `realtime:${topic}`);
+  const pendingTeardown = closeChannelsForTopic(supabase, topic);
 
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   handlers.onStatusChange?.('connecting');
 
-  const channel: RealtimeChannel = supabase.channel(topic, {
+  let channel: RealtimeChannel | null = null;
+  const client = supabase;
+  const setup = () => {
+  const ch: RealtimeChannel = client.channel(topic, {
     config: {
       presence: { key: viewer.id },
       broadcast: { self: false },
     },
   });
+  channel = ch;
 
   const syncPresence = () => {
     if (closed) return;
-    const state = channel.presenceState<LiveRoomViewer>();
+    const state = ch.presenceState<LiveRoomViewer>();
     const map = new Map<string, LiveRoomViewer>();
     for (const entries of Object.values(state)) {
       for (const entry of entries) {
@@ -462,7 +466,7 @@ export function connectLiveEpisodeRoom(
   syncPresence();
 
   try {
-    channel
+    ch
       .on('presence', { event: 'sync' }, syncPresence)
       .on('presence', { event: 'join' }, syncPresence)
       .on('presence', { event: 'leave' }, syncPresence)
@@ -481,10 +485,10 @@ export function connectLiveEpisodeRoom(
         if (status === 'SUBSCRIBED') {
           handlers.onStatusChange?.('connected');
           try {
-            await channel.track(selfViewer);
+            await ch.track(selfViewer);
             syncPresence();
           } catch {
-            // Ignore race if channel closed mid-handshake
+            // Ignore race if ch closed mid-handshake
           }
         } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
           handlers.onStatusChange?.('reconnecting');
@@ -493,7 +497,7 @@ export function connectLiveEpisodeRoom(
               retryTimer = null;
               if (!closed) {
                 try {
-                  channel.subscribe();
+                  ch.subscribe();
                 } catch {
                   handlers.onStatusChange?.('error');
                 }
@@ -509,11 +513,19 @@ export function connectLiveEpisodeRoom(
     handlers.onViewersChange([selfViewer]);
   }
 
+  };
+  if (hadPrevious) {
+    void pendingTeardown.then(() => {
+      if (!closed) setup();
+    });
+  } else {
+    setup();
+  }
+
   return {
     sendReaction: (kind: ReactionKind, timestampTag?: string) => {
       if (closed) return;
-      void channel
-        .send({
+      void channel?.send({
           type: 'broadcast',
           event: 'live_reaction',
           payload: {
@@ -538,8 +550,7 @@ export function connectLiveEpisodeRoom(
         timestampTag,
         sentAt: new Date().toISOString(),
       };
-      void channel
-        .send({
+      void channel?.send({
           type: 'broadcast',
           event: 'room_chat',
           payload: msg,
@@ -555,11 +566,10 @@ export function connectLiveEpisodeRoom(
         retryTimer = null;
       }
       handlers.onStatusChange?.('disconnected');
-      void channel
-        .untrack()
+      void channel?.untrack()
         .catch(() => {})
         .finally(() => {
-          void supabase?.removeChannel(channel).catch(() => {});
+          if (channel) void supabase?.removeChannel(channel).catch(() => {});
         });
     },
   };

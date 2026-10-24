@@ -140,7 +140,7 @@ export default function ActorPage() {
     <View>
       {related.length ? (
         <View style={{ paddingVertical: space.x6 }}>
-          <SectionHeader eyebrow="Also followed by fans of" title={actor.name.split(' ')[0] ?? actor.name} />
+          <SectionHeader eyebrow="Also followed by fans of" title={(actor.name ?? '').split(' ')[0] || actor.name || 'Fans'} />
           <ActorRail actors={related} />
         </View>
       ) : null}
