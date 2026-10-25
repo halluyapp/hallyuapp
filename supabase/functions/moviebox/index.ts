@@ -20,7 +20,9 @@
 //   GET  ?action=proxy&u=<https url>&download=0|1   (Range header forwarded; allowlisted hosts only)
 
 const BASE = 'https://apis.megan.qzz.io';
-const ALLOWED_MEDIA_HOSTS = ['macdn.aoneroom.com', 'pbcdn.aoneroom.com', 'pbcdnw.aoneroom.com'];
+// Exact hosts only. bcdnxw.hakunaymatata.com serves the full-length Web CDN MP4s (verified 2026-10-25:
+// 1378-6870 s, 64-1869 MB). Without it every title was filtered out and showed as previews-only.
+const ALLOWED_MEDIA_HOSTS = ['macdn.aoneroom.com', 'pbcdn.aoneroom.com', 'pbcdnw.aoneroom.com', 'bcdnxw.hakunaymatata.com'];
 const ALLOWED_MEDIA_SUFFIX = '.aoneroom.com';
 
 const corsHeaders = {
@@ -213,9 +215,29 @@ Deno.serve(async (req) => {
       const sd = r.body?.data;
       const data = sd && typeof sd === 'object' && sd.status === true ? (sd as Record<string, unknown>) : undefined;
       if (!data) return json({ error: 'unexpected_shape' }, 502);
-      // Only direct links on allowlisted hosts are considered.
-      const candidates = (Array.isArray(data.streams) ? data.streams : [])
-        .map((s) => s as Record<string, unknown>)
+      const raw = (Array.isArray(data.streams) ? data.streams : []).map((s) => (s && typeof s === 'object' ? (s as Record<string, unknown>) : {}));
+      // Metadata for every upstream candidate, including ones on hosts we do not play from. No URLs, no query strings, no headers.
+      const diagnostics = raw.map((s) => {
+        const url = typeof s.url === 'string' ? s.url : '';
+        let host: string | null = null;
+        try {
+          host = url ? new URL(url).hostname : null;
+        } catch {
+          host = null;
+        }
+        const row = {
+          host,
+          source: typeof s.source === 'string' ? s.source : null,
+          format: typeof s.format === 'string' ? s.format : null,
+          quality: typeof s.quality === 'string' ? s.quality : null,
+          duration_sec: typeof s.duration_sec === 'number' ? s.duration_sec : null,
+          size_mb: typeof s.size_mb === 'number' ? s.size_mb : null,
+          host_allowed: url ? isAllowedMediaUrl(url) !== null : false,
+        };
+        return { ...row, full: isFullStream(row) };
+      });
+      // Playable candidates: allowlisted https links that pass the full-length rule.
+      const streams = raw
         .filter((s) => typeof s.url === 'string' && isAllowedMediaUrl(s.url as string) !== null)
         .map((s) => ({
           url: s.url as string,
@@ -227,21 +249,19 @@ Deno.serve(async (req) => {
           duration_sec: typeof s.duration_sec === 'number' ? s.duration_sec : null,
           quality_value: typeof s.quality_value === 'number' ? s.quality_value : null,
           required_headers: scrub(s.required_headers ?? {}),
-        }));
-      // The stream list mixes the full title with short "Mobile Native" previews (about 23 s, under 1 MB).
-      // Only full-length streams are returned. If nothing is full-length, the title is not playable.
-      const streams = candidates.filter(isFullStream).sort(compareStreams);
-      if (candidates.length > 0 && streams.length === 0) {
-        // Metadata only (no URLs, no headers) so the rule can be checked against real candidates.
-        const summary = candidates.map((c) => ({ source: c.source, format: c.format, quality: c.quality, duration_sec: c.duration_sec, size_mb: c.size_mb }));
-        return json({ error: 'no_full_stream', subject_id: subjectId, candidates: summary }, 404);
+        }))
+        .filter(isFullStream)
+        .sort(compareStreams);
+      if (streams.length === 0) {
+        return json({ error: 'no_full_stream', subject_id: subjectId, diagnostics }, 404);
       }
       return json({
         subject_id: subjectId,
         season: typeof data.season === 'number' ? data.season : null,
         episode: typeof data.episode === 'number' ? data.episode : null,
         available_formats: scrub(data.available_formats ?? []),
-        preview_streams_dropped: candidates.length - streams.length,
+        preview_streams_dropped: diagnostics.length - streams.length,
+        diagnostics,
         streams,
       });
     }

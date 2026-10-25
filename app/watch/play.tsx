@@ -7,6 +7,7 @@ import { ErrorState } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { space } from '../../constants/theme';
+import { watchProxySource } from '../../lib/api/moviebox';
 import { getProgress, saveProgress, type WatchEpisodeRef } from '../../lib/watchStore';
 
 const SAVE_EVERY_MS = 5000;
@@ -43,9 +44,22 @@ export default function WatchPlayer() {
     episode: episode && Number.isFinite(episode) ? episode : null,
   };
 
+  // Direct link first (with the headers the CDN needs). If it fails, retry once through the allowlisted proxy.
+  const [proxied, setProxied] = useState<{ uri: string; headers: Record<string, string> } | null>(null);
   const source = params.local
     ? { uri: String(params.local) }
-    : { uri: String(params.url ?? ''), headers: parseHeaders(params.headers) };
+    : proxied ?? { uri: String(params.url ?? ''), headers: parseHeaders(params.headers) };
+
+  const onPlaybackFailure = () => {
+    if (!params.local && !proxied && params.url) {
+      watchProxySource(String(params.url)).then((p) => {
+        if (p) setProxied(p);
+        else setFailed(true);
+      });
+      return;
+    }
+    setFailed(true);
+  };
 
   useEffect(() => {
     return () => {
@@ -58,7 +72,7 @@ export default function WatchPlayer() {
 
   const onStatus = (status: AVPlaybackStatus) => {
     if (!status.isLoaded) {
-      if (status.error) setFailed(true);
+      if (status.error) onPlaybackFailure();
       return;
     }
     const positionMs = status.positionMillis;
@@ -99,7 +113,7 @@ export default function WatchPlayer() {
               shouldPlay
               onPlaybackStatusUpdate={onStatus}
               onLoad={onLoad}
-              onError={() => setFailed(true)}
+              onError={onPlaybackFailure}
             />
           )}
         </View>

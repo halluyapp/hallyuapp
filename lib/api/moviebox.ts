@@ -5,7 +5,8 @@
  * receives normalised records, plus direct stream links whose required headers the player must send.
  */
 import { ensureBackendSessionToken, supabase } from './client';
-import { normaliseDetail, normaliseHome, normaliseSearch, normaliseStreams, type WatchDetail, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '../../constants/keys';
+import { normaliseDetail, normaliseDiagnostics, normaliseHome, normaliseSearch, normaliseStreams, type WatchDetail, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
 
 export * from '../watchModel';
 
@@ -20,7 +21,7 @@ async function call(body: Body): Promise<WatchResult<{ data?: unknown } & Raw>> 
   const err = (data as Raw).error;
   if (err === 'not_configured') return { ok: false, reason: 'not_configured' };
   if (err === 'unexpected_shape' || err === 'upstream_error') return { ok: false, reason: 'failed' };
-  if (err === 'no_full_stream') return { ok: false, reason: 'no_full_stream' };
+  if (err === 'no_full_stream') return { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics((data as Raw).diagnostics) };
   if (err) return { ok: false, reason: 'failed' };
   return { ok: true, value: data as { data?: unknown } & Raw };
 }
@@ -50,5 +51,19 @@ export async function fetchWatchStreams(subjectId: string, se?: number, ep?: num
   if (!r.ok) return r;
   const value = normaliseStreams(r.value);
   // Playback and download share the full-length rule. If the server returned only previews, say so.
-  return value.streams.length > 0 ? { ok: true, value } : { ok: false, reason: 'no_full_stream' };
+  return value.streams.length > 0 ? { ok: true, value } : { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics(r.value.diagnostics) };
+}
+
+/**
+ * Fallback playback source: the same full-length stream, routed through the allowlisted proxy with the
+ * signed-in session token. Used only when the direct link fails; the direct link is tried first.
+ */
+export async function watchProxySource(streamUrl: string): Promise<{ uri: string; headers: Record<string, string> } | null> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const token = await ensureBackendSessionToken();
+  if (!token) return null;
+  return {
+    uri: `${SUPABASE_URL}/functions/v1/moviebox?action=proxy&u=${encodeURIComponent(streamUrl)}`,
+    headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
+  };
 }

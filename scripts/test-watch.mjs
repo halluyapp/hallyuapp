@@ -21,7 +21,7 @@ async function load(rel) {
   return import(pathToFileURL(file).href);
 }
 
-const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, isDownloadable, isFullStream, pickStream, qualityOptions } = await load('lib/watchModel.ts');
+const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics } = await load('lib/watchModel.ts');
 
 const subject = (id, title, extra = {}) => ({
   subjectId: id,
@@ -148,4 +148,22 @@ test('pickStream: requested quality first, never a preview, never blindly stream
 test('streams: a mixed list keeps only the full-length entries', () => {
   const r = normaliseStreams({ streams: [raw({ source: 'Mobile Native CDN', quality: '1080p', quality_value: 1080, size_mb: 0.8, duration_sec: 23 }), raw({ quality: '720p', quality_value: 720 })] });
   assert.deepEqual(r.streams.map((s) => s.quality), ['720p']);
+});
+
+test('live fixture (2026-10-25): full Web CDN MP4s pass, the Mobile Native clip is rejected', () => {
+  // Shape copied from moviebox v6 for Lucifer S1E1 (host bcdnxw.hakunaymatata.com). URLs trimmed.
+  const r = normaliseStreams({ season: 1, episode: 1, streams: [
+    { url: 'https://bcdnxw.hakunaymatata.com/x/1080.mp4', source: 'Web CDN (https://123moviesfree.club)', quality: '1080p', quality_value: 1080, format: 'MP4', size_mb: 614.5, duration_sec: 2700, required_headers: { Referer: 'https://123moviesfree.club/' } },
+    { url: 'https://macdn.aoneroom.com/x/clip.mp4', source: 'Mobile Native CDN', quality: '1080p', quality_value: 1080, format: 'MP4', size_mb: 0.8, duration_sec: 23, required_headers: {} },
+    { url: 'https://sbcdnw.hakunaymatata.com/x/a.mpd', source: 'Web DASH (https://123moviesfree.club)', quality: '1080p (Adaptive)', format: 'DASH', size_mb: 0, duration_sec: null, required_headers: {} },
+  ] });
+  assert.equal(r.streams.length, 1);
+  assert.equal(r.streams[0].quality, '1080p');
+  assert.equal(r.streams[0].durationSec, 2700);
+});
+
+test('diagnostics: maps server candidates to client shape', () => {
+  const d = normaliseDiagnostics([{ host: 'macdn.aoneroom.com', source: 'Mobile Native CDN', format: 'MP4', quality: '1080p', duration_sec: 23, size_mb: 0.8, host_allowed: true, full: false }]);
+  assert.deepEqual(d, [{ host: 'macdn.aoneroom.com', source: 'Mobile Native CDN', format: 'MP4', quality: '1080p', durationSec: 23, sizeMb: 0.8, hostAllowed: true, full: false }]);
+  assert.deepEqual(normaliseDiagnostics(undefined), []);
 });

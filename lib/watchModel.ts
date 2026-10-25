@@ -48,7 +48,35 @@ export interface WatchStreams {
   streams: WatchStream[];
 }
 
-export type WatchResult<T> = { ok: true; value: T } | { ok: false; reason: 'offline' | 'signed_out' | 'not_configured' | 'not_found' | 'no_full_stream' | 'failed' };
+/** One upstream candidate, as the server describes it. Metadata only: no URLs, no headers. */
+export interface WatchDiagnostic {
+  host: string | null;
+  source: string | null;
+  format: string | null;
+  quality: string | null;
+  durationSec: number | null;
+  sizeMb: number | null;
+  hostAllowed: boolean;
+  full: boolean;
+}
+
+export type WatchResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: 'offline' | 'signed_out' | 'not_configured' | 'not_found' | 'no_full_stream' | 'failed'; diagnostics?: WatchDiagnostic[] };
+
+/** Maps the server's diagnostics (snake_case) to the client shape. */
+export function normaliseDiagnostics(data: unknown): WatchDiagnostic[] {
+  return (Array.isArray(data) ? data : []).map(obj).map((d) => ({
+    host: str(d.host),
+    source: str(d.source),
+    format: str(d.format),
+    quality: str(d.quality),
+    durationSec: num(d.duration_sec),
+    sizeMb: num(d.size_mb),
+    hostAllowed: d.host_allowed === true,
+    full: d.full === true,
+  }));
+}
 
 type Raw = Record<string, unknown>;
 

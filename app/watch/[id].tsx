@@ -15,6 +15,7 @@ import {
   isDownloadable,
   pickStream,
   qualityOptions,
+  type WatchDiagnostic,
   type WatchDetail,
   type WatchStream,
 } from '../../lib/api/moviebox';
@@ -45,6 +46,8 @@ export default function WatchTitleScreen() {
   const [playable, setPlayable] = useState<Playable | undefined>(undefined);
   const [playError, setPlayError] = useState<string | null>(null);
   const [quality, setQuality] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<WatchDiagnostic[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
   const [saved, setSaved] = useState<DownloadEntry | null>(null);
   const [resume, setResume] = useState<ProgressEntry | null>(null);
   const [downloadFraction, setDownloadFraction] = useState<number | null>(null);
@@ -84,6 +87,7 @@ export default function WatchTitleScreen() {
       if (!alive) return;
       if (!r.ok) {
         setPlayable(null);
+        setDiagnostics(r.diagnostics ?? []);
         // No full-length stream is a normal outcome, not a playback fault.
         setPlayError(r.reason === 'no_full_stream' ? null : r.reason);
         return;
@@ -207,6 +211,19 @@ export default function WatchTitleScreen() {
             {playError ? <InlineNotice tone="warning" text="Playback check failed. Reopen this title to try again." /> : null}
             {playable === null && !playError ? (
               <InlineNotice tone="info" text={isSeries ? 'Only short previews are available for this episode, so it cannot be played in full.' : 'Only short previews are available for this title, so it cannot be played in full.'} />
+            ) : null}
+
+            {__DEV__ && playable === null && diagnostics.length > 0 ? (
+              <View style={{ gap: space.x2 }}>
+                <Pressable onPress={() => setShowDebug((v) => !v)} accessibilityRole="button" style={styles.ghost}>
+                  <Text variant="caption" tone="tertiary">{showDebug ? 'Hide' : 'Show'} debug info ({diagnostics.length} candidates)</Text>
+                </Pressable>
+                {showDebug ? diagnostics.map((d, i) => (
+                  <Text key={i} variant="caption" tone="tertiary">
+                    {`${d.full ? 'FULL' : 'rejected'} · ${d.host ?? 'no host'}${d.hostAllowed ? '' : ' (host not allowed)'} · ${d.source ?? 'no source'} · ${d.format ?? '?'} ${d.quality ?? '?'} · ${d.durationSec ?? 'no duration'}s · ${d.sizeMb ?? 'no size'}MB`}
+                  </Text>
+                )) : null}
+              </View>
             ) : null}
 
             {qualities.length > 1 ? (
