@@ -94,3 +94,9 @@ export async function fetchWatchPlayback(subjectId: string, se: number | undefin
   }
   return last;
 }
+
+/** A fresh download link for one full-length stream. Returns null when no valid link exists. */
+export async function fetchWatchDownloadUrl(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null): Promise<string | null> {
+  const r = await fetchWatchPlayback(subjectId, se, ep, quality);
+  return r.ok ? r.value.downloadUrl : null;
+}

@@ -195,3 +195,88 @@ test('pickStream default: 480p, then 360p, then the best available', () => {
   assert.equal(pickStream(mk(['1080p', '360p']), undefined).quality, '360p');
   assert.equal(pickStream(mk(['1080p', '720p']), null).quality, '1080p');
 });
+
+/* ---------- Player and download rules (lib/watchRules.ts) ---------- */
+
+const R = await load('lib/watchRules.ts');
+
+test('clock: m:ss under an hour, h:mm:ss past it, unknown reads as 0:00', () => {
+  assert.equal(R.formatClock(0), '0:00');
+  assert.equal(R.formatClock(65_400), '1:05');
+  assert.equal(R.formatClock(3_725_000), '1:02:05');
+  assert.equal(R.formatClock(null), '0:00');
+  assert.equal(R.formatClock(Number.NaN), '0:00');
+  assert.equal(R.formatClock(-5), '0:00');
+});
+
+test('seek: clamps to the start and to the known duration', () => {
+  assert.equal(R.seekTarget(4_000, -10_000, 60_000), 0);
+  assert.equal(R.seekTarget(55_000, 10_000, 60_000), 60_000);
+  assert.equal(R.seekTarget(20_000, 10_000, 0), 30_000); // unknown duration: no upper clamp
+});
+
+test('tap zones: left and right thirds skip, the centre toggles controls', () => {
+  assert.equal(R.tapZone(50, 400), 'left');
+  assert.equal(R.tapZone(200, 400), 'centre');
+  assert.equal(R.tapZone(350, 400), 'right');
+  assert.equal(R.fractionAt(10, 0), 0);
+});
+
+test('quality: only offered qualities are chosen; preference, then 480p, 360p, then best', () => {
+  assert.equal(R.chooseQuality(['1080p', '720p', '480p'], '720p'), '720p');
+  assert.equal(R.chooseQuality(['1080p', '720p', '480p'], '360p'), '480p');
+  assert.equal(R.chooseQuality(['1080p', '720p'], null), '1080p');
+  assert.equal(R.chooseQuality(['360p', '1080p'], null), '360p');
+  assert.equal(R.chooseQuality([], '480p'), null);
+});
+
+test('quality: labels are sorted by their real number; unknown labels never get a guessed rank', () => {
+  assert.deepEqual(R.sortQualities(['480p', '1080p', 'Auto', '720p', '480p']), ['1080p', '720p', '480p', 'Auto']);
+  assert.equal(R.qualityRank('4K'), null);
+  assert.equal(R.qualityRank('1080p'), 1080);
+});
+
+test('downloads: a file is complete only when its size matches the server length, when known', () => {
+  assert.equal(R.transferComplete(0, null), false);
+  assert.equal(R.transferComplete(1000, null), true);
+  assert.equal(R.transferComplete(1000, 1000), true);
+  assert.equal(R.transferComplete(900, 1000), false);
+  assert.equal(R.transferComplete(-1, 1000), false);
+});
+
+test('downloads: a valid MP4 has "ftyp" at byte 4; HTML and short data are rejected', () => {
+  const mp4 = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+  assert.equal(R.isMp4Header(mp4), true);
+  assert.equal(R.isMp4Header(new TextEncoder().encode('<html><body>error</body></html>')), false);
+  assert.equal(R.isMp4Header(new Uint8Array([0, 0, 0, 0x18])), false);
+});
+
+test('sizes: MB and GB formatting; unknown is never guessed', () => {
+  assert.equal(R.formatBytes(null), 'Size unavailable');
+  assert.equal(R.formatBytes(undefined), 'Size unavailable');
+  assert.equal(R.formatBytes(-1), 'Size unavailable');
+  assert.equal(R.formatBytes(300 * 1024 * 1024), '300 MB');
+  assert.equal(R.formatBytes(1.5 * 1024 * 1024 * 1024), '1.50 GB');
+});
+
+test('progress: no percentage when the total is unknown', () => {
+  assert.equal(R.progressFraction(50, null), null);
+  assert.equal(R.progressFraction(50, 200), 0.25);
+  assert.equal(R.progressFraction(300, 200), 1);
+});
+
+test('duplicates: no second active or finished copy of the same title and quality', () => {
+  const active = [{ key: 'a:1:1', quality: '480p', status: 'downloading' }];
+  assert.equal(R.canStartDownload(active, [], 'a:1:1', '480p').reason, 'already_downloading');
+  assert.equal(R.canStartDownload([], [{ key: 'a:1:1', quality: '480p' }], 'a:1:1', '480p').reason, 'already_downloaded');
+  assert.equal(R.canStartDownload(active, [], 'a:1:1', '720p').ok, true);
+  assert.equal(R.canStartDownload([{ key: 'a:1:1', quality: '480p', status: 'failed' }], [], 'a:1:1', '480p').ok, true);
+});
+
+test('state: completed transfers cannot be paused; failed ones can only be retried', () => {
+  assert.equal(R.canTransition('completed', 'paused'), false);
+  assert.equal(R.canTransition('downloading', 'paused'), true);
+  assert.equal(R.canTransition('paused', 'downloading'), true);
+  assert.equal(R.canTransition('failed', 'paused'), false);
+  assert.equal(R.canTransition('failed', 'downloading'), true);
+});

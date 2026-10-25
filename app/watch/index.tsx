@@ -7,9 +7,18 @@ import { ScrollScreen, Screen } from '../../components/ui/Screen';
 import { EmptyState, ErrorState, InlineNotice } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
-import { colors, space } from '../../constants/theme';
+import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchHome, searchWatch, type WatchResult, type WatchRow, type WatchTitle } from '../../lib/api/moviebox';
-import { listDownloads, listProgress, type DownloadEntry, type ProgressEntry } from '../../lib/watchStore';
+import { useCompletedDownloads, useTransfers } from '../../components/watch/useWatchDownloads';
+import { listProgress, type ProgressEntry } from '../../lib/watchStore';
+
+function downloadsSummary(completed: number, active: number): string {
+  if (completed === 0 && active === 0) return 'Save episodes to watch without a connection.';
+  const parts = [];
+  if (completed > 0) parts.push(`${completed} ready to watch offline`);
+  if (active > 0) parts.push(`${active} in progress`);
+  return parts.join(' · ');
+}
 
 /** Watch — Hallyu's Moviebox-backed title browser: search, home rows, Continue Watching, downloads. */
 export default function WatchHome() {
@@ -21,7 +30,8 @@ export default function WatchHome() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressEntry[]>([]);
-  const [downloads, setDownloads] = useState<DownloadEntry[]>([]);
+  const completedCount = useCompletedDownloads().length;
+  const activeCount = useTransfers().length;
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -41,7 +51,6 @@ export default function WatchHome() {
     let alive = true;
     const refresh = () => {
       listProgress().then((p) => alive && setProgress(p));
-      listDownloads().then((d) => alive && setDownloads(d));
     };
     refresh();
     const timer = setInterval(refresh, 4000);
@@ -131,25 +140,15 @@ export default function WatchHome() {
               />
             ) : null}
 
-            {downloads.length > 0 ? (
-              <View style={{ paddingHorizontal: space.x4, marginTop: space.x5 }}>
-                <Text variant="title">Downloads on this device</Text>
-                <Text variant="caption" tone="tertiary" style={{ marginTop: space.x1 }}>
-                  Saved privately in Hallyu. Downloads only continue while the app is open.
+            <Pressable onPress={() => router.push('/watch/downloads')} accessibilityRole="button" accessibilityLabel="Open Downloads" style={styles.downloadsCard}>
+              <View style={{ flex: 1, gap: space.x1 }}>
+                <Text variant="label">Downloads</Text>
+                <Text variant="caption" tone="tertiary">
+                  {downloadsSummary(completedCount, activeCount)}
                 </Text>
-                {downloads.map((d) => (
-                  <Pressable
-                    key={d.key}
-                    onPress={() => router.push({ pathname: '/watch/play', params: { subjectId: d.subjectId, title: d.title, season: d.season ?? '', episode: d.episode ?? '', local: d.fileUri } })}
-                    accessibilityRole="button"
-                    style={styles.downloadRow}
-                  >
-                    <Text variant="body">{d.title}{d.season ? ` · S${d.season} E${d.episode}` : ''}</Text>
-                    <Text variant="caption" tone="tertiary">{Math.round(d.bytes / 1048576)} MB · play offline</Text>
-                  </Pressable>
-                ))}
               </View>
-            ) : null}
+              <Text variant="caption" tone="accent">Open</Text>
+            </Pressable>
 
             {homeError ? (
               <View style={{ padding: space.x4 }}>
@@ -183,4 +182,5 @@ export default function WatchHome() {
 const styles = StyleSheet.create({
   search: { paddingHorizontal: space.x4, paddingTop: space.x2 },
   downloadRow: { marginTop: space.x3, paddingVertical: space.x2 },
+  downloadsCard: { marginHorizontal: space.x4, marginTop: space.x5, padding: space.x4, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle, backgroundColor: colors.surface1, flexDirection: 'row', alignItems: 'center', gap: space.x3 },
 });

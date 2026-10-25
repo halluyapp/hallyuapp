@@ -486,11 +486,13 @@ function ReminderSync() {
       }
     });
     const fg = RNAppState.addEventListener('change', (st) => st === 'active' && schedule(800));
-    const openResponse = (r: Notifications.NotificationResponse | null | undefined) => {
+    // A live tap with no route opens the in-app inbox, where the full notification text is kept.
+    // The last-response check on launch only follows a route, so an old tap never reopens the inbox.
+    const openResponse = (r: Notifications.NotificationResponse | null | undefined, fromTap = false) => {
       if (!r) return;
       const responseId = r.notification.request.identifier;
       if (responseId && handledResponseIds.current.has(responseId)) return;
-      const url = reminderUrl(r);
+      const url = reminderUrl(r) ?? (fromTap ? '/(tabs)/activity' : undefined);
       if (!url) return;
       if (responseId) handledResponseIds.current.add(responseId);
       if (!navReadyRef.current) {
@@ -499,7 +501,7 @@ function ReminderSync() {
       }
       setTimeout(() => router.push(url as never), 300);
     };
-    const tapped = Notifications.addNotificationResponseReceivedListener(openResponse);
+    const tapped = Notifications.addNotificationResponseReceivedListener((r) => openResponse(r, true));
     Notifications.getLastNotificationResponseAsync()
       .then(openResponse)
       .catch((e) => reportError('ReminderSync.lastResponse', e));
