@@ -280,3 +280,41 @@ test('state: completed transfers cannot be paused; failed ones can only be retri
   assert.equal(R.canTransition('failed', 'paused'), false);
   assert.equal(R.canTransition('failed', 'downloading'), true);
 });
+
+/* ---------- Interrupted download continuation (decideAfterTransfer) ---------- */
+
+test('a short transfer continues from the bytes on disk, not from zero', () => {
+  // The connection closed at about 2 MB of a 40 MB file.
+  const d = R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 2_000_000, expectedBytes: 40_000_000, continues: 0 });
+  assert.deepEqual(d, { action: 'continue', fromBytes: 2_000_000 });
+});
+
+test('a continuation answered 200 restarts the file, because appending would corrupt it', () => {
+  const d = R.decideAfterTransfer({ status: 200, startBytes: 2_000_000, bytesOnDisk: 42_000_000, expectedBytes: 40_000_000, continues: 1 });
+  assert.deepEqual(d, { action: 'restart' });
+});
+
+test('a continuation answered 206 that completes the length is complete', () => {
+  const d = R.decideAfterTransfer({ status: 206, startBytes: 2_000_000, bytesOnDisk: 40_000_000, expectedBytes: 40_000_000, continues: 1 });
+  assert.deepEqual(d, { action: 'complete' });
+});
+
+test('continuations stop after the limit and report a network failure', () => {
+  const d = R.decideAfterTransfer({ status: 206, startBytes: 5_000_000, bytesOnDisk: 6_000_000, expectedBytes: 40_000_000, continues: R.MAX_AUTO_CONTINUES });
+  assert.deepEqual(d, { action: 'fail', reason: 'network' });
+});
+
+test('expired links and HTTP errors are never retried silently', () => {
+  assert.deepEqual(R.decideAfterTransfer({ status: 403, startBytes: 0, bytesOnDisk: 0, expectedBytes: null, continues: 0 }), { action: 'fail', reason: 'link_expired' });
+  assert.deepEqual(R.decideAfterTransfer({ status: 502, startBytes: 0, bytesOnDisk: 0, expectedBytes: null, continues: 0 }), { action: 'fail', reason: 'http_error' });
+});
+
+test('a file longer than the server said is restarted, not accepted', () => {
+  const d = R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 41_000_000, expectedBytes: 40_000_000, continues: 0 });
+  assert.deepEqual(d, { action: 'restart' });
+});
+
+test('an unknown length completes only when bytes were written', () => {
+  assert.deepEqual(R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 5, expectedBytes: null, continues: 0 }), { action: 'complete' });
+  assert.deepEqual(R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 0, expectedBytes: null, continues: 0 }), { action: 'fail', reason: 'network' });
+});

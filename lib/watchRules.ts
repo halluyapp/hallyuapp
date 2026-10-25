@@ -131,4 +131,50 @@ export function canTransition(from: TransferStatus, to: TransferStatus): boolean
   };
   return table[from].includes(to);
 }
-// CI re-run: backend connection check was transiently unreachable on 44e6abf.
+
+/** Largest number of automatic continuations for one transfer before it is reported as failed. */
+export const MAX_AUTO_CONTINUES = 6;
+
+export type AfterTransfer =
+  | { action: 'complete' }
+  | { action: 'continue'; fromBytes: number }
+  | { action: 'restart' }
+  | { action: 'fail'; reason: 'link_expired' | 'http_error' | 'network' };
+
+/**
+ * Decides what to do after one HTTP transfer ends. A transfer that stops early (the connection closed
+ * before the server's content-length) is continued with a Range request from the bytes already on disk.
+ * If the server ignores Range on a continuation (answers 200 with the whole file), the appended file is
+ * corrupt, so it is restarted from zero. Expired links and HTTP errors are never retried silently.
+ */
+export function decideAfterTransfer(input: {
+  status: number;
+  /** Bytes already on disk when this request began (0 for a fresh download). */
+  startBytes: number;
+  /** Bytes on disk now. */
+  bytesOnDisk: number;
+  /** The server's content-length total, or null when unknown. */
+  expectedBytes: number | null;
+  /** Automatic continuations already used for this transfer. */
+  continues: number;
+}): AfterTransfer {
+  const { status, startBytes, bytesOnDisk, expectedBytes, continues } = input;
+  if (status === 401 || status === 403) return { action: 'fail', reason: 'link_expired' };
+  if (status < 200 || status >= 300) return { action: 'fail', reason: 'http_error' };
+
+  // A continuation answered 200 instead of 206: the server ignored Range and the file is now corrupt.
+  if (startBytes > 0 && status === 200) {
+    return continues < MAX_AUTO_CONTINUES ? { action: 'restart' } : { action: 'fail', reason: 'network' };
+  }
+  if (expectedBytes !== null && expectedBytes > 0) {
+    if (bytesOnDisk === expectedBytes) return { action: 'complete' };
+    if (bytesOnDisk > expectedBytes) {
+      return continues < MAX_AUTO_CONTINUES ? { action: 'restart' } : { action: 'fail', reason: 'network' };
+    }
+    // Short: the connection stopped early. Continue from the bytes on disk.
+    if (bytesOnDisk > 0 && continues < MAX_AUTO_CONTINUES) return { action: 'continue', fromBytes: bytesOnDisk };
+    return { action: 'fail', reason: 'network' };
+  }
+  // Length unknown: nothing to compare. The MP4 header check decides whether the file is usable.
+  return bytesOnDisk > 0 ? { action: 'complete' } : { action: 'fail', reason: 'network' };
+}

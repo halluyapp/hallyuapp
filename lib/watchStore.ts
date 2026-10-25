@@ -13,8 +13,8 @@ import { Platform } from 'react-native';
 import {
   canStartDownload,
   canTransition,
+  decideAfterTransfer,
   isMp4Header,
-  transferComplete,
   type TransferStatus,
 } from './watchRules';
 
@@ -178,6 +178,8 @@ async function getTransfer(key: string): Promise<TransferEntry | null> {
 
 interface ActiveTransfer {
   resumable: FileSystem.DownloadResumable;
+  /** The link this transfer downloads from, kept so a continuation can reuse it. */
+  url: string;
   paused: boolean;
   cancelled: boolean;
 }
@@ -196,32 +198,64 @@ async function failTransfer(key: string, reason: TransferFailure, message: strin
   }
 }
 
-/** Runs one transfer to completion or interruption, then validates the file before marking it complete. */
-async function drive(key: string, run: () => Promise<FileSystem.FileSystemDownloadResult | undefined>): Promise<void> {
+/**
+ * Runs one transfer to completion or interruption, then validates the file before marking it complete.
+ * A transfer that stops early is continued from the bytes on disk (Range request); see decideAfterTransfer.
+ */
+async function drive(
+  key: string,
+  run: () => Promise<FileSystem.FileSystemDownloadResult | undefined>,
+  startBytes = 0,
+  continues = 0,
+): Promise<void> {
   try {
     const result = await run();
     const current = active.get(key);
     if (!current) return; // dropped by cancel
     if (current.paused) return; // paused by the user; the saved state is already stored
-    active.delete(key);
-    if (current.cancelled) return;
+    if (current.cancelled) {
+      active.delete(key);
+      return;
+    }
 
     const t = await getTransfer(key);
-    if (!t) return;
-    if (!result) return failTransfer(key, 'unknown', 'The download stopped unexpectedly. Tap retry.');
-    if (result.status === 401 || result.status === 403) {
-      return failTransfer(key, 'link_expired', 'The download link has expired. Tap retry to get a new one.');
+    if (!t) {
+      active.delete(key);
+      return;
     }
-    if (result.status < 200 || result.status >= 300) {
-      return failTransfer(key, 'http_error', `The server returned an error (${result.status}). Tap retry.`);
+    if (!result) {
+      active.delete(key);
+      return failTransfer(key, 'unknown', 'The download stopped unexpectedly. Tap retry.');
     }
 
-    const info = await FileSystem.getInfoAsync(t.fileUri);
-    const bytes = info.exists && 'size' in info && typeof info.size === 'number' ? info.size : 0;
-    const expected = t.totalBytes;
-    if (!transferComplete(bytes, expected)) {
-      return failTransfer(key, 'network', 'The download was interrupted before it finished. Tap resume to continue.');
+    const bytes = await bytesOnDisk(t.fileUri);
+    const decision = decideAfterTransfer({
+      status: result.status,
+      startBytes,
+      bytesOnDisk: bytes,
+      expectedBytes: t.totalBytes,
+      continues,
+    });
+
+    if (decision.action === 'continue' || decision.action === 'restart') {
+      // Continue the same file from the bytes on disk, or start it over if the server ignored Range.
+      const fromBytes = decision.action === 'continue' ? decision.fromBytes : 0;
+      if (fromBytes === 0) await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+      const resumable = makeResumable(key, current.url, fromBytes > 0 ? String(fromBytes) : null, (w, total) => void updateBytes(key, w, total));
+      active.set(key, { ...current, resumable });
+      return drive(key, () => resumable.downloadAsync(), fromBytes, continues + 1);
     }
+
+    active.delete(key);
+    if (decision.action === 'fail') {
+      const messages = {
+        link_expired: 'The download link has expired. Tap retry to get a new one.',
+        http_error: `The server returned an error (${result.status}). Tap retry.`,
+        network: 'The download was interrupted before it finished. Tap resume to continue.',
+      } as const;
+      return failTransfer(key, decision.reason, messages[decision.reason]);
+    }
+
     const head = await FileSystem.readAsStringAsync(t.fileUri, { encoding: FileSystem.EncodingType.Base64, position: 0, length: 12 }).catch(() => '');
     const headBytes = head ? Uint8Array.from(atob(head), (c) => c.charCodeAt(0)) : new Uint8Array();
     if (!isMp4Header(headBytes)) {
@@ -254,6 +288,11 @@ async function drive(key: string, run: () => Promise<FileSystem.FileSystemDownlo
       if (t) await putTransfer({ ...t, status: 'failed', resumeData: saved, error: 'Connection lost. Tap resume when you are back online.', updatedAt: Date.now() });
     }
   }
+}
+
+async function bytesOnDisk(fileUri: string): Promise<number> {
+  const info = await FileSystem.getInfoAsync(fileUri).catch(() => null);
+  return info && info.exists && 'size' in info && typeof info.size === 'number' ? info.size : 0;
 }
 
 function safeSavable(r: FileSystem.DownloadResumable): string | null {
@@ -339,7 +378,7 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
   await putTransfer(record);
 
   const resumable = makeResumable(key, source.downloadUrl, null, (w, t) => void updateBytes(key, w, t));
-  active.set(key, { resumable, paused: false, cancelled: false });
+  active.set(key, { resumable, url: source.downloadUrl, paused: false, cancelled: false });
   void drive(key, () => resumable.downloadAsync());
   return { ok: true };
 }
@@ -371,15 +410,18 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
   if (a && a.paused) {
     a.paused = false;
     await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
-    void drive(key, () => a.resumable.resumeAsync());
+    const onDisk = await bytesOnDisk(t.fileUri);
+    void drive(key, () => a.resumable.resumeAsync(), onDisk);
     return { ok: true };
   }
   const url = await getFreshUrl();
   if (!url) return { ok: false, reason: 'link_expired', message: 'Could not get a fresh link. Check your connection and try again.' };
   await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
   const resumable = makeResumable(key, url, t.resumeData, (w, total) => void updateBytes(key, w, total));
-  active.set(key, { resumable, paused: false, cancelled: false });
-  void drive(key, () => resumable.downloadAsync());
+  active.set(key, { resumable, url, paused: false, cancelled: false });
+  // Only a request that carries resume data appends to the file; otherwise the file is written from zero.
+  const startBytes = t.resumeData ? await bytesOnDisk(t.fileUri) : 0;
+  void drive(key, () => resumable.downloadAsync(), startBytes);
   return { ok: true };
 }
 

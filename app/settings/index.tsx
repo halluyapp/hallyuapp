@@ -123,12 +123,20 @@ export default function Settings() {
 
         <SettingsGroup title={t('settings.account')}>
           {signedIn ? (
-            <SettingsRow
-              icon="person-outline"
-              label={t('settings.account')}
-              detail="Change @handle, password, email & data export"
-              onPress={() => router.push('/settings/account')}
-            />
+            <>
+              <SettingsRow
+                icon="person-outline"
+                label={t('settings.account')}
+                detail="Change @handle, password, email & data export"
+                onPress={() => router.push('/settings/account')}
+              />
+              <SettingsRow
+                icon="book-outline"
+                label="Diary"
+                detail="Your dated watch diary"
+                onPress={() => router.push('/diary')}
+              />
+            </>
           ) : (
             <SettingsRow
               icon="log-in-outline"
