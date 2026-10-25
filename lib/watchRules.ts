@@ -131,3 +131,4 @@ export function canTransition(from: TransferStatus, to: TransferStatus): boolean
   };
   return table[from].includes(to);
 }
+// CI re-run: backend connection check was transiently unreachable on 44e6abf.
