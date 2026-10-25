@@ -20,6 +20,7 @@ async function call(body: Body): Promise<WatchResult<{ data?: unknown } & Raw>> 
   const err = (data as Raw).error;
   if (err === 'not_configured') return { ok: false, reason: 'not_configured' };
   if (err === 'unexpected_shape' || err === 'upstream_error') return { ok: false, reason: 'failed' };
+  if (err === 'no_full_stream') return { ok: false, reason: 'no_full_stream' };
   if (err) return { ok: false, reason: 'failed' };
   return { ok: true, value: data as { data?: unknown } & Raw };
 }
@@ -46,5 +47,8 @@ export async function fetchWatchStreams(subjectId: string, se?: number, ep?: num
   if (se !== undefined) body.se = se;
   if (ep !== undefined) body.ep = ep;
   const r = await call(body);
-  return r.ok ? { ok: true, value: normaliseStreams(r.value) } : r;
+  if (!r.ok) return r;
+  const value = normaliseStreams(r.value);
+  // Playback and download share the full-length rule. If the server returned only previews, say so.
+  return value.streams.length > 0 ? { ok: true, value } : { ok: false, reason: 'no_full_stream' };
 }

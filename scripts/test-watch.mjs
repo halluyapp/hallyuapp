@@ -21,7 +21,7 @@ async function load(rel) {
   return import(pathToFileURL(file).href);
 }
 
-const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, isDownloadable } = await load('lib/watchModel.ts');
+const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, isDownloadable, isFullStream, pickStream, qualityOptions } = await load('lib/watchModel.ts');
 
 const subject = (id, title, extra = {}) => ({
   subjectId: id,
@@ -88,11 +88,13 @@ test('streams: keeps direct links with their required headers and drops links wi
     streams: [
       {
         url: 'https://macdn.aoneroom.com/other/2026/10/10/80da52722ee7de7a4303290af6783424.mp4',
+        source: 'Web CDN',
         quality: '1080p',
+        quality_value: 1080,
         format: 'MP4',
         codec: 'hevc',
-        size_mb: 0.8,
-        duration_sec: 23,
+        size_mb: 1400,
+        duration_sec: 2700,
         required_headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://123moviesfree.club/', Origin: 'https://123moviesfree.club' },
       },
       { quality: '720p', format: 'MP4' },
@@ -110,4 +112,40 @@ test('downloads: only progressive MP4 links qualify; DASH is never offered as a 
   assert.equal(isDownloadable({ ...mp4, format: 'DASH' }), false);
   assert.equal(isDownloadable({ ...mp4, url: 'https://macdn.aoneroom.com/x/manifest.mpd' }), false);
   assert.equal(isDownloadable({ ...mp4, url: 'https://macdn.aoneroom.com/x/a.m3u8', format: 'MP4' }), false);
+});
+
+const raw = (over) => ({ url: 'https://macdn.aoneroom.com/a.mp4', source: 'Web CDN', quality: '720p', quality_value: 720, format: 'MP4', size_mb: 900, duration_sec: 2700, required_headers: {}, ...over });
+
+test('streams: rejects Mobile Native previews even when labelled 1080p', () => {
+  const r = normaliseStreams({ streams: [raw({ source: 'Mobile Native CDN', quality: '1080p', quality_value: 1080, size_mb: 0.8, duration_sec: 23 })] });
+  assert.equal(r.streams.length, 0);
+});
+
+test('streams: rejects 300 seconds or less, unknown duration, and 50 MB or less', () => {
+  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 300, sizeMb: 900 }), false);
+  assert.equal(isFullStream({ source: 'Web CDN', durationSec: null, sizeMb: 900 }), false);
+  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 2700, sizeMb: 50 }), false);
+  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 301, sizeMb: 51 }), true);
+});
+
+test('streams: sorts MP4 before DASH, then higher quality first', () => {
+  const r = normaliseStreams({ streams: [
+    raw({ url: 'https://macdn.aoneroom.com/d1080.mpd', format: 'DASH', quality: '1080p', quality_value: 1080 }),
+    raw({ quality: '480p', quality_value: 480 }),
+    raw({ quality: '1080p', quality_value: 1080 }),
+  ] });
+  assert.deepEqual(r.streams.map((s) => [s.format, s.quality]), [['MP4', '1080p'], ['MP4', '480p'], ['DASH', '1080p']]);
+});
+
+test('pickStream: requested quality first, never a preview, never blindly streams[0]', () => {
+  const streams = normaliseStreams({ streams: [raw({ quality: '1080p', quality_value: 1080 }), raw({ quality: '480p', quality_value: 480 })] }).streams;
+  assert.equal(pickStream(streams, '480p').quality, '480p');
+  assert.equal(pickStream(streams, '4K').quality, '1080p');
+  assert.equal(pickStream([]), undefined);
+  assert.deepEqual(qualityOptions(streams), ['1080p', '480p']);
+});
+
+test('streams: a mixed list keeps only the full-length entries', () => {
+  const r = normaliseStreams({ streams: [raw({ source: 'Mobile Native CDN', quality: '1080p', quality_value: 1080, size_mb: 0.8, duration_sec: 23 }), raw({ quality: '720p', quality_value: 720 })] });
+  assert.deepEqual(r.streams.map((s) => s.quality), ['720p']);
 });

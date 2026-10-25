@@ -32,7 +32,9 @@ export interface WatchDetail extends WatchTitle {
 
 export interface WatchStream {
   url: string;
+  source: string | null;
   quality: string | null;
+  qualityValue: number | null;
   format: string | null;
   codec: string | null;
   sizeMb: number | null;
@@ -46,7 +48,7 @@ export interface WatchStreams {
   streams: WatchStream[];
 }
 
-export type WatchResult<T> = { ok: true; value: T } | { ok: false; reason: 'offline' | 'signed_out' | 'not_configured' | 'not_found' | 'failed' };
+export type WatchResult<T> = { ok: true; value: T } | { ok: false; reason: 'offline' | 'signed_out' | 'not_configured' | 'not_found' | 'no_full_stream' | 'failed' };
 
 type Raw = Record<string, unknown>;
 
@@ -107,6 +109,27 @@ export function normaliseDetail(data: unknown): WatchDetail | null {
   };
 }
 
+/**
+ * Full-length rule, shared with the server (supabase/functions/moviebox). A stream is rejected when its
+ * source is a "Mobile Native" preview, when its duration is 300 seconds or less or unknown, or when its
+ * size is 50 MB or less. Quality labels are not trusted: a 23-second preview can be labelled 1080p.
+ */
+export function isFullStream(s: Pick<WatchStream, 'source' | 'durationSec' | 'sizeMb'>): boolean {
+  if ((s.source ?? '').toLowerCase().includes('mobile native')) return false;
+  if (s.durationSec === null || s.durationSec <= 300) return false;
+  if (s.sizeMb !== null && s.sizeMb <= 50) return false;
+  return true;
+}
+
+/** Progressive MP4 first, then the higher quality. */
+export function compareStreams(a: WatchStream, b: WatchStream): number {
+  const fa = (a.format ?? '').toUpperCase() === 'MP4' ? 0 : 1;
+  const fb = (b.format ?? '').toUpperCase() === 'MP4' ? 0 : 1;
+  if (fa !== fb) return fa - fb;
+  return (b.qualityValue ?? 0) - (a.qualityValue ?? 0);
+}
+
+/** Full-length streams only, best first. Never returns previews, and never assumes streams[0] is the title. */
 export function normaliseStreams(data: unknown): WatchStreams {
   const d = obj(data);
   const streams = (Array.isArray(d.streams) ? d.streams : []).map(obj).flatMap((s): WatchStream[] => {
@@ -117,7 +140,9 @@ export function normaliseStreams(data: unknown): WatchStreams {
     return [
       {
         url,
+        source: str(s.source),
         quality: str(s.quality),
+        qualityValue: num(s.quality_value),
         format: str(s.format),
         codec: str(s.codec),
         sizeMb: num(s.size_mb),
@@ -126,7 +151,19 @@ export function normaliseStreams(data: unknown): WatchStreams {
       },
     ];
   });
-  return { season: num(d.season), episode: num(d.episode), streams };
+  return { season: num(d.season), episode: num(d.episode), streams: streams.filter(isFullStream).sort(compareStreams) };
+}
+
+/** The stream to play: the requested quality when available, otherwise the best full-length stream. */
+export function pickStream(streams: WatchStream[], quality?: string | null): WatchStream | undefined {
+  const full = streams.filter(isFullStream).sort(compareStreams);
+  return (quality ? full.find((s) => s.quality === quality) : undefined) ?? full[0];
+}
+
+/** Distinct qualities offered, best first. */
+export function qualityOptions(streams: WatchStream[]): string[] {
+  const sorted = streams.filter(isFullStream).sort(compareStreams);
+  return [...new Set(sorted.map((s) => s.quality).filter((q): q is string => !!q))];
 }
 
 /** Only progressive MP4 links can be saved as a file. DASH manifests are never offered as downloads. */

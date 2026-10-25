@@ -13,6 +13,8 @@ import {
   fetchWatchDetail,
   fetchWatchStreams,
   isDownloadable,
+  pickStream,
+  qualityOptions,
   type WatchDetail,
   type WatchStream,
 } from '../../lib/api/moviebox';
@@ -42,6 +44,7 @@ export default function WatchTitleScreen() {
   const [episode, setEpisode] = useState<number | null>(null);
   const [playable, setPlayable] = useState<Playable | undefined>(undefined);
   const [playError, setPlayError] = useState<string | null>(null);
+  const [quality, setQuality] = useState<string | null>(null);
   const [saved, setSaved] = useState<DownloadEntry | null>(null);
   const [resume, setResume] = useState<ProgressEntry | null>(null);
   const [downloadFraction, setDownloadFraction] = useState<number | null>(null);
@@ -81,10 +84,11 @@ export default function WatchTitleScreen() {
       if (!alive) return;
       if (!r.ok) {
         setPlayable(null);
-        setPlayError(r.reason);
+        // No full-length stream is a normal outcome, not a playback fault.
+        setPlayError(r.reason === 'no_full_stream' ? null : r.reason);
         return;
       }
-      setPlayable(r.value.streams.length > 0 ? { streams: r.value.streams } : null);
+      setPlayable({ streams: r.value.streams });
     });
     return () => {
       alive = false;
@@ -152,8 +156,9 @@ export default function WatchTitleScreen() {
     handle.current?.cancel();
   };
 
-  const downloadable = playable ? playable.streams.find(isDownloadable) : undefined;
-  const watchable = playable?.streams[0];
+  const qualities = playable ? qualityOptions(playable.streams) : [];
+  const watchable = playable ? pickStream(playable.streams, quality) : undefined;
+  const downloadable = playable ? playable.streams.filter((s) => s.quality === (watchable?.quality ?? null)).find(isDownloadable) ?? playable.streams.find(isDownloadable) : undefined;
 
   return (
     <Screen header={<TopBar title={detail?.title ?? String(params.title ?? 'Title')} mode="stack" />}>
@@ -200,7 +205,20 @@ export default function WatchTitleScreen() {
 
             {playable === undefined && !playError ? <ActivityIndicator color={colors.accent} style={{ alignSelf: 'flex-start' }} /> : null}
             {playError ? <InlineNotice tone="warning" text="Playback check failed. Reopen this title to try again." /> : null}
-            {playable === null && !playError ? <InlineNotice tone="info" text={isSeries ? 'No playable stream for this episode.' : 'No playable stream for this title in Hallyu.'} /> : null}
+            {playable === null && !playError ? (
+              <InlineNotice tone="info" text={isSeries ? 'Only short previews are available for this episode, so it cannot be played in full.' : 'Only short previews are available for this title, so it cannot be played in full.'} />
+            ) : null}
+
+            {qualities.length > 1 ? (
+              <>
+                <Text variant="caption" tone="tertiary">Quality</Text>
+                <ChipRow>
+                  {qualities.map((q) => (
+                    <Chip key={q} label={q} selected={(watchable?.quality ?? null) === q} onPress={() => setQuality(q)} />
+                  ))}
+                </ChipRow>
+              </>
+            ) : null}
 
             {resume && watchable ? (
               <Text variant="caption" tone="secondary">Resume at {Math.floor(resume.positionMs / 60000)}:{String(Math.floor(resume.positionMs / 1000) % 60).padStart(2, '0')}</Text>

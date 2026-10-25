@@ -67,12 +67,18 @@ async function upstream(path: string, params: Record<string, string>, key: strin
   const url = new URL(`${BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set('api_key', key);
-  let res: Response;
-  try {
-    res = await fetch(url, { headers: { Accept: 'application/json' } });
-  } catch {
-    return { ok: false, status: 502 };
+  // One retry for network errors and 5xx responses. Streams can fail intermittently upstream.
+  let res: Response | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (res.ok || res.status < 500) break;
+    } catch {
+      res = null;
+    }
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
   }
+  if (!res) return { ok: false, status: 502 };
   if (!res.ok) return { ok: false, status: res.status === 429 ? 429 : 502 };
   try {
     return { ok: true, body: await res.json() };
@@ -98,6 +104,26 @@ function validDetailPath(value: unknown): string | null {
 function intParam(value: unknown, min: number, max: number, fallback: number): number {
   const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
   return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
+/**
+ * Full-length test. A stream qualifies only when it is not a "Mobile Native" preview, its duration is
+ * known and over 5 minutes, and its size (when reported) is over 50 MB. Quality labels are not trusted:
+ * a preview can be labelled 1080p.
+ */
+function isFullStream(s: { source: string | null; duration_sec: number | null; size_mb: number | null }): boolean {
+  if ((s.source ?? '').toLowerCase().includes('mobile native')) return false;
+  if (s.duration_sec === null || s.duration_sec <= 300) return false;
+  if (s.size_mb !== null && s.size_mb <= 50) return false;
+  return true;
+}
+
+/** Progressive MP4 before DASH, then higher quality first. */
+function compareStreams(a: { format: string | null; quality_value: number | null }, b: { format: string | null; quality_value: number | null }): number {
+  const fa = (a.format ?? '').toUpperCase() === 'MP4' ? 0 : 1;
+  const fb = (b.format ?? '').toUpperCase() === 'MP4' ? 0 : 1;
+  if (fa !== fb) return fa - fb;
+  return (b.quality_value ?? 0) - (a.quality_value ?? 0);
 }
 
 async function handleMedia(req: Request, key: string): Promise<Response> {
@@ -187,12 +213,13 @@ Deno.serve(async (req) => {
       const sd = r.body?.data;
       const data = sd && typeof sd === 'object' && sd.status === true ? (sd as Record<string, unknown>) : undefined;
       if (!data) return json({ error: 'unexpected_shape' }, 502);
-      // Only direct links on allowlisted hosts are returned. Anything else is dropped.
-      const streams = (Array.isArray(data.streams) ? data.streams : [])
+      // Only direct links on allowlisted hosts are considered.
+      const candidates = (Array.isArray(data.streams) ? data.streams : [])
         .map((s) => s as Record<string, unknown>)
         .filter((s) => typeof s.url === 'string' && isAllowedMediaUrl(s.url as string) !== null)
         .map((s) => ({
           url: s.url as string,
+          source: typeof s.source === 'string' ? s.source : null,
           quality: typeof s.quality === 'string' ? s.quality : null,
           format: typeof s.format === 'string' ? s.format : null,
           codec: typeof s.codec === 'string' ? s.codec : null,
@@ -201,11 +228,20 @@ Deno.serve(async (req) => {
           quality_value: typeof s.quality_value === 'number' ? s.quality_value : null,
           required_headers: scrub(s.required_headers ?? {}),
         }));
+      // The stream list mixes the full title with short "Mobile Native" previews (about 23 s, under 1 MB).
+      // Only full-length streams are returned. If nothing is full-length, the title is not playable.
+      const streams = candidates.filter(isFullStream).sort(compareStreams);
+      if (candidates.length > 0 && streams.length === 0) {
+        // Metadata only (no URLs, no headers) so the rule can be checked against real candidates.
+        const summary = candidates.map((c) => ({ source: c.source, format: c.format, quality: c.quality, duration_sec: c.duration_sec, size_mb: c.size_mb }));
+        return json({ error: 'no_full_stream', subject_id: subjectId, candidates: summary }, 404);
+      }
       return json({
         subject_id: subjectId,
         season: typeof data.season === 'number' ? data.season : null,
         episode: typeof data.episode === 'number' ? data.episode : null,
         available_formats: scrub(data.available_formats ?? []),
+        preview_streams_dropped: candidates.length - streams.length,
         streams,
       });
     }
