@@ -87,7 +87,7 @@ export default function WatchHome() {
   const searchMode = q.trim().length >= 2;
 
   return (
-    <Screen header={<TopBar title="Watch" mode="stack" />}>
+    <Screen header={<TopBar title="Hallyu TV" mode="stack" />}>
       <ScrollScreen contentContainerStyle={{ paddingBottom: space.x8 }}>
         <View style={styles.search}>
           <SearchField value={q} onChangeText={setQ} placeholder="Search films and series" />

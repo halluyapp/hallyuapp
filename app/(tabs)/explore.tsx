@@ -187,12 +187,11 @@ export default function Explore() {
           <View style={{ paddingHorizontal: space.margin }}>
             <SearchField asButton placeholder="Films, series, anime, actors, people…" onPressButton={() => router.push('/search')} />
           </View>
-          <FlatList<{ key: string; label: string; icon: 'options-outline' | 'sparkles-outline' | 'people-circle-outline' | 'play-circle-outline'; onPress: () => void }>
+          <FlatList<{ key: string; label: string; icon: 'options-outline' | 'sparkles-outline' | 'people-circle-outline'; onPress: () => void }>
             horizontal
             data={[
               { key: 'filter', label: 'Filter Catalog', icon: 'options-outline', onPress: () => router.push('/search') },
               { key: 'surprise', label: spinningPick ? 'Picking…' : 'Surprise Me Tonight', icon: 'sparkles-outline', onPress: () => void surpriseTonight() },
-              { key: 'watch', label: 'Watch', icon: 'play-circle-outline', onPress: () => router.push('/watch') },
               { key: 'communities', label: 'Communities', icon: 'people-circle-outline', onPress: () => router.push('/communities') },
             ]}
             keyExtractor={(x) => x.key}

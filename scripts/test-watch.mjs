@@ -134,7 +134,8 @@ test('streams: sorts MP4 before DASH, then higher quality first', () => {
 test('pickStream: requested quality first, never a preview, never blindly streams[0]', () => {
   const streams = normaliseStreams({ streams: [raw({ quality: '1080p', quality_value: 1080 }), raw({ quality: '480p', quality_value: 480 })] }).streams;
   assert.equal(pickStream(streams, '480p').quality, '480p');
-  assert.equal(pickStream(streams, '4K').quality, '1080p');
+  assert.equal(pickStream(streams, '1080p').quality, '1080p');
+  assert.equal(pickStream(streams, '4K').quality, '480p');
   assert.equal(pickStream([]), undefined);
   assert.deepEqual(qualityOptions(streams), ['1080p', '480p']);
 });
@@ -186,4 +187,11 @@ test('playback: a stream with no reported size still needs a full duration', () 
   const base = { playback_url: 'https://x.supabase.co/f?t=1', download_url: 'https://x.supabase.co/f?t=2', format: 'MP4', size_mb: null };
   assert.notEqual(normalisePlayback({ ...base, duration_sec: 2700 }), null);
   assert.equal(normalisePlayback({ ...base, duration_sec: null }), null);
+});
+
+test('pickStream default: 480p, then 360p, then the best available', () => {
+  const mk = (qs) => normaliseStreams({ streams: qs.map((q) => raw({ quality: q, quality_value: parseInt(q, 10) })) }).streams;
+  assert.equal(pickStream(mk(['1080p', '480p', '360p']), null).quality, '480p');
+  assert.equal(pickStream(mk(['1080p', '360p']), undefined).quality, '360p');
+  assert.equal(pickStream(mk(['1080p', '720p']), null).quality, '1080p');
 });

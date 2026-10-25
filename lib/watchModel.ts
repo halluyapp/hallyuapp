@@ -208,10 +208,22 @@ export function normalisePlayback(data: unknown): WatchPlayback | null {
   };
 }
 
-/** The stream to play: the requested quality when available, otherwise the best full-length stream. */
+/** Default quality on phones and web: 480p, then 360p, to keep data use and start-up time low. */
+export const DEFAULT_QUALITIES = ['480p', '360p'];
+
+/**
+ * The stream to play: the requested quality when available. Otherwise 480p, then 360p, then the best
+ * full-length stream. The viewer can pick a higher quality from the quality chips.
+ */
 export function pickStream(streams: WatchStream[], quality?: string | null): WatchStream | undefined {
   const full = streams.filter(isFullStream).sort(compareStreams);
-  return (quality ? full.find((s) => s.quality === quality) : undefined) ?? full[0];
+  const requested = quality ? full.find((s) => s.quality === quality) : undefined;
+  if (requested) return requested;
+  for (const q of DEFAULT_QUALITIES) {
+    const s = full.find((x) => x.quality === q);
+    if (s) return s;
+  }
+  return full[0];
 }
 
 /** Distinct qualities offered, best first. */
