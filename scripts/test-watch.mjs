@@ -21,7 +21,7 @@ async function load(rel) {
   return import(pathToFileURL(file).href);
 }
 
-const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics } = await load('lib/watchModel.ts');
+const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, normalisePlayback, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics, MIN_FULL_DOWNLOAD_BYTES } = await load('lib/watchModel.ts');
 
 const subject = (id, title, extra = {}) => ({
   subjectId: id,
@@ -79,42 +79,36 @@ test('detail: a movie has no seasons', () => {
   assert.deepEqual(d.seasons, []);
 });
 
-test('streams: keeps direct links with their required headers and drops links without a url', () => {
+test('streams: metadata only, never a URL or headers, and drops entries that are not full-length', () => {
   const s = normaliseStreams({
     subject_id: '536473933005177184',
     season: 1,
     episode: 1,
-    available_formats: [{ quality: '1080p', format: 'MP4' }],
     streams: [
-      {
-        url: 'https://macdn.aoneroom.com/other/2026/10/10/80da52722ee7de7a4303290af6783424.mp4',
-        source: 'Web CDN',
-        quality: '1080p',
-        quality_value: 1080,
-        format: 'MP4',
-        codec: 'hevc',
-        size_mb: 1400,
-        duration_sec: 2700,
-        required_headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://123moviesfree.club/', Origin: 'https://123moviesfree.club' },
-      },
+      { url: 'https://bcdnxw.hakunaymatata.com/x/a.mp4?sig=1', source: 'Web CDN (https://123moviesfree.club)', quality: '1080p', quality_value: 1080, format: 'MP4', codec: 'hevc', size_mb: 1400, duration_sec: 2700, required_headers: { Referer: 'https://123moviesfree.club/' } },
       { quality: '720p', format: 'MP4' },
     ],
   });
   assert.equal(s.season, 1);
   assert.equal(s.episode, 1);
   assert.equal(s.streams.length, 1);
-  assert.equal(s.streams[0].requiredHeaders.Referer, 'https://123moviesfree.club/');
+  assert.equal(s.streams[0].quality, '1080p');
+  assert.equal('url' in s.streams[0], false);
+  assert.equal('requiredHeaders' in s.streams[0], false);
 });
 
-test('downloads: only progressive MP4 links qualify; DASH is never offered as a file', () => {
-  const mp4 = { url: 'https://macdn.aoneroom.com/x/a.mp4', format: 'MP4', quality: '1080p', sizeMb: 1, durationSec: 1, codec: 'h264', requiredHeaders: {} };
-  assert.equal(isDownloadable(mp4), true);
-  assert.equal(isDownloadable({ ...mp4, format: 'DASH' }), false);
-  assert.equal(isDownloadable({ ...mp4, url: 'https://macdn.aoneroom.com/x/manifest.mpd' }), false);
-  assert.equal(isDownloadable({ ...mp4, url: 'https://macdn.aoneroom.com/x/a.m3u8', format: 'MP4' }), false);
+test('downloads: only progressive MP4 is offered as a file; DASH never is', () => {
+  assert.equal(isDownloadable({ format: 'MP4' }), true);
+  assert.equal(isDownloadable({ format: 'mp4' }), true);
+  assert.equal(isDownloadable({ format: 'DASH' }), false);
+  assert.equal(isDownloadable({ format: null }), false);
 });
 
-const raw = (over) => ({ url: 'https://macdn.aoneroom.com/a.mp4', source: 'Web CDN', quality: '720p', quality_value: 720, format: 'MP4', size_mb: 900, duration_sec: 2700, required_headers: {}, ...over });
+test('downloads: a full file must be at least 50 MB', () => {
+  assert.equal(MIN_FULL_DOWNLOAD_BYTES, 50 * 1024 * 1024);
+});
+
+const raw = (over) => ({ source: 'Web CDN', quality: '720p', quality_value: 720, format: 'MP4', size_mb: 900, duration_sec: 2700, ...over });
 
 test('streams: rejects Mobile Native previews even when labelled 1080p', () => {
   const r = normaliseStreams({ streams: [raw({ source: 'Mobile Native CDN', quality: '1080p', quality_value: 1080, size_mb: 0.8, duration_sec: 23 })] });
@@ -130,7 +124,7 @@ test('streams: rejects 300 seconds or less, unknown duration, and 50 MB or less'
 
 test('streams: sorts MP4 before DASH, then higher quality first', () => {
   const r = normaliseStreams({ streams: [
-    raw({ url: 'https://macdn.aoneroom.com/d1080.mpd', format: 'DASH', quality: '1080p', quality_value: 1080 }),
+    raw({ format: 'DASH', quality: '1080p', quality_value: 1080 }),
     raw({ quality: '480p', quality_value: 480 }),
     raw({ quality: '1080p', quality_value: 1080 }),
   ] });
@@ -153,9 +147,9 @@ test('streams: a mixed list keeps only the full-length entries', () => {
 test('live fixture (2026-10-25): full Web CDN MP4s pass, the Mobile Native clip is rejected', () => {
   // Shape copied from moviebox v6 for Lucifer S1E1 (host bcdnxw.hakunaymatata.com). URLs trimmed.
   const r = normaliseStreams({ season: 1, episode: 1, streams: [
-    { url: 'https://bcdnxw.hakunaymatata.com/x/1080.mp4', source: 'Web CDN (https://123moviesfree.club)', quality: '1080p', quality_value: 1080, format: 'MP4', size_mb: 614.5, duration_sec: 2700, required_headers: { Referer: 'https://123moviesfree.club/' } },
-    { url: 'https://macdn.aoneroom.com/x/clip.mp4', source: 'Mobile Native CDN', quality: '1080p', quality_value: 1080, format: 'MP4', size_mb: 0.8, duration_sec: 23, required_headers: {} },
-    { url: 'https://sbcdnw.hakunaymatata.com/x/a.mpd', source: 'Web DASH (https://123moviesfree.club)', quality: '1080p (Adaptive)', format: 'DASH', size_mb: 0, duration_sec: null, required_headers: {} },
+    { source: 'Web CDN (https://123moviesfree.club)', quality: '1080p', quality_value: 1080, format: 'MP4', size_mb: 614.5, duration_sec: 2700 },
+    { source: 'Mobile Native CDN', quality: '1080p', quality_value: 1080, format: 'MP4', size_mb: 0.8, duration_sec: 23 },
+    { source: 'Web DASH (https://123moviesfree.club)', quality: '1080p (Adaptive)', format: 'DASH', size_mb: 0, duration_sec: null },
   ] });
   assert.equal(r.streams.length, 1);
   assert.equal(r.streams[0].quality, '1080p');
@@ -166,4 +160,30 @@ test('diagnostics: maps server candidates to client shape', () => {
   const d = normaliseDiagnostics([{ host: 'macdn.aoneroom.com', source: 'Mobile Native CDN', format: 'MP4', quality: '1080p', duration_sec: 23, size_mb: 0.8, host_allowed: true, full: false }]);
   assert.deepEqual(d, [{ host: 'macdn.aoneroom.com', source: 'Mobile Native CDN', format: 'MP4', quality: '1080p', durationSec: 23, sizeMb: 0.8, hostAllowed: true, full: false }]);
   assert.deepEqual(normaliseDiagnostics(undefined), []);
+});
+
+test('playback (live 2026-10-25): Lupin S1E1 1080p proxy link passes; a short clip cannot', () => {
+  const ok = normalisePlayback({ subject_id: '536473933005177184', season: 1, episode: 1, playback_url: 'https://kzxlbscfkixnswurpkzb.supabase.co/functions/v1/moviebox?action=proxy&t=abc', download_url: 'https://kzxlbscfkixnswurpkzb.supabase.co/functions/v1/moviebox?action=proxy&t=def', quality: '1080p', format: 'MP4', duration_sec: 2922, size_mb: 868.3, qualities: ['1080p', '480p'], expires_at: 1792917314771 });
+  assert.equal(ok.quality, '1080p');
+  assert.deepEqual(ok.qualities, ['1080p', '480p']);
+  assert.match(ok.playbackUrl, /action=proxy&t=/);
+  assert.equal(normalisePlayback({ playback_url: 'https://x.supabase.co/a?t=1', download_url: 'https://x.supabase.co/a?t=2', quality: '1080p', format: 'MP4', duration_sec: 23, size_mb: 0.8 }), null);
+});
+
+test('playback: rejects missing links, plain http, and too-short or too-small full-length claims', () => {
+  const base = { playback_url: 'https://x.supabase.co/f?action=proxy&t=1', download_url: 'https://x.supabase.co/f?action=proxy&t=2', format: 'MP4', duration_sec: 2700, size_mb: 900 };
+  assert.notEqual(normalisePlayback(base), null);
+  assert.equal(normalisePlayback({ ...base, playback_url: undefined }), null);
+  assert.equal(normalisePlayback({ ...base, download_url: undefined }), null);
+  assert.equal(normalisePlayback({ ...base, playback_url: 'http://x.supabase.co/f?t=1' }), null);
+  assert.equal(normalisePlayback({ ...base, duration_sec: 300 }), null);
+  assert.equal(normalisePlayback({ ...base, duration_sec: null }), null);
+  assert.equal(normalisePlayback({ ...base, size_mb: 50 }), null);
+  assert.equal(normalisePlayback(null), null);
+});
+
+test('playback: a stream with no reported size still needs a full duration', () => {
+  const base = { playback_url: 'https://x.supabase.co/f?t=1', download_url: 'https://x.supabase.co/f?t=2', format: 'MP4', size_mb: null };
+  assert.notEqual(normalisePlayback({ ...base, duration_sec: 2700 }), null);
+  assert.equal(normalisePlayback({ ...base, duration_sec: null }), null);
 });

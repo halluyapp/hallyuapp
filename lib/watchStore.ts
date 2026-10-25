@@ -4,11 +4,12 @@
  * Downloads are saved inside the app's private document directory and are never added to the
  * device photo library. They are foreground-only: the transfer stops if the app is closed or
  * backgrounded. Background transfers need a native Android service, which is not built yet.
+ * Nothing here has run on a device yet, so downloads are unverified on Android.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
-import type { WatchStream } from './api/moviebox';
+import { MIN_FULL_DOWNLOAD_BYTES } from './watchModel';
 
 const PROGRESS_KEY = 'watch.progress.v1';
 const DOWNLOADS_KEY = 'watch.downloads.v1';
@@ -28,6 +29,12 @@ export interface ProgressEntry extends WatchEpisodeRef {
   positionMs: number;
   durationMs: number;
   updatedAt: number;
+}
+
+/** What a download needs: the proxy download link from `playback`, and the quality label. */
+export interface DownloadSource {
+  downloadUrl: string;
+  quality: string | null;
 }
 
 export interface DownloadEntry extends WatchEpisodeRef {
@@ -103,12 +110,13 @@ export interface DownloadHandle {
 }
 
 /**
- * Saves one progressive MP4 to the private download folder. `onProgress` receives real byte counts
- * from the transfer. A failed or cancelled transfer removes its partial file and resolves to null.
+ * Saves one full-length progressive MP4 (through the proxy download link, no headers needed) to the
+ * private download folder. `onProgress` receives real byte counts. A failed, cancelled, or short
+ * transfer (under 50 MB) removes its partial file and resolves to null.
  */
 export function startDownload(
   ref: WatchEpisodeRef,
-  stream: WatchStream,
+  source: DownloadSource,
   onProgress: (fraction: number | null) => void,
 ): DownloadHandle {
   const key = episodeKey(ref.subjectId, ref.season, ref.episode);
@@ -120,9 +128,9 @@ export function startDownload(
     try {
       await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true });
       resumable = FileSystem.createDownloadResumable(
-        stream.url,
+        source.downloadUrl,
         fileUri,
-        { headers: stream.requiredHeaders },
+        {},
         (p) => {
           const total = p.totalBytesExpectedToWrite;
           onProgress(total > 0 ? Math.min(1, p.totalBytesWritten / total) : null);
@@ -135,11 +143,11 @@ export function startDownload(
       }
       const info = await FileSystem.getInfoAsync(fileUri);
       const bytes = info.exists && 'size' in info && typeof info.size === 'number' ? info.size : 0;
-      if (bytes < 1024) {
+      if (bytes < MIN_FULL_DOWNLOAD_BYTES) {
         await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
         return null;
       }
-      const entry: DownloadEntry = { ...ref, key, fileUri, bytes, quality: stream.quality, savedAt: Date.now() };
+      const entry: DownloadEntry = { ...ref, key, fileUri, bytes, quality: source.quality, savedAt: Date.now() };
       const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
       await writeJson(DOWNLOADS_KEY, [entry, ...all.filter((d) => d.key !== key)]);
       return entry;

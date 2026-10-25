@@ -1,20 +1,21 @@
 import { useLocalSearchParams } from 'expo-router';
 import { AVPlaybackStatus, ResizeMode, Video } from 'expo-av';
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { ScrollScreen, Screen } from '../../components/ui/Screen';
 import { ErrorState } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { space } from '../../constants/theme';
-import { watchProxySource } from '../../lib/api/moviebox';
+import { fetchWatchPlayback } from '../../lib/api/moviebox';
 import { getProgress, saveProgress, type WatchEpisodeRef } from '../../lib/watchStore';
 
 const SAVE_EVERY_MS = 5000;
 
 /**
- * Plays either a remote stream (sent with the headers the CDN requires) or a file saved on this
- * device. Progress is written every few seconds so Continue Watching stays accurate after a crash.
+ * Plays either a proxy stream (fetched fresh from `playback`, so the link never expires mid-session)
+ * or a file saved on this device. Progress is written every few seconds so Continue Watching stays
+ * accurate after a crash. A failed stream is retried once with a new link before showing an error.
  */
 export default function WatchPlayer() {
   const params = useLocalSearchParams<{
@@ -24,14 +25,16 @@ export default function WatchPlayer() {
     detailPath?: string;
     season?: string;
     episode?: string;
-    url?: string;
-    headers?: string;
+    quality?: string;
     local?: string;
   }>();
   const video = useRef<Video>(null);
   const lastSaved = useRef(0);
   const latest = useRef<{ positionMs: number; durationMs: number } | null>(null);
   const [failed, setFailed] = useState(false);
+  const [remote, setRemote] = useState<{ uri: string } | null>(null);
+  const [loading, setLoading] = useState(!params.local);
+  const attempts = useRef(0);
 
   const season = params.season ? Number(params.season) : null;
   const episode = params.episode ? Number(params.episode) : null;
@@ -44,18 +47,28 @@ export default function WatchPlayer() {
     episode: episode && Number.isFinite(episode) ? episode : null,
   };
 
-  // Direct link first (with the headers the CDN needs). If it fails, retry once through the allowlisted proxy.
-  const [proxied, setProxied] = useState<{ uri: string; headers: Record<string, string> } | null>(null);
-  const source = params.local
-    ? { uri: String(params.local) }
-    : proxied ?? { uri: String(params.url ?? ''), headers: parseHeaders(params.headers) };
+  const loadRemote = async () => {
+    setLoading(true);
+    const r = await fetchWatchPlayback(ref.subjectId, ref.season ?? undefined, ref.episode ?? undefined, params.quality ? String(params.quality) : null);
+    setLoading(false);
+    if (r.ok) setRemote({ uri: r.value.playbackUrl });
+    else setFailed(true);
+  };
+
+  useEffect(() => {
+    if (!params.local) loadRemote();
+    // One fetch per mounted player. Retries reuse the same route.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const source = params.local ? { uri: String(params.local) } : remote;
 
   const onPlaybackFailure = () => {
-    if (!params.local && !proxied && params.url) {
-      watchProxySource(String(params.url)).then((p) => {
-        if (p) setProxied(p);
-        else setFailed(true);
-      });
+    // One fresh link, then an error. A broken link is not retried forever.
+    if (!params.local && attempts.current < 1) {
+      attempts.current += 1;
+      setRemote(null);
+      loadRemote();
       return;
     }
     setFailed(true);
@@ -95,12 +108,16 @@ export default function WatchPlayer() {
     <Screen header={<TopBar title={ref.title || 'Watch'} mode="stack" transparent />}>
       <ScrollScreen contentContainerStyle={{ flexGrow: 1 }} padded={false}>
         <View style={styles.stage}>
-          {failed || !source.uri ? (
+          {loading && !source ? (
+            <View style={styles.center}>
+              <ActivityIndicator color="#fff" />
+            </View>
+          ) : failed || !source ? (
             <View style={{ padding: space.x4 }}>
               <ErrorState
                 kind="server"
                 title="This stream could not be played"
-                body="Stream links expire. Go back, open the title again, and choose a stream."
+                body="The stream could not be loaded. Go back, open the title again, and try once more."
               />
             </View>
           ) : (
@@ -117,7 +134,7 @@ export default function WatchPlayer() {
             />
           )}
         </View>
-        {!failed && source.uri ? (
+        {!failed && source ? (
           <Text variant="caption" tone="tertiary" style={{ padding: space.x4 }}>
             {params.local ? 'Playing from this device.' : 'Streaming. Playback needs a connection.'}
           </Text>
@@ -127,19 +144,8 @@ export default function WatchPlayer() {
   );
 }
 
-function parseHeaders(raw?: string): Record<string, string> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v;
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 const styles = StyleSheet.create({
   stage: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000' },
   video: { flex: 1, backgroundColor: '#000' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

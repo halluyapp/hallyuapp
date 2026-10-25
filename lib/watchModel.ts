@@ -1,7 +1,7 @@
 /**
  * Hallyu Watch — pure response model for the `moviebox` edge function. No I/O and no client imports,
  * so the normalisers can be tested without Supabase. Shapes match the live responses verified on
- * 2026-10-24.
+ * 2026-10-24 and 2026-10-25.
  */
 
 export interface WatchTitle {
@@ -30,8 +30,8 @@ export interface WatchDetail extends WatchTitle {
   seasons: WatchSeason[];
 }
 
+/** Stream metadata from the `stream` action. It never carries a URL or headers. */
 export interface WatchStream {
-  url: string;
   source: string | null;
   quality: string | null;
   qualityValue: number | null;
@@ -39,7 +39,18 @@ export interface WatchStream {
   codec: string | null;
   sizeMb: number | null;
   durationSec: number | null;
-  requiredHeaders: Record<string, string>;
+}
+
+/** A playable link from the `playback` action. The URLs are proxy links with a sealed token. */
+export interface WatchPlayback {
+  playbackUrl: string;
+  downloadUrl: string;
+  quality: string | null;
+  format: string | null;
+  durationSec: number;
+  sizeMb: number | null;
+  qualities: string[];
+  expiresAt: number | null;
 }
 
 export interface WatchStreams {
@@ -160,26 +171,41 @@ export function compareStreams(a: WatchStream, b: WatchStream): number {
 /** Full-length streams only, best first. Never returns previews, and never assumes streams[0] is the title. */
 export function normaliseStreams(data: unknown): WatchStreams {
   const d = obj(data);
-  const streams = (Array.isArray(d.streams) ? d.streams : []).map(obj).flatMap((s): WatchStream[] => {
-    const url = str(s.url);
-    if (!url) return [];
-    const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(obj(s.required_headers))) if (typeof v === 'string') headers[k] = v;
-    return [
-      {
-        url,
-        source: str(s.source),
-        quality: str(s.quality),
-        qualityValue: num(s.quality_value),
-        format: str(s.format),
-        codec: str(s.codec),
-        sizeMb: num(s.size_mb),
-        durationSec: num(s.duration_sec),
-        requiredHeaders: headers,
-      },
-    ];
-  });
+  const streams = (Array.isArray(d.streams) ? d.streams : []).map(obj).map((s): WatchStream => ({
+    source: str(s.source),
+    quality: str(s.quality),
+    qualityValue: num(s.quality_value),
+    format: str(s.format),
+    codec: str(s.codec),
+    sizeMb: num(s.size_mb),
+    durationSec: num(s.duration_sec),
+  }));
   return { season: num(d.season), episode: num(d.episode), streams: streams.filter(isFullStream).sort(compareStreams) };
+}
+
+/**
+ * Validates a `playback` response with the same full-length rule. Anything that is not a proxy link
+ * with a full duration (and a size above 50 MB when reported) is rejected, so a short clip never plays.
+ */
+export function normalisePlayback(data: unknown): WatchPlayback | null {
+  const d = obj(data);
+  const playbackUrl = str(d.playback_url);
+  const downloadUrl = str(d.download_url);
+  if (!playbackUrl || !downloadUrl || !playbackUrl.startsWith('https://') || !downloadUrl.startsWith('https://')) return null;
+  const durationSec = num(d.duration_sec);
+  const sizeMb = num(d.size_mb);
+  // The server already removed "Mobile Native" previews. This response carries no source label, so only duration and size are checked here.
+  if (!isFullStream({ source: null, durationSec, sizeMb })) return null;
+  return {
+    playbackUrl,
+    downloadUrl,
+    quality: str(d.quality),
+    format: str(d.format),
+    durationSec: durationSec as number,
+    sizeMb,
+    qualities: (Array.isArray(d.qualities) ? d.qualities : []).filter((q): q is string => typeof q === 'string'),
+    expiresAt: num(d.expires_at),
+  };
 }
 
 /** The stream to play: the requested quality when available, otherwise the best full-length stream. */
@@ -194,8 +220,11 @@ export function qualityOptions(streams: WatchStream[]): string[] {
   return [...new Set(sorted.map((s) => s.quality).filter((q): q is string => !!q))];
 }
 
-/** Only progressive MP4 links can be saved as a file. DASH manifests are never offered as downloads. */
-export function isDownloadable(s: WatchStream): boolean {
-  return (s.format ?? '').toUpperCase() === 'MP4' && /\.mp4(\?|$)/i.test(s.url);
+/** Only progressive MP4 can be saved as a file. DASH is never offered as a download. */
+export function isDownloadable(s: Pick<WatchStream, 'format'>): boolean {
+  return (s.format ?? '').toUpperCase() === 'MP4';
 }
+
+/** Smallest file that counts as a full-length download. Matches the 50 MB rule. */
+export const MIN_FULL_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 

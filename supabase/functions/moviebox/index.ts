@@ -1,29 +1,27 @@
 // Hallyu Watch — Moviebox proxy (server-side only).
 //
-// The Megan key lives in the MEGAN_API_KEY secret and is used only here. It is never returned to the
-// client, never logged, and every response is scrubbed of api_key and upstream proxy_url fields.
+// Secrets (Supabase project secrets, never sent to the client):
+//   MEGAN_API_KEY        upstream API key
+//   WATCH_PLAYBACK_KEY   32+ char secret; derives the AES-GCM key that seals playback tokens
 //
-// Upstream routes used (verified against the live API before this function was written):
-//   /api/v2/moviebox/home, /trending, /ranking, /detail?detailPath=, /stream?subjectId=&se=&ep=,
-//   /proxy?url=&download=, and /api/v2/search/moviebox?q=
+// Deployed with verify_jwt = false, because <video> elements cannot send an Authorization header.
+// Therefore every POST action checks the caller's session itself (requireUser), and the media proxy
+// accepts only a sealed playback token issued by the playback action.
 //
-// The media proxy is an allowlist, not an open proxy: the target must be https and on a trusted
-// Moviebox CDN host. Any other host is refused with 403 before any upstream request is made.
-//
-// Requires a signed-in user (verify_jwt = true at deploy time).
-//
-// Requests:
-//   POST JSON { "action": "home" | "trending" | "ranking" }
-//   POST JSON { "action": "search", "q": "squid game", "page": 1 }
-//   POST JSON { "action": "detail", "detailPath": "lupin-english-UqNLZqu3DD" }
-//   POST JSON { "action": "stream", "subjectId": "536473933005177184", "se": 1, "ep": 1 }
-//   GET  ?action=proxy&u=<https url>&download=0|1   (Range header forwarded; allowlisted hosts only)
+// Actions (POST JSON, signed-in user or the service role):
+//   { action: "home" | "trending" | "ranking" }
+//   { action: "search", q, page }
+//   { action: "detail", detailPath }
+//   { action: "stream", subjectId, se?, ep? }        metadata only, no URLs
+//   { action: "playback", subjectId, se?, ep?, quality? }
+//        -> { playback_url, download_url, quality, format, duration_sec, size_mb, qualities, expires_at, ... }
+// Media (GET): ?action=proxy&t=<sealed token>   (Range is forwarded; no other auth)
 
 const BASE = 'https://apis.megan.qzz.io';
-// Exact hosts only. bcdnxw.hakunaymatata.com serves the full-length Web CDN MP4s (verified 2026-10-25:
-// 1378-6870 s, 64-1869 MB). Without it every title was filtered out and showed as previews-only.
+// Exact hosts only. bcdnxw.hakunaymatata.com serves the full-length Web CDN MP4s (verified 2026-10-25).
 const ALLOWED_MEDIA_HOSTS = ['macdn.aoneroom.com', 'pbcdn.aoneroom.com', 'pbcdnw.aoneroom.com', 'bcdnxw.hakunaymatata.com'];
 const ALLOWED_MEDIA_SUFFIX = '.aoneroom.com';
+const TOKEN_TTL_SEC = 4 * 60 * 60;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -36,7 +34,7 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
-/** Removes upstream secrets and signed proxy links from anything that goes back to the client. */
+/** Removes upstream secrets and signed links from anything that goes back to the client. */
 function scrub(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(scrub);
   if (value && typeof value === 'object') {
@@ -65,11 +63,88 @@ function isAllowedMediaUrl(raw: string): URL | null {
   return ok ? url : null;
 }
 
+// ---------- session check ----------
+
+async function requireUser(req: Request): Promise<boolean> {
+  const auth = req.headers.get('authorization') ?? '';
+  if (!auth.startsWith('Bearer ')) return false;
+  const token = auth.slice(7).trim();
+  const serviceKey = (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '').trim();
+  if (serviceKey && token === serviceKey) return true; // server-side callers only
+  const url = Deno.env.get('SUPABASE_URL');
+  const anon = Deno.env.get('SUPABASE_ANON_KEY');
+  if (!url || !anon) return false;
+  try {
+    const r = await fetch(`${url}/auth/v1/user`, { headers: { Authorization: auth, apikey: anon } });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ---------- sealed playback tokens (AES-GCM) ----------
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+async function aesKey(): Promise<CryptoKey | null> {
+  const secret = (Deno.env.get('WATCH_PLAYBACK_KEY') ?? '').trim();
+  if (secret.length < 32) return null;
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode(secret));
+  return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+function b64uEncode(bytes: Uint8Array): string {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64uDecode(s: string): Uint8Array {
+  const padded = s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '=');
+  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+}
+
+interface TokenPayload {
+  u: string; // upstream media URL (allowlisted)
+  dl: boolean; // download mode
+  exp: number; // unix seconds
+}
+
+async function sealToken(p: TokenPayload): Promise<string | null> {
+  const key = await aesKey();
+  if (!key) return null;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(p))));
+  const out = new Uint8Array(iv.length + ct.length);
+  out.set(iv, 0);
+  out.set(ct, iv.length);
+  return b64uEncode(out);
+}
+
+async function openToken(t: string): Promise<TokenPayload | null> {
+  const key = await aesKey();
+  if (!key || !t || t.length > 4096) return null;
+  try {
+    const raw = b64uDecode(t);
+    const iv = raw.slice(0, 12);
+    const ct = raw.slice(12);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+    const p = JSON.parse(dec.decode(pt)) as TokenPayload;
+    if (typeof p.u !== 'string' || typeof p.exp !== 'number' || typeof p.dl !== 'boolean') return null;
+    return p;
+  } catch {
+    return null; // tampered or wrong key
+  }
+}
+
+// ---------- upstream ----------
+
 async function upstream(path: string, params: Record<string, string>, key: string): Promise<{ ok: true; body: any } | { ok: false; status: number }> {
   const url = new URL(`${BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set('api_key', key);
-  // One retry for network errors and 5xx responses. Streams can fail intermittently upstream.
+  // One retry for network errors and 5xx responses.
   let res: Response | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -110,8 +185,7 @@ function intParam(value: unknown, min: number, max: number, fallback: number): n
 
 /**
  * Full-length test. A stream qualifies only when it is not a "Mobile Native" preview, its duration is
- * known and over 5 minutes, and its size (when reported) is over 50 MB. Quality labels are not trusted:
- * a preview can be labelled 1080p.
+ * known and over 5 minutes, and its size (when reported) is over 50 MB. Quality labels are not trusted.
  */
 function isFullStream(s: { source: string | null; duration_sec: number | null; size_mb: number | null }): boolean {
   if ((s.source ?? '').toLowerCase().includes('mobile native')) return false;
@@ -128,15 +202,123 @@ function compareStreams(a: { format: string | null; quality_value: number | null
   return (b.quality_value ?? 0) - (a.quality_value ?? 0);
 }
 
-async function handleMedia(req: Request, key: string): Promise<Response> {
-  const u = new URL(req.url).searchParams;
-  const target = isAllowedMediaUrl(u.get('u') ?? '');
-  if (!target) return json({ error: 'host_not_allowed' }, 403);
+interface Candidate {
+  url: string;
+  source: string | null;
+  quality: string | null;
+  format: string | null;
+  codec: string | null;
+  size_mb: number | null;
+  duration_sec: number | null;
+  quality_value: number | null;
+}
 
-  const params: Record<string, string> = { url: target.toString() };
-  if (u.get('download') === '1') params.download = 'true';
+type StreamLoad = { ok: true; subject_id: string; season: number | null; episode: number | null; available_formats: unknown; diagnostics: unknown[]; candidates: Candidate[] } | { ok: false; status: number; body: unknown };
+
+/** Loads upstream streams for a subject and applies the full-length rule. Shared by stream and playback. */
+async function loadStreams(input: Record<string, unknown>, key: string): Promise<StreamLoad> {
+  const subjectId = validId(input.subjectId);
+  if (!subjectId) return { ok: false, status: 400, body: { error: 'bad_request' } };
+  const params: Record<string, string> = { subjectId };
+  if (input.se !== undefined) params.se = String(intParam(input.se, 0, 99, 0));
+  if (input.ep !== undefined) params.ep = String(intParam(input.ep, 0, 999, 0));
+  const r = await upstream('/api/v2/moviebox/stream', params, key);
+  if (!r.ok) return { ok: false, status: r.status, body: { error: 'upstream_error', status: r.status } };
+  const sd = r.body?.data;
+  const data = sd && typeof sd === 'object' && sd.status === true ? (sd as Record<string, unknown>) : undefined;
+  if (!data) return { ok: false, status: 502, body: { error: 'unexpected_shape' } };
+  const raw = (Array.isArray(data.streams) ? data.streams : []).map((s) => (s && typeof s === 'object' ? (s as Record<string, unknown>) : {}));
+  // Metadata for every upstream candidate, including ones on hosts we do not play from. No URLs or headers.
+  const diagnostics = raw.map((s) => {
+    const url = typeof s.url === 'string' ? s.url : '';
+    let host: string | null = null;
+    try {
+      host = url ? new URL(url).hostname : null;
+    } catch {
+      host = null;
+    }
+    const row = {
+      host,
+      source: typeof s.source === 'string' ? s.source : null,
+      format: typeof s.format === 'string' ? s.format : null,
+      quality: typeof s.quality === 'string' ? s.quality : null,
+      duration_sec: typeof s.duration_sec === 'number' ? s.duration_sec : null,
+      size_mb: typeof s.size_mb === 'number' ? s.size_mb : null,
+      host_allowed: url ? isAllowedMediaUrl(url) !== null : false,
+    };
+    return { ...row, full: isFullStream(row) };
+  });
+  const candidates: Candidate[] = raw
+    .filter((s) => typeof s.url === 'string' && isAllowedMediaUrl(s.url as string) !== null)
+    .map((s) => ({
+      url: s.url as string,
+      source: typeof s.source === 'string' ? s.source : null,
+      quality: typeof s.quality === 'string' ? s.quality : null,
+      format: typeof s.format === 'string' ? s.format : null,
+      codec: typeof s.codec === 'string' ? s.codec : null,
+      size_mb: typeof s.size_mb === 'number' ? s.size_mb : null,
+      duration_sec: typeof s.duration_sec === 'number' ? s.duration_sec : null,
+      quality_value: typeof s.quality_value === 'number' ? s.quality_value : null,
+    }))
+    .filter(isFullStream)
+    .sort(compareStreams);
+  if (candidates.length === 0) {
+    return { ok: false, status: 404, body: { error: 'no_full_stream', subject_id: subjectId, diagnostics } };
+  }
+  return {
+    ok: true,
+    subject_id: subjectId,
+    season: typeof data.season === 'number' ? data.season : null,
+    episode: typeof data.episode === 'number' ? data.episode : null,
+    available_formats: scrub(data.available_formats ?? []),
+    diagnostics,
+    candidates,
+  };
+}
+
+function publicCandidate(c: Candidate) {
+  return { source: c.source, quality: c.quality, format: c.format, codec: c.codec, size_mb: c.size_mb, duration_sec: c.duration_sec };
+}
+
+async function handlePlayback(input: Record<string, unknown>, baseUrl: string): Promise<Response> {
+  if (!(await aesKey())) return json({ error: 'not_configured', detail: 'WATCH_PLAYBACK_KEY secret is not set' }, 503);
+  const set = await loadStreams(input, (Deno.env.get('MEGAN_API_KEY') ?? '').trim());
+  if (!set.ok) return json(set.body, set.status);
+  const want = typeof input.quality === 'string' ? input.quality : null;
+  const pick = (want ? set.candidates.find((c) => c.quality === want) : undefined) ?? set.candidates[0];
+  const exp = Math.floor(Date.now() / 1000) + TOKEN_TTL_SEC;
+  const playToken = await sealToken({ u: pick.url, dl: false, exp });
+  const dlToken = await sealToken({ u: pick.url, dl: true, exp });
+  if (!playToken || !dlToken) return json({ error: 'not_configured' }, 503);
+  const qualities = [...new Set(set.candidates.map((c) => c.quality).filter((q): q is string => !!q))];
+  return json({
+    subject_id: set.subject_id,
+    season: set.season,
+    episode: set.episode,
+    playback_url: `${baseUrl}?action=proxy&t=${playToken}`,
+    download_url: `${baseUrl}?action=proxy&t=${dlToken}`,
+    quality: pick.quality,
+    format: pick.format,
+    duration_sec: pick.duration_sec,
+    size_mb: pick.size_mb,
+    qualities,
+    expires_at: exp * 1000,
+  });
+}
+
+async function handleMedia(req: Request): Promise<Response> {
+  const t = new URL(req.url).searchParams.get('t') ?? '';
+  const p = await openToken(t);
+  if (!p) return json({ error: 'bad_token' }, 403);
+  if (p.exp * 1000 < Date.now()) return json({ error: 'expired' }, 401);
+  const target = isAllowedMediaUrl(p.u);
+  if (!target) return json({ error: 'host_not_allowed' }, 403);
+  const key = (Deno.env.get('MEGAN_API_KEY') ?? '').trim();
+  if (!key) return json({ error: 'not_configured' }, 503);
+
   const upstreamUrl = new URL(`${BASE}/api/v2/moviebox/proxy`);
-  for (const [k, v] of Object.entries(params)) upstreamUrl.searchParams.set(k, v);
+  upstreamUrl.searchParams.set('url', target.toString());
+  if (p.dl) upstreamUrl.searchParams.set('download', 'true');
   upstreamUrl.searchParams.set('api_key', key);
 
   const headers: Record<string, string> = {};
@@ -162,11 +344,13 @@ async function handleMedia(req: Request, key: string): Promise<Response> {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
+  if (req.method === 'GET' && new URL(req.url).searchParams.get('action') === 'proxy') return handleMedia(req);
+  if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+
+  if (!(await requireUser(req))) return json({ error: 'unauthorized' }, 401);
+
   const key = (Deno.env.get('MEGAN_API_KEY') ?? '').trim();
   if (!key) return json({ error: 'not_configured', detail: 'MEGAN_API_KEY secret is not set' }, 503);
-
-  if (req.method === 'GET' && new URL(req.url).searchParams.get('action') === 'proxy') return handleMedia(req, key);
-  if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
 
   let input: Record<string, unknown>;
   try {
@@ -204,66 +388,24 @@ Deno.serve(async (req) => {
     }
 
     case 'stream': {
-      const subjectId = validId(input.subjectId);
-      if (!subjectId) return json({ error: 'bad_request' }, 400);
-      const params: Record<string, string> = { subjectId };
-      if (input.se !== undefined) params.se = String(intParam(input.se, 0, 99, 0));
-      if (input.ep !== undefined) params.ep = String(intParam(input.ep, 0, 999, 0));
-      const r = await upstream('/api/v2/moviebox/stream', params, key);
-      if (!r.ok) return json({ error: 'upstream_error', status: r.status }, r.status);
-      // Stream payloads sit directly at body.data (streams[], available_formats[], status boolean).
-      const sd = r.body?.data;
-      const data = sd && typeof sd === 'object' && sd.status === true ? (sd as Record<string, unknown>) : undefined;
-      if (!data) return json({ error: 'unexpected_shape' }, 502);
-      const raw = (Array.isArray(data.streams) ? data.streams : []).map((s) => (s && typeof s === 'object' ? (s as Record<string, unknown>) : {}));
-      // Metadata for every upstream candidate, including ones on hosts we do not play from. No URLs, no query strings, no headers.
-      const diagnostics = raw.map((s) => {
-        const url = typeof s.url === 'string' ? s.url : '';
-        let host: string | null = null;
-        try {
-          host = url ? new URL(url).hostname : null;
-        } catch {
-          host = null;
-        }
-        const row = {
-          host,
-          source: typeof s.source === 'string' ? s.source : null,
-          format: typeof s.format === 'string' ? s.format : null,
-          quality: typeof s.quality === 'string' ? s.quality : null,
-          duration_sec: typeof s.duration_sec === 'number' ? s.duration_sec : null,
-          size_mb: typeof s.size_mb === 'number' ? s.size_mb : null,
-          host_allowed: url ? isAllowedMediaUrl(url) !== null : false,
-        };
-        return { ...row, full: isFullStream(row) };
-      });
-      // Playable candidates: allowlisted https links that pass the full-length rule.
-      const streams = raw
-        .filter((s) => typeof s.url === 'string' && isAllowedMediaUrl(s.url as string) !== null)
-        .map((s) => ({
-          url: s.url as string,
-          source: typeof s.source === 'string' ? s.source : null,
-          quality: typeof s.quality === 'string' ? s.quality : null,
-          format: typeof s.format === 'string' ? s.format : null,
-          codec: typeof s.codec === 'string' ? s.codec : null,
-          size_mb: typeof s.size_mb === 'number' ? s.size_mb : null,
-          duration_sec: typeof s.duration_sec === 'number' ? s.duration_sec : null,
-          quality_value: typeof s.quality_value === 'number' ? s.quality_value : null,
-          required_headers: scrub(s.required_headers ?? {}),
-        }))
-        .filter(isFullStream)
-        .sort(compareStreams);
-      if (streams.length === 0) {
-        return json({ error: 'no_full_stream', subject_id: subjectId, diagnostics }, 404);
-      }
+      const set = await loadStreams(input, key);
+      if (!set.ok) return json(set.body, set.status);
       return json({
-        subject_id: subjectId,
-        season: typeof data.season === 'number' ? data.season : null,
-        episode: typeof data.episode === 'number' ? data.episode : null,
-        available_formats: scrub(data.available_formats ?? []),
-        preview_streams_dropped: diagnostics.length - streams.length,
-        diagnostics,
-        streams,
+        subject_id: set.subject_id,
+        season: set.season,
+        episode: set.episode,
+        available_formats: set.available_formats,
+        preview_streams_dropped: set.diagnostics.length - set.candidates.length,
+        diagnostics: set.diagnostics,
+        streams: set.candidates.map(publicCandidate),
       });
+    }
+
+    case 'playback': {
+      // Built from SUPABASE_URL: inside the runtime req.url is not the public URL (no /functions/v1 prefix).
+      const origin = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
+      if (!origin) return json({ error: 'not_configured' }, 503);
+      return handlePlayback(input, `${origin}/functions/v1/moviebox`);
     }
 
     default:

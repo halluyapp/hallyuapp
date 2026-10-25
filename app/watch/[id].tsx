@@ -11,6 +11,7 @@ import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import {
   fetchWatchDetail,
+  fetchWatchPlayback,
   fetchWatchStreams,
   isDownloadable,
   pickStream,
@@ -135,17 +136,23 @@ export default function WatchTitleScreen() {
         detailPath,
         season: ref().season ?? '',
         episode: ref().episode ?? '',
-        url: stream.url,
-        headers: JSON.stringify(stream.requiredHeaders),
+        quality: stream.quality ?? '',
       },
     });
   };
 
-  const download = (stream: WatchStream) => {
+  const download = async (stream: WatchStream) => {
     setDownloadFailed(false);
     setDownloading(true);
     setDownloadFraction(0);
-    const h = startDownload(ref(), stream, setDownloadFraction);
+    // A fresh proxy link for this exact full-length stream. Nothing is saved from a preview or a short clip.
+    const link = await fetchWatchPlayback(subjectId, ref().season ?? undefined, ref().episode ?? undefined, stream.quality);
+    if (!link.ok) {
+      setDownloading(false);
+      setDownloadFraction(null);
+      return setDownloadFailed(true);
+    }
+    const h = startDownload(ref(), { downloadUrl: link.value.downloadUrl, quality: link.value.quality }, setDownloadFraction);
     handle.current = h;
     h.promise.then((entry) => {
       setDownloading(false);
@@ -162,7 +169,8 @@ export default function WatchTitleScreen() {
 
   const qualities = playable ? qualityOptions(playable.streams) : [];
   const watchable = playable ? pickStream(playable.streams, quality) : undefined;
-  const downloadable = playable ? playable.streams.filter((s) => s.quality === (watchable?.quality ?? null)).find(isDownloadable) ?? playable.streams.find(isDownloadable) : undefined;
+  // Offer a download only for the same full-length MP4 the Watch button plays.
+  const downloadable = watchable && isDownloadable(watchable) ? watchable : undefined;
 
   return (
     <Screen header={<TopBar title={detail?.title ?? String(params.title ?? 'Title')} mode="stack" />}>
@@ -270,7 +278,7 @@ export default function WatchTitleScreen() {
                   </Pressable>
                 </View>
               ) : (
-                <Pressable onPress={() => download(downloadable)} accessibilityRole="button" style={styles.secondary}>
+                <Pressable onPress={() => void download(downloadable)} accessibilityRole="button" style={styles.secondary}>
                   <Text variant="body">Download · {downloadable.quality ?? 'MP4'}{downloadable.sizeMb ? ` · ${Math.round(downloadable.sizeMb)} MB` : ''}</Text>
                 </Pressable>
               )
