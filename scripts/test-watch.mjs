@@ -325,6 +325,25 @@ test('the full length is read from Content-Range of a one-byte probe', () => {
   assert.equal(R.totalFromContentRange(null), null);
 });
 
+test('a 416 on a continuation with every byte on disk is complete, not an error', () => {
+  const d = R.decideAfterTransfer({ status: 416, startBytes: 88_000_000, bytesOnDisk: 88_000_000, expectedBytes: 88_000_000, continues: 1 });
+  assert.deepEqual(d, { action: 'complete' });
+});
+
+test('a 206 starting at the wrong byte restarts instead of appending at the wrong offset', () => {
+  const d = R.decideAfterTransfer({ status: 206, startBytes: 2_000_000, bytesOnDisk: 4_000_000, expectedBytes: 40_000_000, continues: 0, contentRangeStart: 0 });
+  assert.deepEqual(d, { action: 'restart' });
+});
+
+test('a 206 starting at the requested byte continues normally', () => {
+  const d = R.decideAfterTransfer({ status: 206, startBytes: 2_000_000, bytesOnDisk: 4_000_000, expectedBytes: 40_000_000, continues: 0, contentRangeStart: 2_000_000 });
+  assert.deepEqual(d, { action: 'continue', fromBytes: 4_000_000 });
+});
+
+test('a dropped connection reports the bytes reached', () => {
+  assert.match(R.lostMessage(83 * 1024 * 1024, 84 * 1024 * 1024), /Connection lost at 83 MB of 84 MB/);
+});
+
 test('the failure message states how far the transfer got', () => {
   const msg = R.stoppedMessage(2 * 1024 * 1024, 40 * 1024 * 1024, 200);
   assert.match(msg, /Stopped at 2 MB of 40 MB/);

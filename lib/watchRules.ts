@@ -158,13 +158,21 @@ export function decideAfterTransfer(input: {
   expectedBytes: number | null;
   /** Automatic continuations already used for this transfer. */
   continues: number;
+  /** The first byte the server says it sent (from Content-Range), or null when the response gave none. */
+  contentRangeStart?: number | null;
 }): AfterTransfer {
-  const { status, startBytes, bytesOnDisk, expectedBytes, continues } = input;
+  const { status, startBytes, bytesOnDisk, expectedBytes, continues, contentRangeStart = null } = input;
+  // 416 on a continuation means the requested offset is already the end of the file: the file is whole.
+  if (status === 416 && expectedBytes !== null && bytesOnDisk === expectedBytes) return { action: 'complete' };
   if (status === 401 || status === 403) return { action: 'fail', reason: 'link_expired' };
   if (status < 200 || status >= 300) return { action: 'fail', reason: 'http_error' };
 
   // A continuation answered 200 instead of 206: the server ignored Range and the file is now corrupt.
   if (startBytes > 0 && status === 200) {
+    return continues < MAX_AUTO_CONTINUES ? { action: 'restart' } : { action: 'fail', reason: 'network' };
+  }
+  // A 206 that starts somewhere other than the requested byte would be appended at the wrong offset.
+  if (startBytes > 0 && status === 206 && contentRangeStart !== null && contentRangeStart !== startBytes) {
     return continues < MAX_AUTO_CONTINUES ? { action: 'restart' } : { action: 'fail', reason: 'network' };
   }
   if (expectedBytes !== null && expectedBytes > 0) {
@@ -186,6 +194,12 @@ export function totalFromContentRange(contentRange: string | null | undefined): 
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Failure text when the connection drops mid-transfer and the exact server status is unknown. */
+export function lostMessage(bytes: number, total: number | null): string {
+  const where = total ? `${formatBytes(bytes)} of ${formatBytes(total)}` : formatBytes(bytes);
+  return `Connection lost at ${where}. Tap retry to continue from here.`;
 }
 
 /** Failure text for the Downloads screen. It says where the transfer stopped, so the user can tell a short file from a bad link. */

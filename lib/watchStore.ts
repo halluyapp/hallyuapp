@@ -15,6 +15,7 @@ import {
   canTransition,
   decideAfterTransfer,
   isMp4Header,
+  lostMessage,
   stoppedMessage,
   totalFromContentRange,
   type TransferStatus,
@@ -208,6 +209,38 @@ async function failTransfer(key: string, reason: TransferFailure, message: strin
   }
 }
 
+/** Reads a header from an expo-file-system result, whichever casing the native side used. */
+function headerOf(headers: Record<string, string> | undefined, name: string): string | null {
+  if (!headers) return null;
+  return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.replace(/(^|-)([a-z])/g, (m) => m.toUpperCase())] ?? null;
+}
+
+/** Validates a file whose bytes are all on disk, then records it as a completed download. */
+async function finalize(key: string, t: TransferEntry, bytes: number): Promise<void> {
+  const head = await FileSystem.readAsStringAsync(t.fileUri, { encoding: FileSystem.EncodingType.Base64, position: 0, length: 12 }).catch(() => '');
+  const headBytes = head ? Uint8Array.from(atob(head), (c) => c.charCodeAt(0)) : new Uint8Array();
+  if (!isMp4Header(headBytes)) {
+    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+    return failTransfer(key, 'invalid_file', 'The file is not a playable video. It was removed. Try a different quality.');
+  }
+  const entry: DownloadEntry = {
+    subjectId: t.subjectId,
+    title: t.title,
+    cover: t.cover,
+    detailPath: t.detailPath,
+    season: t.season,
+    episode: t.episode,
+    key,
+    fileUri: t.fileUri,
+    bytes,
+    quality: t.quality,
+    savedAt: Date.now(),
+  };
+  const done = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
+  await writeJson(DOWNLOADS_KEY, [entry, ...done.filter((d) => !(d.key === key && d.quality === t.quality))]);
+  await dropTransfer(key);
+}
+
 /**
  * Runs one transfer to completion or interruption, then validates the file before marking it complete.
  * A transfer that stops early is continued from the bytes on disk (Range request); see decideAfterTransfer.
@@ -245,6 +278,7 @@ async function drive(
       bytesOnDisk: bytes,
       expectedBytes: t.totalBytes,
       continues,
+      contentRangeStart: result.status === 206 ? contentRangeStartOf(headerOf(result.headers, 'content-range')) : null,
     });
 
     if (decision.action === 'continue' || decision.action === 'restart') {
@@ -265,63 +299,64 @@ async function drive(
         unknown: 'The server did not confirm the file size, so the download was not saved as complete. Tap retry.',
       } as const;
       const message = decision.reason === 'network' ? stoppedMessage(bytes, t.totalBytes, result.status) : messages[decision.reason];
-      return failTransfer(key, decision.reason === 'unknown' ? 'unknown' : decision.reason, message);
+      return failTransfer(key, decision.reason, message);
     }
-
-    const head = await FileSystem.readAsStringAsync(t.fileUri, { encoding: FileSystem.EncodingType.Base64, position: 0, length: 12 }).catch(() => '');
-    const headBytes = head ? Uint8Array.from(atob(head), (c) => c.charCodeAt(0)) : new Uint8Array();
-    if (!isMp4Header(headBytes)) {
-      return failTransfer(key, 'invalid_file', 'The file is not a playable video. It was removed. Try a different quality.');
-    }
-
-    const entry: DownloadEntry = {
-      subjectId: t.subjectId,
-      title: t.title,
-      cover: t.cover,
-      detailPath: t.detailPath,
-      season: t.season,
-      episode: t.episode,
-      key,
-      fileUri: t.fileUri,
-      bytes,
-      quality: t.quality,
-      savedAt: Date.now(),
-    };
-    const done = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
-    await writeJson(DOWNLOADS_KEY, [entry, ...done.filter((d) => !(d.key === key && d.quality === t.quality))]);
-    await dropTransfer(key);
+    return finalize(key, t, bytes);
   } catch {
     const current = active.get(key);
     if (current && !current.paused && !current.cancelled) {
       active.delete(key);
-      // Keep the saved state so the transfer can resume from the bytes on disk.
-      const saved = safeSavable(current.resumable);
       const t = await getTransfer(key);
-      if (t) await putTransfer({ ...t, status: 'failed', resumeData: saved, error: 'Connection lost. Tap resume when you are back online.', updatedAt: Date.now() });
+      if (!t) return;
+      // expo-file-system saves resume data only on pause, so the byte count on disk is the real resume point.
+      // The connection can fail after the last byte: a whole file is validated, not retried.
+      const bytes = await bytesOnDisk(t.fileUri);
+      if (t.totalBytes && bytes === t.totalBytes) return finalize(key, t, bytes);
+      // Android continues with a Range request from this byte. iOS cannot resume from a byte count, so it starts over.
+      const resumeData = Platform.OS === 'android' && bytes > 0 ? String(bytes) : null;
+      await putTransfer({ ...t, status: 'failed', bytesWritten: bytes, resumeData, error: lostMessage(bytes, t.totalBytes), updatedAt: Date.now() });
     }
   }
 }
 
-/**
- * Learns the full file length before any bytes are written, with a one-byte ranged request. Returns null
- * when the server does not state a length. A download without a known length is refused, so a cut-off
- * file can never be saved as complete.
- */
-export async function probeLength(url: string): Promise<number | null> {
-  try {
-    const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
-    // 206 states the full length in Content-Range. A server that ignores Range answers 200 with the whole length.
-    const declared = res.status === 200 ? Number(res.headers.get('content-length')) : NaN;
-    const total = totalFromContentRange(res.headers.get('content-range')) ?? (Number.isSafeInteger(declared) && declared > 0 ? declared : null);
-    try {
-      await res.body?.cancel();
-    } catch {
-      // Ignore: the body is discarded either way.
-    }
-    return total;
-  } catch {
-    return null;
-  }
+function contentRangeStartOf(value: string | null): number | null {
+  const m = /^bytes\s+(\d+)-/.exec(value ?? '');
+  return m ? Number(m[1]) : null;
+}
+
+/** Learns the full file length from the headers of a one-byte ranged request. Null when the server states none. */
+export function probeLength(url: string): Promise<number | null> {
+  // fetch() in React Native resolves only after the whole body is received, so a server that ignored Range
+  // would download the entire video into memory. XHR exposes the headers first, and the request is aborted there.
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    const finish = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      try {
+        xhr.abort();
+      } catch {
+        // Nothing to abort.
+      }
+      resolve(value);
+    };
+    xhr.open('GET', url);
+    xhr.setRequestHeader('Range', 'bytes=0-0');
+    xhr.timeout = 20000;
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState !== 2) return; // HEADERS_RECEIVED
+      const status = xhr.status;
+      const declared = Number(xhr.getResponseHeader('content-length'));
+      const total =
+        totalFromContentRange(xhr.getResponseHeader('content-range')) ??
+        (status === 200 && Number.isSafeInteger(declared) && declared > 0 ? declared : null);
+      finish(total);
+    };
+    xhr.onerror = () => finish(null);
+    xhr.ontimeout = () => finish(null);
+    xhr.send();
+  });
 }
 
 function beginTransfer(key: string, url: string, resumeData: string | null, startBytes: number): void {
