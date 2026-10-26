@@ -291,7 +291,9 @@ export default function WatchTitleScreen() {
                 </Text>
                 {anyActive.error ? <Text variant="caption" tone="danger">{anyActive.error}</Text> : null}
                 <View style={styles.transferActions}>
-                  {anyActive.status === 'downloading' ? (
+                  {anyActive.status === 'downloading' && anyActive.engine === 'native' ? (
+                    <Text variant="caption" tone="tertiary">Runs in the background until it finishes</Text>
+                  ) : anyActive.status === 'downloading' ? (
                     <Pressable onPress={() => void pauseDownload(anyActive.key)} accessibilityRole="button" style={styles.chipBtn}>
                       <Text variant="caption">Pause</Text>
                     </Pressable>

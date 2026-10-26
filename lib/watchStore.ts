@@ -12,6 +12,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import { clearDownloadNotice, reportDownload } from './watchNotify';
+import { nativeDownloader } from './watchNative';
 import {
   canStartDownload,
   canTransition,
@@ -74,6 +75,8 @@ export interface TransferEntry extends WatchEpisodeRef {
   resumeData: string | null;
   error: string | null;
   updatedAt: number;
+  /** 'native': Android DownloadManager runs it (survives the app closing). 'expo': foreground transfer. */
+  engine?: 'native' | 'expo';
 }
 
 export type TransferFailure = 'insufficient_storage' | 'already_downloading' | 'already_downloaded' | 'link_expired' | 'network' | 'invalid_file' | 'http_error' | 'unknown';
@@ -160,9 +163,11 @@ export function subscribeTransfers(fn: Listener): () => void {
 
 export async function listTransfers(): Promise<TransferEntry[]> {
   const all = await readJson<TransferEntry[]>(TRANSFERS_KEY, []);
+  // Native downloads may have finished while the app was closed. Checking them when the app opens picks that up.
+  if (all.some((t) => t.engine === 'native' && t.status === 'downloading')) ensureNativePoll();
   // A download that was "downloading" when the app closed is interrupted now, not still running.
   const repaired = all.map((t) =>
-    repairTransfer(t, { running: active.has(t.key), queued: queuedUrls.has(t.key) }),
+    repairTransfer(t, { running: active.has(t.key) || t.engine === 'native', queued: queuedUrls.has(t.key) }),
   );
   if (JSON.stringify(repaired) !== JSON.stringify(all)) await writeJson(TRANSFERS_KEY, repaired);
   return repaired.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -368,6 +373,99 @@ function beginTransfer(key: string, url: string, resumeData: string | null, star
   runTransfer(key, () => resumable.downloadAsync(), startBytes);
 }
 
+/* ---------- Android background engine (DownloadManager) ---------- */
+
+const NATIVE_POLL_MS = 2000;
+let nativePoll: ReturnType<typeof setInterval> | null = null;
+let nativePolling = false;
+
+function ensureNativePoll(): void {
+  if (nativePoll) return;
+  nativePoll = setInterval(() => void pollNative(), NATIVE_POLL_MS);
+}
+
+function stopNativePollIfIdle(all: TransferEntry[]): void {
+  if (nativePoll && !all.some((t) => t.engine === 'native' && t.status === 'downloading')) {
+    clearInterval(nativePoll);
+    nativePoll = null;
+  }
+}
+
+/** Starts a fresh download in DownloadManager. If the module is missing or refuses, the foreground path is used. */
+async function beginFresh(key: string, url: string): Promise<void> {
+  const t = await getTransfer(key);
+  if (t?.engine === 'native') {
+    const mod = nativeDownloader();
+    if (mod) {
+      try {
+        await mod.start(key, url);
+        ensureNativePoll();
+        return;
+      } catch {
+        // Fall through to the foreground path.
+      }
+    }
+    await putTransfer({ ...t, engine: 'expo' });
+  }
+  beginTransfer(key, url, null, 0);
+}
+
+/** Checks each active native download. Success moves the file into place and validates it; failure is reported. */
+async function pollNative(): Promise<void> {
+  if (nativePolling) return;
+  nativePolling = true;
+  try {
+    const all = await readJson<TransferEntry[]>(TRANSFERS_KEY, []);
+    const live = all.filter((t) => t.engine === 'native' && t.status === 'downloading');
+    stopNativePollIfIdle(all);
+    if (live.length === 0) return;
+    const mod = nativeDownloader();
+    for (const t of live) {
+      if (!mod) {
+        await failTransfer(t.key, 'unknown', 'Background downloads are not available in this version of the app. Tap retry.');
+        void pumpQueue();
+        continue;
+      }
+      const q = await mod.query(t.key).catch(() => null);
+      const current = await getTransfer(t.key);
+      if (!q || !current || current.status !== 'downloading' || current.engine !== 'native') continue;
+      if (q.status === 'running') {
+        await updateBytes(t.key, q.bytes, q.total > 0 ? q.total : null);
+      } else if (q.status === 'successful') {
+        await settleNativeSuccess(t.key, q.localPath);
+        void pumpQueue();
+      } else {
+        await mod.remove(t.key).catch(() => {});
+        await failTransfer(t.key, 'unknown', q.status === 'missing' ? 'The download was removed. Tap retry.' : 'The download stopped. Tap retry.');
+        void pumpQueue();
+      }
+    }
+  } finally {
+    nativePolling = false;
+  }
+}
+
+/** Moves a finished DownloadManager file into the private folder, then applies the same checks as any download. */
+async function settleNativeSuccess(key: string, localPath: string | null): Promise<void> {
+  const t = await getTransfer(key);
+  if (!t) return;
+  if (!localPath) return failTransfer(key, 'unknown', 'The download finished but could not be found. Tap retry.');
+  const from = localPath.startsWith('file://') ? localPath : `file://${localPath}`;
+  await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true }).catch(() => {});
+  await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+  try {
+    await FileSystem.moveAsync({ from, to: t.fileUri });
+  } catch {
+    return failTransfer(key, 'unknown', 'The download finished but could not be saved. Tap retry.');
+  }
+  const bytes = await bytesOnDisk(t.fileUri);
+  if (t.totalBytes && bytes !== t.totalBytes) {
+    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+    return failTransfer(key, 'network', lostMessage(bytes, t.totalBytes));
+  }
+  await finalize(key, t, bytes);
+}
+
 /**
  * Where a continuation starts. A Range request from a byte count is used on Android, because expo-file-system
  * leaves the partial file in place. iOS can only continue from its own resume data.
@@ -394,6 +492,7 @@ async function pumpQueue(): Promise<void> {
   await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
   const onDisk = await bytesOnDisk(t.fileUri);
   const point = resumePointFor(t, onDisk);
+  if (t.engine === 'native') return beginFresh(next, url);
   if (!point) await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
   beginTransfer(next, url, point, point ? onDisk : 0);
 }
@@ -482,6 +581,7 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
     quality: source.quality,
     fileUri,
     status: queueNow ? 'queued' : 'downloading',
+    engine: nativeDownloader() ? 'native' : 'expo',
     bytesWritten: 0,
     // The server's full length, from the probe. The provider's size estimate is never used to judge completion.
     totalBytes: total,
@@ -495,12 +595,14 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
     queuedUrls.set(key, source.downloadUrl);
     return { ok: true, message: 'Queued. It starts when the current download finishes.' };
   }
-  beginTransfer(key, source.downloadUrl, null, 0);
+  await beginFresh(key, source.downloadUrl);
   return { ok: true };
 }
 
 /** Pauses an active transfer and saves its resume data, so it can continue from the same byte later. */
 export async function pauseDownload(key: string): Promise<boolean> {
+  // DownloadManager cannot pause. Background downloads run until they finish, fail, or are cancelled.
+  if ((await getTransfer(key))?.engine === 'native') return false;
   const a = active.get(key);
   const t = await getTransfer(key);
   if (!a || !t || !canTransition(t.status, 'paused')) return false;
@@ -550,6 +652,10 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
     return { ok: true, message: 'Queued. It starts when the current download finishes.' };
   }
   await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
+  if (t.engine === 'native') {
+    await beginFresh(key, url);
+    return { ok: true };
+  }
   // Only a request that carries resume data appends to the file; otherwise the file is written from zero.
   const onDisk = await bytesOnDisk(t.fileUri);
   const point = resumePointFor(t, onDisk);
@@ -562,6 +668,9 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
 export async function cancelDownload(key: string): Promise<void> {
   queuedUrls.delete(key);
   void clearDownloadNotice(key);
+  const before = await getTransfer(key);
+  const wasNative = before?.engine === 'native' && before.status === 'downloading';
+  if (wasNative) await nativeDownloader()?.remove(key).catch(() => {});
   const a = active.get(key);
   if (a) {
     a.cancelled = true;
@@ -571,6 +680,7 @@ export async function cancelDownload(key: string): Promise<void> {
   const t = await getTransfer(key);
   if (t) await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
   await dropTransfer(key);
+  if (wasNative) void pumpQueue();
 }
 
 

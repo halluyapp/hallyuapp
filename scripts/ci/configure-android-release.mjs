@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { injectNativeApkInstallerModule } from './android-installer-module.mjs';
+import { injectNativeDownloaderModule } from './android-downloader-module.mjs';
 
 const gradlePath = path.resolve('android/app/build.gradle');
 const gradlePropsPath = path.resolve('android/gradle.properties');
@@ -116,6 +117,7 @@ if (!src.includes('hallyuReleaseSigning')) {
 fs.writeFileSync(gradlePath, src, 'utf8');
 
 injectNativeApkInstallerModule(path.resolve('android'));
+injectNativeDownloaderModule(path.resolve('android'));
 
 console.log(
   `Configured permanent PKCS12 v1+v2+v3 signing + useLegacyPackaging=true + HallyuApkInstaller + 4 ABI splits + Universal (${appVersion}, base ${baseVersionCode}).`,

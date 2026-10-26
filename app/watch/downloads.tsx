@@ -83,7 +83,9 @@ export default function WatchDownloads() {
         ) : null}
         {t.status === 'failed' ? <Text variant="caption" tone="danger">{t.error ?? FAILURE_NOTE.network}</Text> : null}
         <View style={styles.actions}>
-          {t.status === 'downloading' ? (
+          {t.status === 'downloading' && t.engine === 'native' ? (
+            <Text variant="caption" tone="tertiary">Runs in the background until it finishes</Text>
+          ) : t.status === 'downloading' ? (
             <Pressable onPress={() => void pause(t)} accessibilityRole="button" style={styles.btn}>
               <Text variant="caption">Pause</Text>
             </Pressable>
