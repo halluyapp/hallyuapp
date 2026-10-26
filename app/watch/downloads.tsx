@@ -37,6 +37,7 @@ export default function WatchDownloads() {
   const [message, setMessage] = useState<string | null>(null);
 
   const downloading = transfers.filter((t) => t.status === 'downloading');
+  const queued = transfers.filter((t) => t.status === 'queued');
   const paused = transfers.filter((t) => t.status === 'paused');
   const failed = transfers.filter((t) => t.status === 'failed');
   const empty = transfers.length === 0 && completed.length === 0;
@@ -65,7 +66,7 @@ export default function WatchDownloads() {
         : t.bytesWritten > 0
           ? `${formatBytes(t.bytesWritten)} saved · total size unavailable`
           : 'Size unavailable until the transfer starts';
-    const statusLabel = t.status === 'downloading' ? 'Downloading' : t.status === 'paused' ? 'Paused' : 'Failed';
+    const statusLabel = t.status === 'downloading' ? 'Downloading' : t.status === 'paused' ? 'Paused' : t.status === 'queued' ? 'Queued' : 'Failed';
     return (
       <View key={t.key} style={styles.card}>
         <View style={styles.cardTop}>
@@ -92,6 +93,7 @@ export default function WatchDownloads() {
               <Text variant="caption" tone="onAccent">Resume</Text>
             </Pressable>
           ) : null}
+          {t.status === 'queued' ? <Text variant="caption" tone="tertiary">Starts when the current download finishes</Text> : null}
           {t.status === 'failed' ? (
             <Pressable onPress={() => void resume(t)} accessibilityRole="button" style={[styles.btn, styles.btnPrimary]}>
               <Text variant="caption" tone="onAccent">Retry</Text>
@@ -150,6 +152,7 @@ export default function WatchDownloads() {
           <EmptyState title="No downloads yet" body="Open a title in Hallyu TV and tap Download. Finished episodes play here without a connection." />
         ) : null}
         {section('Downloading', downloading.map(row))}
+        {section('Queued', queued.map(row))}
         {section('Paused', paused.map(row))}
         {section('Failed', failed.map(row))}
         {section('Completed', completed.map(doneRow))}

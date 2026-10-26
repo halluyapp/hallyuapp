@@ -105,7 +105,7 @@ export default function WatchPlayer() {
 
   /* ----- loading ----- */
 
-  const loadRemote = async (quality: string | null, resumeAt: number | null): Promise<boolean> => {
+  const loadRemote = async (quality: string | null, resumeAt: number | null, fresh = false): Promise<boolean> => {
     setPhase('loading');
     setErrorMessage(null);
     pendingSeek.current = resumeAt;
@@ -114,6 +114,7 @@ export default function WatchPlayer() {
       ref.season ?? undefined,
       ref.episode ?? undefined,
       quality,
+      fresh,
     );
     if (!r.ok) {
       setErrorMessage(messageFor(r.reason));
@@ -150,7 +151,7 @@ export default function WatchPlayer() {
     // One fresh link before showing an error. A broken link is not retried forever.
     if (retries.current < 1) {
       retries.current += 1;
-      void loadRemote(playingQuality, latest.current.positionMs > RESUME_MIN_MS ? latest.current.positionMs : null);
+      void loadRemote(playingQuality, latest.current.positionMs > RESUME_MIN_MS ? latest.current.positionMs : null, true);
       return;
     }
     setErrorMessage('Playback stopped. Check your connection, then tap Try again.');

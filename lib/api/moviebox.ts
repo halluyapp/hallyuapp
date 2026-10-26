@@ -76,7 +76,20 @@ export async function fetchWatchStreams(subjectId: string, se?: number, ep?: num
  * Proxy playback and download links for one full-length stream. Retries once on a transient failure
  * (for example a 502 from upstream). A short clip or a missing link is never returned as success.
  */
-export async function fetchWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null): Promise<WatchResult<WatchPlayback>> {
+/**
+ * Playback links are cached per title, episode and quality until shortly before their token expires,
+ * so reopening the same episode does not repeat the lookup. `fresh` skips the cache (used after a failure).
+ */
+const playbackCache = new Map<string, { value: WatchPlayback; until: number }>();
+const PLAYBACK_CACHE_MARGIN_MS = 10 * 60 * 1000;
+
+export async function fetchWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null, fresh = false): Promise<WatchResult<WatchPlayback>> {
+  const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}|${quality ?? ''}`;
+  if (!fresh) {
+    const hit = playbackCache.get(cacheKey);
+    if (hit && hit.until > Date.now()) return { ok: true, value: hit.value };
+    playbackCache.delete(cacheKey);
+  }
   const body: Body = { action: 'playback', subjectId };
   if (se !== undefined) body.se = se;
   if (ep !== undefined) body.ep = ep;
@@ -86,7 +99,10 @@ export async function fetchWatchPlayback(subjectId: string, se: number | undefin
     const r = await call(body);
     if (r.ok) {
       const playback = normalisePlayback(r.value);
-      return playback ? { ok: true, value: playback } : { ok: false, reason: 'no_full_stream' };
+      if (!playback) return { ok: false, reason: 'no_full_stream' };
+      const until = playback.expiresAt ? playback.expiresAt - PLAYBACK_CACHE_MARGIN_MS : 0;
+      if (until > Date.now()) playbackCache.set(cacheKey, { value: playback, until });
+      return { ok: true, value: playback };
     }
     last = r;
     // Only transient failures are retried. A missing stream or a sign-in problem will not change on retry.

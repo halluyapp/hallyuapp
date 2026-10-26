@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { Image } from 'expo-image';
 import { WatchCard, WatchRail } from '../../components/watch/WatchCard';
 import { SearchField } from '../../components/search/SearchField';
 import { ScrollScreen, Screen } from '../../components/ui/Screen';
@@ -124,6 +125,22 @@ export default function WatchHome() {
           </View>
         ) : (
           <>
+            {rows && rows[0] && rows[0].items[0] ? (
+              <Pressable onPress={() => open(rows[0].items[0])} accessibilityRole="button" accessibilityLabel={`Open ${rows[0].items[0].title}`} style={styles.hero}>
+                {rows[0].items[0].cover ? (
+                  <Image source={{ uri: rows[0].items[0].cover }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="disk" transition={150} />
+                ) : null}
+                <View style={styles.heroShade} />
+                <View style={styles.heroText}>
+                  <Text variant="caption" tone="accent">{rows[0].title}</Text>
+                  <Text variant="title" numberOfLines={2}>{rows[0].items[0].title}</Text>
+                  <Text variant="caption" tone="secondary">
+                    {[rows[0].items[0].releaseDate?.slice(0, 4), rows[0].items[0].rating ? `IMDb ${rows[0].items[0].rating}` : null].filter(Boolean).join(' · ')}
+                  </Text>
+                </View>
+              </Pressable>
+            ) : null}
+
             {progress.length > 0 ? (
               <WatchRail
                 label="Continue watching"
@@ -180,6 +197,9 @@ export default function WatchHome() {
 }
 
 const styles = StyleSheet.create({
+  hero: { marginHorizontal: space.x4, marginTop: space.x3, height: 200, borderRadius: radius.md, overflow: 'hidden', backgroundColor: colors.surface1, justifyContent: 'flex-end' },
+  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)' },
+  heroText: { padding: space.x4, gap: space.x1 },
   search: { paddingHorizontal: space.x4, paddingTop: space.x2 },
   downloadRow: { marginTop: space.x3, paddingVertical: space.x2 },
   downloadsCard: { marginHorizontal: space.x4, marginTop: space.x5, padding: space.x4, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle, backgroundColor: colors.surface1, flexDirection: 'row', alignItems: 'center', gap: space.x3 },

@@ -15,6 +15,8 @@ import {
   canTransition,
   decideAfterTransfer,
   isMp4Header,
+  stoppedMessage,
+  totalFromContentRange,
   type TransferStatus,
 } from './watchRules';
 
@@ -155,7 +157,13 @@ export function subscribeTransfers(fn: Listener): () => void {
 export async function listTransfers(): Promise<TransferEntry[]> {
   const all = await readJson<TransferEntry[]>(TRANSFERS_KEY, []);
   // A download that was "downloading" when the app closed is interrupted now, not still running.
-  const repaired = all.map((t) => (t.status === 'downloading' && !active.has(t.key) ? { ...t, status: 'paused' as const, error: null } : t));
+  const repaired = all.map((t) => {
+    if (t.status === 'downloading' && !active.has(t.key)) return { ...t, status: 'paused' as const, error: null };
+    if (t.status === 'queued' && !queuedUrls.has(t.key)) {
+      return { ...t, status: 'failed' as const, error: 'This download was waiting in the queue when the app closed. Tap retry to start it.' };
+    }
+    return t;
+  });
   if (JSON.stringify(repaired) !== JSON.stringify(all)) await writeJson(TRANSFERS_KEY, repaired);
   return repaired.sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -184,6 +192,8 @@ interface ActiveTransfer {
   cancelled: boolean;
 }
 const active = new Map<string, ActiveTransfer>();
+/** Links for queued transfers, in queue order. Held in memory only: a link is never written to storage. */
+const queuedUrls = new Map<string, string>();
 
 function fileUriFor(key: string): string {
   return `${DOWNLOAD_DIR}${key.replace(/[^A-Za-z0-9:_-]/g, '_')}.mp4`;
@@ -252,8 +262,10 @@ async function drive(
         link_expired: 'The download link has expired. Tap retry to get a new one.',
         http_error: `The server returned an error (${result.status}). Tap retry.`,
         network: 'The download was interrupted before it finished. Tap resume to continue.',
+        unknown: 'The server did not confirm the file size, so the download was not saved as complete. Tap retry.',
       } as const;
-      return failTransfer(key, decision.reason, messages[decision.reason]);
+      const message = decision.reason === 'network' ? stoppedMessage(bytes, t.totalBytes, result.status) : messages[decision.reason];
+      return failTransfer(key, decision.reason === 'unknown' ? 'unknown' : decision.reason, message);
     }
 
     const head = await FileSystem.readAsStringAsync(t.fileUri, { encoding: FileSystem.EncodingType.Base64, position: 0, length: 12 }).catch(() => '');
@@ -288,6 +300,53 @@ async function drive(
       if (t) await putTransfer({ ...t, status: 'failed', resumeData: saved, error: 'Connection lost. Tap resume when you are back online.', updatedAt: Date.now() });
     }
   }
+}
+
+/**
+ * Learns the full file length before any bytes are written, with a one-byte ranged request. Returns null
+ * when the server does not state a length. A download without a known length is refused, so a cut-off
+ * file can never be saved as complete.
+ */
+export async function probeLength(url: string): Promise<number | null> {
+  try {
+    const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+    // 206 states the full length in Content-Range. A server that ignores Range answers 200 with the whole length.
+    const declared = res.status === 200 ? Number(res.headers.get('content-length')) : NaN;
+    const total = totalFromContentRange(res.headers.get('content-range')) ?? (Number.isSafeInteger(declared) && declared > 0 ? declared : null);
+    try {
+      await res.body?.cancel();
+    } catch {
+      // Ignore: the body is discarded either way.
+    }
+    return total;
+  } catch {
+    return null;
+  }
+}
+
+function beginTransfer(key: string, url: string, resumeData: string | null, startBytes: number): void {
+  const resumable = makeResumable(key, url, resumeData, (w, total) => void updateBytes(key, w, total));
+  active.set(key, { resumable, url, paused: false, cancelled: false });
+  runTransfer(key, () => resumable.downloadAsync(), startBytes);
+}
+
+/** Runs one transfer chain. When it ends (complete, failed, paused, or cancelled), the next queued download starts. */
+function runTransfer(key: string, run: () => Promise<FileSystem.FileSystemDownloadResult | undefined>, startBytes = 0): void {
+  void drive(key, run, startBytes).finally(() => void pumpQueue());
+}
+
+/** Starts the oldest queued download, one at a time. A queued item keeps its place until a slot is free. */
+async function pumpQueue(): Promise<void> {
+  if ((await listTransfers()).some((t) => t.status === 'downloading')) return;
+  const next = queuedUrls.keys().next().value as string | undefined;
+  if (next === undefined) return;
+  const url = queuedUrls.get(next) as string;
+  queuedUrls.delete(next);
+  const t = await getTransfer(next);
+  if (!t || t.status !== 'queued') return pumpQueue();
+  await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
+  const startBytes = t.resumeData ? await bytesOnDisk(t.fileUri) : 0;
+  beginTransfer(next, url, t.resumeData, startBytes);
 }
 
 async function bytesOnDisk(fileUri: string): Promise<number> {
@@ -360,6 +419,12 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
     }
   }
 
+  const queueNow = transfers.some((t) => t.status === 'downloading');
+  const total = await probeLength(source.downloadUrl);
+  if (!total) {
+    return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server, so the download was not started. Try again later.' };
+  }
+
   const fileUri = fileUriFor(key);
   await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
   const record: TransferEntry = {
@@ -367,19 +432,21 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
     key,
     quality: source.quality,
     fileUri,
-    status: 'downloading',
+    status: queueNow ? 'queued' : 'downloading',
     bytesWritten: 0,
-    // Set from the server's content-length once the transfer reports it. The provider's estimate is never used to judge completion.
-    totalBytes: null,
+    // The server's full length, from the probe. The provider's size estimate is never used to judge completion.
+    totalBytes: total,
     resumeData: null,
     error: null,
     updatedAt: Date.now(),
   };
   await putTransfer(record);
 
-  const resumable = makeResumable(key, source.downloadUrl, null, (w, t) => void updateBytes(key, w, t));
-  active.set(key, { resumable, url: source.downloadUrl, paused: false, cancelled: false });
-  void drive(key, () => resumable.downloadAsync());
+  if (queueNow) {
+    queuedUrls.set(key, source.downloadUrl);
+    return { ok: true, message: 'Queued. It starts when the current download finishes.' };
+  }
+  beginTransfer(key, source.downloadUrl, null, 0);
   return { ok: true };
 }
 
@@ -406,27 +473,43 @@ export async function pauseDownload(key: string): Promise<boolean> {
 export async function resumeDownload(key: string, getFreshUrl: () => Promise<string | null>): Promise<StartResult> {
   const t = await getTransfer(key);
   if (!t || !canTransition(t.status, 'downloading')) return { ok: false, reason: 'unknown', message: 'This download cannot be resumed.' };
+  const busy = (await listTransfers()).some((x) => x.key !== key && x.status === 'downloading');
   const a = active.get(key);
   if (a && a.paused) {
+    if (busy) {
+      active.delete(key);
+      queuedUrls.set(key, a.url);
+      await putTransfer({ ...t, status: 'queued', error: null, updatedAt: Date.now() });
+      return { ok: true, message: 'Queued. It resumes when the current download finishes.' };
+    }
     a.paused = false;
     await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
     const onDisk = await bytesOnDisk(t.fileUri);
-    void drive(key, () => a.resumable.resumeAsync(), onDisk);
+    runTransfer(key, () => a.resumable.resumeAsync(), onDisk);
     return { ok: true };
   }
   const url = await getFreshUrl();
   if (!url) return { ok: false, reason: 'link_expired', message: 'Could not get a fresh link. Check your connection and try again.' };
+  if (!t.totalBytes) {
+    const total = await probeLength(url);
+    if (!total) return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server. Try again later.' };
+    await putTransfer({ ...t, totalBytes: total, updatedAt: Date.now() });
+  }
+  if (busy) {
+    queuedUrls.set(key, url);
+    await putTransfer({ ...t, status: 'queued', error: null, updatedAt: Date.now() });
+    return { ok: true, message: 'Queued. It starts when the current download finishes.' };
+  }
   await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
-  const resumable = makeResumable(key, url, t.resumeData, (w, total) => void updateBytes(key, w, total));
-  active.set(key, { resumable, url, paused: false, cancelled: false });
   // Only a request that carries resume data appends to the file; otherwise the file is written from zero.
   const startBytes = t.resumeData ? await bytesOnDisk(t.fileUri) : 0;
-  void drive(key, () => resumable.downloadAsync(), startBytes);
+  beginTransfer(key, url, t.resumeData, startBytes);
   return { ok: true };
 }
 
 /** Cancels a transfer and deletes its partial file. Only this transfer's file is removed. */
 export async function cancelDownload(key: string): Promise<void> {
+  queuedUrls.delete(key);
   const a = active.get(key);
   if (a) {
     a.cancelled = true;

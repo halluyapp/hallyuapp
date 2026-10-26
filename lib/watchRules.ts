@@ -69,7 +69,7 @@ export function sortQualities(labels: string[]): string[] {
 
 /* ---------- Downloads ---------- */
 
-export type TransferStatus = 'downloading' | 'paused' | 'failed' | 'completed';
+export type TransferStatus = 'queued' | 'downloading' | 'paused' | 'failed' | 'completed';
 
 export interface TransferSnapshot {
   status: TransferStatus;
@@ -114,7 +114,7 @@ export function canStartDownload(
   key: string,
   quality: string | null,
 ): { ok: true } | { ok: false; reason: 'already_downloading' | 'already_downloaded' } {
-  if (existing.some((t) => t.key === key && t.quality === quality && (t.status === 'downloading' || t.status === 'paused'))) {
+  if (existing.some((t) => t.key === key && t.quality === quality && (t.status === 'downloading' || t.status === 'paused' || t.status === 'queued'))) {
     return { ok: false, reason: 'already_downloading' };
   }
   if (completed.some((c) => c.key === key && c.quality === quality)) return { ok: false, reason: 'already_downloaded' };
@@ -124,9 +124,10 @@ export function canStartDownload(
 /** Legal state changes for a transfer. Prevents, for example, a completed download from being paused. */
 export function canTransition(from: TransferStatus, to: TransferStatus): boolean {
   const table: Record<TransferStatus, TransferStatus[]> = {
+    queued: ['downloading', 'failed'],
     downloading: ['paused', 'failed', 'completed'],
     paused: ['downloading', 'failed'],
-    failed: ['downloading'],
+    failed: ['downloading', 'queued'],
     completed: [],
   };
   return table[from].includes(to);
@@ -139,7 +140,7 @@ export type AfterTransfer =
   | { action: 'complete' }
   | { action: 'continue'; fromBytes: number }
   | { action: 'restart' }
-  | { action: 'fail'; reason: 'link_expired' | 'http_error' | 'network' };
+  | { action: 'fail'; reason: 'link_expired' | 'http_error' | 'network' | 'unknown' };
 
 /**
  * Decides what to do after one HTTP transfer ends. A transfer that stops early (the connection closed
@@ -175,6 +176,20 @@ export function decideAfterTransfer(input: {
     if (bytesOnDisk > 0 && continues < MAX_AUTO_CONTINUES) return { action: 'continue', fromBytes: bytesOnDisk };
     return { action: 'fail', reason: 'network' };
   }
-  // Length unknown: nothing to compare. The MP4 header check decides whether the file is usable.
-  return bytesOnDisk > 0 ? { action: 'complete' } : { action: 'fail', reason: 'network' };
+  // Length unknown: the file cannot be verified as whole, so it is never marked complete.
+  return { action: 'fail', reason: 'unknown' };
+}
+
+/** Reads the full file length from a `Range: bytes=0-0` response: `Content-Range: bytes 0-0/12345`. */
+export function totalFromContentRange(contentRange: string | null | undefined): number | null {
+  const m = /\/(\d+)\s*$/.exec(contentRange ?? '');
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Failure text for the Downloads screen. It says where the transfer stopped, so the user can tell a short file from a bad link. */
+export function stoppedMessage(bytes: number, total: number | null, status: number): string {
+  const where = total ? `${formatBytes(bytes)} of ${formatBytes(total)}` : `${formatBytes(bytes)} (total size unknown)`;
+  return `Stopped at ${where} (server status ${status}). Tap resume to continue.`;
 }

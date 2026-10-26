@@ -314,7 +314,18 @@ test('a file longer than the server said is restarted, not accepted', () => {
   assert.deepEqual(d, { action: 'restart' });
 });
 
-test('an unknown length completes only when bytes were written', () => {
-  assert.deepEqual(R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 5, expectedBytes: null, continues: 0 }), { action: 'complete' });
-  assert.deepEqual(R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 0, expectedBytes: null, continues: 0 }), { action: 'fail', reason: 'network' });
+test('an unknown length is never marked complete, even with bytes on disk', () => {
+  assert.deepEqual(R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 5, expectedBytes: null, continues: 0 }), { action: 'fail', reason: 'unknown' });
+  assert.deepEqual(R.decideAfterTransfer({ status: 200, startBytes: 0, bytesOnDisk: 0, expectedBytes: null, continues: 0 }), { action: 'fail', reason: 'unknown' });
+});
+
+test('the full length is read from Content-Range of a one-byte probe', () => {
+  assert.equal(R.totalFromContentRange('bytes 0-0/41943040'), 41943040);
+  assert.equal(R.totalFromContentRange('bytes 0-0/*'), null);
+  assert.equal(R.totalFromContentRange(null), null);
+});
+
+test('the failure message states how far the transfer got', () => {
+  const msg = R.stoppedMessage(2 * 1024 * 1024, 40 * 1024 * 1024, 200);
+  assert.match(msg, /Stopped at 2 MB of 40 MB/);
 });
