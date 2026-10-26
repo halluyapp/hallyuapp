@@ -99,6 +99,9 @@ export default function WatchPlayer() {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [immersive, setImmersive] = useState(false);
+  const [rate, setRate] = useState(1);
+  const [locked, setLocked] = useState(false);
+  const rateRef = useRef(1);
   const [interaction, setInteraction] = useState(0);
 
   const fullScreen = landscape || immersive;
@@ -180,9 +183,16 @@ export default function WatchPlayer() {
     }
   };
 
+  const applyRate = (value: number) => {
+    rateRef.current = value;
+    setRate(value);
+    void video.current?.setRateAsync(value, true).catch(() => {});
+  };
+
   const onLoad = async () => {
     retries.current = 0;
     setPhase('ready');
+    void video.current?.setRateAsync(rateRef.current, true).catch(() => {});
     const seekTo = pendingSeek.current;
     if (seekTo !== null) {
       pendingSeek.current = null;
@@ -258,6 +268,7 @@ export default function WatchPlayer() {
   /* ----- gestures: double tap and hold on the left and right thirds ----- */
 
   const onZoneTap = (zone: Zone) => {
+    if (locked) return;
     touch();
     const now = Date.now();
     const prev = lastTap.current;
@@ -286,6 +297,7 @@ export default function WatchPlayer() {
   };
 
   const startHold = (zone: Zone) => {
+    if (locked) return;
     touch();
     stopHold();
     const dir = zone === 'left' ? -1 : 1;
@@ -444,7 +456,15 @@ export default function WatchPlayer() {
         </View>
       ) : null}
 
-      {showControls ? (
+      {locked && phase !== 'error' ? (
+        <View style={styles.overlay} pointerEvents="box-none">
+          <Pressable onPress={() => { setLocked(false); touch(); }} accessibilityRole="button" accessibilityLabel="Unlock controls" style={styles.lockBtn} hitSlop={8}>
+            <Ionicons name="lock-closed" size={18} color="#fff" />
+            <Text variant="caption" tone="onAccent">Unlock</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {showControls && !locked ? (
         <View style={styles.overlay} pointerEvents="box-none">
           <View style={styles.topBar}>
             <Pressable onPress={() => (fullScreen && !landscape ? setImmersive(false) : router.back())} accessibilityRole="button" accessibilityLabel={fullScreen ? 'Exit full screen' : 'Back'} style={styles.iconBtn} hitSlop={8}>
@@ -491,6 +511,12 @@ export default function WatchPlayer() {
               ) : (
                 <Text variant="caption" tone="onAccent">{isLocal ? 'Downloaded' : ''}</Text>
               )}
+              <Pressable onPress={() => applyRate(PLAYBACK_RATES[(PLAYBACK_RATES.indexOf(rate) + 1) % PLAYBACK_RATES.length] ?? 1)} accessibilityRole="button" accessibilityLabel={`Playback speed ${rate}x`} style={styles.speedBtn} hitSlop={8}>
+                <Text variant="caption" tone="onAccent">{`${rate}×`}</Text>
+              </Pressable>
+              <Pressable onPress={() => setLocked(true)} accessibilityRole="button" accessibilityLabel="Lock controls" style={styles.iconBtn} hitSlop={8}>
+                <Ionicons name="lock-open-outline" size={20} color="#fff" />
+              </Pressable>
               <Pressable onPress={() => setImmersive((v) => !v)} accessibilityRole="button" accessibilityLabel={fullScreen ? 'Exit full screen' : 'Full screen'} style={styles.iconBtn} hitSlop={8}>
                 <Ionicons name={fullScreen ? 'contract-outline' : 'expand-outline'} size={20} color="#fff" />
               </Pressable>
@@ -521,7 +547,12 @@ export default function WatchPlayer() {
   );
 }
 
+/** Playback speeds offered to the viewer. Applied to the real player with setRateAsync. */
+const PLAYBACK_RATES = [1, 1.25, 1.5, 2, 0.75];
+
 const styles = StyleSheet.create({
+  speedBtn: { minWidth: 40, height: 36, paddingHorizontal: 8, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.14)' },
+  lockBtn: { position: 'absolute', right: 16, top: '45%', flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.6)' },
   fullRoot: { flex: 1, backgroundColor: '#000' },
   stage: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000', overflow: 'hidden' },
   stageFull: { flex: 1, backgroundColor: '#000', overflow: 'hidden' },
