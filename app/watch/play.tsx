@@ -2,7 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { AVPlaybackStatus, ResizeMode, Video } from 'expo-av';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, PanResponder, Pressable, StatusBar, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, AppState, PanResponder, Platform, Pressable, StatusBar, StyleSheet, useWindowDimensions, View } from 'react-native';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { ScrollScreen, Screen } from '../../components/ui/Screen';
 import { ErrorState } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
@@ -19,6 +20,7 @@ import {
   formatClock,
   seekTarget,
   sortQualities,
+  volumeAfterSwipe,
 } from '../../lib/watchRules';
 
 const HOLD_STEP_MS = 2000;
@@ -101,10 +103,19 @@ export default function WatchPlayer() {
   const [immersive, setImmersive] = useState(false);
   const [rate, setRate] = useState(1);
   const [locked, setLocked] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const volumeRef = useRef(1);
+  const volumeStart = useRef(1);
+  const dimsRef = useRef({ width: winW, height: winH });
+  dimsRef.current = { width: winW, height: winH };
+  const phaseRef = useRef<Phase>('loading');
+  phaseRef.current = phase;
+  const fullRef = useRef(false);
   const rateRef = useRef(1);
   const [interaction, setInteraction] = useState(0);
 
   const fullScreen = landscape || immersive;
+  fullRef.current = fullScreen;
 
   /* ----- loading ----- */
 
@@ -327,6 +338,19 @@ export default function WatchPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Full screen locks the screen to landscape. Leaving full screen, or leaving the player, returns the app to its default orientation.
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    if (fullScreen) void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+    else void ScreenOrientation.unlockAsync().catch(() => {});
+  }, [fullScreen]);
+  useEffect(
+    () => () => {
+      if (Platform.OS !== 'web') void ScreenOrientation.unlockAsync().catch(() => {});
+    },
+    [],
+  );
+
   // Hide the status bar in full-screen, and restore it on exit or unmount.
   useEffect(() => {
     StatusBar.setHidden(fullScreen, 'fade');
@@ -375,6 +399,27 @@ export default function WatchPlayer() {
     }),
   ).current;
 
+  /* ----- volume ----- */
+
+  // In full screen, a vertical swipe on the right half of the player changes the volume. Horizontal and short moves are
+  // left to the taps, holds, and timeline. In portrait the player sits in a scroll view, so the swipe is not claimed.
+  const volumePan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponderCapture: (e, g) =>
+        fullRef.current && phaseRef.current !== 'error' && e.nativeEvent.pageX > dimsRef.current.width / 2 && Math.abs(g.dy) > 14 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderGrant: () => {
+        volumeStart.current = volumeRef.current;
+      },
+      onPanResponderMove: (_e, g) => {
+        const next = volumeAfterSwipe(volumeStart.current, g.dy, dimsRef.current.height * 0.6);
+        volumeRef.current = next;
+        setVolume(next);
+        showFeedback(`Volume ${Math.round(next * 100)}%`);
+      },
+      onPanResponderTerminationRequest: () => false,
+    }),
+  ).current;
+
   /* ----- render ----- */
 
   const shownPosition = scrubFraction !== null && durationMs > 0 ? scrubFraction * durationMs : positionMs;
@@ -391,6 +436,7 @@ export default function WatchPlayer() {
           style={StyleSheet.absoluteFill}
           resizeMode={ResizeMode.CONTAIN}
           useNativeControls={false}
+          volume={volume}
           shouldPlay
           progressUpdateIntervalMillis={500}
           onPlaybackStatusUpdate={onStatus}
@@ -401,7 +447,7 @@ export default function WatchPlayer() {
 
       {/* Gesture layer. Left and right thirds seek, the centre toggles the controls. Sits under the controls. */}
       {phase !== 'error' ? (
-        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+        <View style={StyleSheet.absoluteFill} {...volumePan.panHandlers}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Skip back 10 seconds, double tap. Hold to seek back."

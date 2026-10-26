@@ -138,6 +138,33 @@ async function openToken(t: string): Promise<TokenPayload | null> {
   }
 }
 
+// ---------- metadata cache ----------
+
+// Title details and stream metadata change rarely. A short in-memory cache per function instance saves a
+// round trip to the provider for repeat opens. Only metadata is cached: playback links are never cached, because
+// they carry expiring tokens. Requests still pass the session check before they reach this cache.
+const META_TTL_MS = 10 * 60_000;
+const META_MAX_ENTRIES = 300;
+const metaCache = new Map<string, { until: number; body: unknown }>();
+
+function metaGet(key: string): unknown | undefined {
+  const hit = metaCache.get(key);
+  if (!hit) return undefined;
+  if (hit.until <= Date.now()) {
+    metaCache.delete(key);
+    return undefined;
+  }
+  return hit.body;
+}
+
+function metaPut(key: string, body: unknown): void {
+  if (metaCache.size >= META_MAX_ENTRIES) {
+    const oldest = metaCache.keys().next().value;
+    if (oldest !== undefined) metaCache.delete(oldest);
+  }
+  metaCache.set(key, { until: Date.now() + META_TTL_MS, body });
+}
+
 // ---------- upstream ----------
 
 async function upstream(path: string, params: Record<string, string>, key: string): Promise<{ ok: true; body: any } | { ok: false; status: number }> {
@@ -381,16 +408,25 @@ Deno.serve(async (req) => {
     case 'detail': {
       const detailPath = validDetailPath(input.detailPath);
       if (!detailPath) return json({ error: 'bad_request' }, 400);
+      const cacheKey = `detail|${detailPath}`;
+      const hit = metaGet(cacheKey);
+      if (hit !== undefined) return json(hit);
       const r = await upstream('/api/v2/moviebox/detail', { detailPath }, key);
       if (!r.ok) return json({ error: 'upstream_error', status: r.status }, r.status);
       const data = envelopeData(r.body);
-      return data === undefined ? json({ error: 'unexpected_shape' }, 502) : json({ data: scrub(data) });
+      if (data === undefined) return json({ error: 'unexpected_shape' }, 502);
+      const body = { data: scrub(data) };
+      metaPut(cacheKey, body);
+      return json(body);
     }
 
     case 'stream': {
+      const cacheKey = `stream|${String(input.subjectId ?? '')}|${String(input.se ?? '')}|${String(input.ep ?? '')}`;
+      const hit = metaGet(cacheKey);
+      if (hit !== undefined) return json(hit);
       const set = await loadStreams(input, key);
       if (!set.ok) return json(set.body, set.status);
-      return json({
+      const body = {
         subject_id: set.subject_id,
         season: set.season,
         episode: set.episode,
@@ -398,7 +434,9 @@ Deno.serve(async (req) => {
         preview_streams_dropped: set.diagnostics.length - set.candidates.length,
         diagnostics: set.diagnostics,
         streams: set.candidates.map(publicCandidate),
-      });
+      };
+      metaPut(cacheKey, body);
+      return json(body);
     }
 
     case 'playback': {

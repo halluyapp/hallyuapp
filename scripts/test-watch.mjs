@@ -348,3 +348,30 @@ test('the failure message states how far the transfer got', () => {
   const msg = R.stoppedMessage(2 * 1024 * 1024, 40 * 1024 * 1024, 200);
   assert.match(msg, /Stopped at 2 MB of 40 MB/);
 });
+
+// ---- Download notices, volume swipe, and restart repair ----
+{
+  const rules = await load('lib/watchRules.ts');
+  test('progress notice shows the percentage', () => {
+    assert.deepEqual(rules.progressNotice('progress', 'Lupin', 42, null), { title: 'Downloading', body: 'Lupin · 42%' });
+  });
+  test('failed notice uses the reason, and falls back to a default', () => {
+    assert.equal(rules.progressNotice('failed', 'Lupin', 0, 'Connection lost').body, 'Connection lost');
+    assert.match(rules.progressNotice('failed', 'Lupin', 0, null).body, /Lupin stopped/);
+  });
+  test('volume swipe moves with the finger and stays within 0 to 1', () => {
+    assert.equal(rules.volumeAfterSwipe(0.5, -200, 1000), 0.75);
+    assert.equal(rules.volumeAfterSwipe(0.5, 200, 1000), 0.25);
+    assert.equal(rules.volumeAfterSwipe(0.9, -2000, 1000), 1);
+    assert.equal(rules.volumeAfterSwipe(0.1, 2000, 1000), 0);
+    assert.equal(rules.volumeAfterSwipe(0.5, 0, 0), 0.5);
+  });
+  test('restart repair pauses downloads with no live task and fails queued items with no live slot', () => {
+    const base = { error: null };
+    assert.equal(rules.repairTransfer({ ...base, status: 'downloading' }, { running: false, queued: false }).status, 'paused');
+    assert.equal(rules.repairTransfer({ ...base, status: 'downloading' }, { running: true, queued: false }).status, 'downloading');
+    assert.equal(rules.repairTransfer({ ...base, status: 'queued' }, { running: false, queued: false }).status, 'failed');
+    assert.equal(rules.repairTransfer({ ...base, status: 'queued' }, { running: false, queued: true }).status, 'queued');
+    assert.equal(rules.repairTransfer({ ...base, status: 'paused' }, { running: false, queued: false }).status, 'paused');
+  });
+}

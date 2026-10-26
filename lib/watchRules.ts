@@ -207,3 +207,43 @@ export function stoppedMessage(bytes: number, total: number | null, status: numb
   const where = total ? `${formatBytes(bytes)} of ${formatBytes(total)}` : `${formatBytes(bytes)} (total size unknown)`;
   return `Stopped at ${where} (server status ${status}). Tap resume to continue.`;
 }
+
+/** Text for a download notification. Progress shows a percentage; failures and pauses show the reason. */
+export type NoticeKind = 'progress' | 'paused' | 'failed' | 'done';
+
+export function progressNotice(kind: NoticeKind, title: string, percent: number, message: string | null): { title: string; body: string } {
+  const name = title.trim() || 'Download';
+  if (kind === 'done') return { title: 'Download complete', body: `${name} is saved on this device.` };
+  if (kind === 'failed') return { title: 'Download stopped', body: message ?? `${name} stopped. Open Downloads to retry.` };
+  if (kind === 'paused') return { title: 'Download paused', body: `${name} · ${percent}%` };
+  return { title: 'Downloading', body: `${name} · ${percent}%` };
+}
+
+/**
+ * New volume (0 to 1) after a vertical swipe on the player. Swiping up the full height of the player raises
+ * the volume by a full range. The result is clamped and rounded to whole percent.
+ */
+export function volumeAfterSwipe(startVolume: number, dy: number, height: number): number {
+  if (!Number.isFinite(startVolume) || !Number.isFinite(dy) || !(height > 0)) return clamp01(startVolume);
+  const next = clamp01(startVolume - dy / (height * 0.8));
+  return Math.round(next * 100) / 100;
+}
+
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, Number.isFinite(v) ? v : 0));
+}
+
+/**
+ * A transfer loaded from storage, after the app restarted. Storage may say "downloading" or "queued" for work
+ * that is no longer running. `running` and `queued` say what is still alive in memory.
+ */
+export function repairTransfer<T extends { status: TransferStatus; error: string | null }>(
+  t: T,
+  live: { running: boolean; queued: boolean },
+): T {
+  if (t.status === 'downloading' && !live.running) return { ...t, status: 'paused', error: null };
+  if (t.status === 'queued' && !live.queued) {
+    return { ...t, status: 'failed', error: 'This download was waiting in the queue when the app closed. Tap retry to start it.' };
+  }
+  return t;
+}
