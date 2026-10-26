@@ -2,16 +2,15 @@
  * Hallyu TV — local state: resume progress (Continue Watching), private downloads, and transfers.
  *
  * Downloads live in the app's private document directory and are never added to the device photo
- * library. On Android, a new download runs in the native background downloader (watchNative.ts), so it can
- * keep going while the app is in the background, and it reattaches after a restart. Continuing a download
- * that stopped (or was queued) always uses a Range request from the bytes on disk. iOS and web keep the
- * foreground path: transfers stop when the app is backgrounded. A transfer is complete only when the
- * byte count matches the server's length and the file starts with an MP4 header.
+ * library. Transfers run in the foreground: they continue while the Hallyu TV screens are open and stop
+ * when the app is backgrounded or closed. Their state survives a restart, and a paused or interrupted
+ * transfer continues from the bytes already on disk with a Range request. Background transfers need a
+ * native download service (Android DownloadManager), which is not built yet, so they are not claimed here.
+ * A transfer is complete only when the byte count matches the server's length and the file starts with an MP4 header.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
-import { existingNativeTasks, nativeAvailable, startNativeTask, type NativeTask } from './watchNative';
 import { clearDownloadNotice, reportDownload } from './watchNotify';
 import {
   canStartDownload,
@@ -159,18 +158,11 @@ export function subscribeTransfers(fn: Listener): () => void {
   return () => listeners.delete(fn);
 }
 
-let reattached = false;
-
 export async function listTransfers(): Promise<TransferEntry[]> {
-  if (!reattached) {
-    // Set before awaiting, so the queue pump that a reattached download may trigger does not wait on this call.
-    reattached = true;
-    await reattachNative().catch(() => {});
-  }
   const all = await readJson<TransferEntry[]>(TRANSFERS_KEY, []);
   // A download that was "downloading" when the app closed is interrupted now, not still running.
   const repaired = all.map((t) =>
-    repairTransfer(t, { running: active.has(t.key) || nativeTasks.has(t.key), queued: queuedUrls.has(t.key) }),
+    repairTransfer(t, { running: active.has(t.key), queued: queuedUrls.has(t.key) }),
   );
   if (JSON.stringify(repaired) !== JSON.stringify(all)) await writeJson(TRANSFERS_KEY, repaired);
   return repaired.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -203,8 +195,6 @@ interface ActiveTransfer {
   cancelled: boolean;
 }
 const active = new Map<string, ActiveTransfer>();
-/** Android downloads running in the native downloader, by transfer key. */
-const nativeTasks = new Map<string, NativeTask>();
 /** Links for queued transfers, in queue order. Held in memory only: a link is never written to storage. */
 const queuedUrls = new Map<string, string>();
 
@@ -379,81 +369,12 @@ function beginTransfer(key: string, url: string, resumeData: string | null, star
 }
 
 /**
- * Starts a download from zero. On Android it runs in the native background downloader; elsewhere, or if the
- * native module is missing, it uses the foreground path.
- */
-function beginFresh(key: string, url: string): void {
-  if (nativeAvailable()) {
-    try {
-      const task = startNativeTask(key, url, fileUriFor(key));
-      if (task) {
-        nativeTasks.set(key, task);
-        wireNative(key, task);
-        return;
-      }
-    } catch {
-      // Fall through to the foreground path.
-    }
-  }
-  beginTransfer(key, url, null, 0);
-}
-
-/**
  * Where a continuation starts. A Range request from a byte count is used on Android, because expo-file-system
- * and the native downloader both leave a partial file in place. iOS can only continue from its own resume data.
+ * leaves the partial file in place. iOS can only continue from its own resume data.
  */
 function resumePointFor(t: TransferEntry, bytes: number): string | null {
   if (bytes <= 0) return null;
   return Platform.OS === 'android' ? String(bytes) : t.resumeData;
-}
-
-function wireNative(key: string, task: NativeTask): void {
-  task.progress((_percent, written, total) => {
-    if (nativeTasks.get(key) !== task) return;
-    void updateBytes(key, written, total > 0 ? total : null);
-  });
-  task.done(() => void settleNative(key, task));
-  task.error(() => void settleNative(key, task));
-}
-
-/** A native download ended. A whole file is validated; anything shorter is kept for a Range continuation. */
-async function settleNative(key: string, task: NativeTask): Promise<void> {
-  if (nativeTasks.get(key) !== task) return; // stopped or replaced
-  nativeTasks.delete(key);
-  const t = await getTransfer(key);
-  if (t && (t.status === 'downloading' || t.status === 'paused')) {
-    const bytes = await bytesOnDisk(t.fileUri);
-    if (t.totalBytes && bytes === t.totalBytes) {
-      await finalize(key, t, bytes);
-    } else {
-      await putTransfer({ ...t, status: 'failed', bytesWritten: bytes, resumeData: null, error: lostMessage(bytes, t.totalBytes), updatedAt: Date.now() });
-    }
-  }
-  void pumpQueue();
-}
-
-/** Re-attaches to native downloads that outlived the last app session, and reflects their state in storage. */
-async function reattachNative(): Promise<void> {
-  if (!nativeAvailable()) return;
-  const found = await existingNativeTasks();
-  for (const task of found) {
-    const key = task.id;
-    const t = await getTransfer(key);
-    if (!t || t.status === 'failed' || t.status === 'queued') {
-      task.stop();
-      continue;
-    }
-    nativeTasks.set(key, task);
-    if (task.state === 'DONE') {
-      await settleNative(key, task);
-      continue;
-    }
-    wireNative(key, task);
-    const status: TransferStatus = task.state === 'PAUSED' ? 'paused' : 'downloading';
-    if (t.status !== status) {
-      await putTransfer({ ...t, status, error: null, updatedAt: Date.now() });
-    }
-  }
 }
 
 /** Runs one transfer chain. When it ends (complete, failed, paused, or cancelled), the next queued download starts. */
@@ -473,11 +394,8 @@ async function pumpQueue(): Promise<void> {
   await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
   const onDisk = await bytesOnDisk(t.fileUri);
   const point = resumePointFor(t, onDisk);
-  if (point) beginTransfer(next, url, point, onDisk);
-  else {
-    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
-    beginFresh(next, url);
-  }
+  if (!point) await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+  beginTransfer(next, url, point, point ? onDisk : 0);
 }
 
 async function bytesOnDisk(fileUri: string): Promise<number> {
@@ -577,21 +495,12 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
     queuedUrls.set(key, source.downloadUrl);
     return { ok: true, message: 'Queued. It starts when the current download finishes.' };
   }
-  beginFresh(key, source.downloadUrl);
+  beginTransfer(key, source.downloadUrl, null, 0);
   return { ok: true };
 }
 
 /** Pauses an active transfer and saves its resume data, so it can continue from the same byte later. */
 export async function pauseDownload(key: string): Promise<boolean> {
-  const n = nativeTasks.get(key);
-  if (n) {
-    const nt = await getTransfer(key);
-    if (!nt || !canTransition(nt.status, 'paused')) return false;
-    n.pause();
-    await putTransfer({ ...nt, status: 'paused', resumeData: null, error: null, updatedAt: Date.now() });
-    void pumpQueue();
-    return true;
-  }
   const a = active.get(key);
   const t = await getTransfer(key);
   if (!a || !t || !canTransition(t.status, 'paused')) return false;
@@ -614,17 +523,6 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
   const t = await getTransfer(key);
   if (!t || !canTransition(t.status, 'downloading')) return { ok: false, reason: 'unknown', message: 'This download cannot be resumed.' };
   const busy = (await listTransfers()).some((x) => x.key !== key && x.status === 'downloading');
-  const native = nativeTasks.get(key);
-  if (native && t.status === 'paused' && !busy) {
-    native.resume();
-    await putTransfer({ ...t, status: 'downloading', error: null, updatedAt: Date.now() });
-    return { ok: true };
-  }
-  if (native) {
-    // Busy: stop the native task. Its bytes stay on disk and the queue continues them with a Range request.
-    nativeTasks.delete(key);
-    native.stop();
-  }
   const a = active.get(key);
   if (a && a.paused) {
     if (busy) {
@@ -655,22 +553,14 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
   // Only a request that carries resume data appends to the file; otherwise the file is written from zero.
   const onDisk = await bytesOnDisk(t.fileUri);
   const point = resumePointFor(t, onDisk);
-  if (point) beginTransfer(key, url, point, onDisk);
-  else {
-    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
-    beginFresh(key, url);
-  }
+  if (!point) await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+  beginTransfer(key, url, point, point ? onDisk : 0);
   return { ok: true };
 }
 
 /** Cancels a transfer and deletes its partial file. Only this transfer's file is removed. */
 export async function cancelDownload(key: string): Promise<void> {
   queuedUrls.delete(key);
-  const n = nativeTasks.get(key);
-  if (n) {
-    nativeTasks.delete(key);
-    n.stop();
-  }
   void clearDownloadNotice(key);
   const a = active.get(key);
   if (a) {
@@ -681,8 +571,6 @@ export async function cancelDownload(key: string): Promise<void> {
   const t = await getTransfer(key);
   if (t) await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
   await dropTransfer(key);
-  // Dropped first, so the queue pump no longer sees this transfer as running.
-  if (n) void pumpQueue();
 }
 
 

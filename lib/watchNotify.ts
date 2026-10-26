@@ -1,7 +1,8 @@
 /**
  * Download notifications for Hallyu TV. One notification per download, updated in place as it progresses.
- * Notifications are best-effort: when permission is missing or the device refuses, nothing is shown and the
- * download itself is unaffected.
+ * Downloads run while the app is open, so a progress notice is not sticky: it does not claim a download is
+ * still running after the app closes. Notifications are best-effort: when permission is missing or the device
+ * refuses, nothing is shown and the download itself is unaffected.
  */
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
@@ -50,7 +51,6 @@ export async function reportDownload(
         title: notice.title,
         body: notice.body,
         sound: false,
-        sticky: kind === 'progress',
         priority: Notifications.AndroidNotificationPriority.LOW,
         data: { source: 'hallyu_download', url: '/watch/downloads' },
         ...(Platform.OS === 'android' ? { channelId: CHANNEL } : {}),
