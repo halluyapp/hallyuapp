@@ -73,7 +73,7 @@ export interface WatchDiagnostic {
 
 export type WatchResult<T> =
   | { ok: true; value: T }
-  | { ok: false; reason: 'offline' | 'signed_out' | 'not_configured' | 'not_found' | 'no_full_stream' | 'failed'; diagnostics?: WatchDiagnostic[] };
+  | { ok: false; reason: 'offline' | 'signed_out' | 'not_configured' | 'not_found' | 'no_full_stream' | 'timeout' | 'failed'; diagnostics?: WatchDiagnostic[] };
 
 /** Maps the server's diagnostics (snake_case) to the client shape. */
 export function normaliseDiagnostics(data: unknown): WatchDiagnostic[] {

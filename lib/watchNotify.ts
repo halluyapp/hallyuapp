@@ -1,7 +1,7 @@
 /**
  * Download notifications for Hallyu TV. One notification per download, updated in place as it progresses.
- * Downloads run while the app is open, so a progress notice is not sticky: it does not claim a download is
- * still running after the app closes. Notifications are best-effort: when permission is missing or the device
+ * These local notices cover foreground transfers; Android DownloadManager supplies the native background
+ * transfer notification in the signed APK. Notifications are best-effort: when permission is missing or the device
  * refuses, nothing is shown and the download itself is unaffected.
  */
 import * as Notifications from 'expo-notifications';

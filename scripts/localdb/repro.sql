@@ -2,7 +2,7 @@
 -- (run 37188183939, scripts/verify-backend.mjs). Each block prints CHECK <name>: OK/ERROR.
 -- Applied to the database built by scripts/localdb/apply.mjs.
 --
--- expects: 27 checks
+-- expects: 28 checks
 --
 -- Run against a freshly applied database (`node scripts/localdb/apply.mjs . && node
 -- scripts/localdb/check.mjs .`, which is what `npm run test:db-exec` does). The blocks create
@@ -636,4 +636,59 @@ begin
   raise notice 'CHECK storage-delete-policy: OK (scoped to storage_owner(name) = auth.uid())';
 exception when others then
   raise notice 'CHECK storage-delete-policy: ERROR %', sqlerrm;
+end $$;
+
+
+-- ── 28. Claim/report behavior is tested only in disposable PostgreSQL, never against the live global queue ──
+do $$
+declare
+  v_notification uuid;
+  v_token uuid;
+  v_delivery uuid;
+  v_claimed_notification uuid;
+  v_status text;
+  v_sent_at timestamptz;
+begin
+  perform set_config('role', 'service_role', true);
+  perform set_config('request.jwt.claim.role', 'service_role', true);
+  perform set_config('request.jwt.claim.sub', '', true);
+
+  -- Isolate this local behavior check from any fixtures created by earlier blocks.
+  update public.notification_deliveries
+     set status = 'failed', sent_at = null, attempt = 0, next_attempt_at = now() + interval '1 day';
+  update public.push_tokens set disabled_at = now();
+  update public.user_preferences set notify_system = true
+   where user_id = '11111111-1111-4111-8111-111111111111';
+
+  insert into public.push_tokens (user_id, token, platform, device_name, disabled_at)
+  values ('11111111-1111-4111-8111-111111111111', 'verification-local-claim-123456789', 'android', 'isolated claim test', null)
+  on conflict (token) do update set disabled_at = null
+  returning id into v_token;
+
+  insert into public.notifications (recipient_id, kind, "group", dedupe_key, title, scheduled_for, expires_at)
+  values ('11111111-1111-4111-8111-111111111111', 'system', 'system', 'verify-local-claim-report', 'Local delivery', now(), now() + interval '1 day')
+  returning id into v_notification;
+
+  insert into public.notification_deliveries (notification_id, push_token_id, next_attempt_at)
+  values (v_notification, v_token, now()) on conflict (notification_id, push_token_id) do nothing;
+
+  select c.delivery_id, c.notification_id
+    into v_delivery, v_claimed_notification
+    from public.claim_notification_deliveries(1, 5) c;
+  if v_delivery is null or v_claimed_notification <> v_notification then
+    raise notice 'CHECK notification-claim-report: FAIL claim did not return the isolated row';
+    return;
+  end if;
+
+  perform public.report_delivery(v_delivery, true, null, false, 'verification-local-provider-id');
+  select status::text, sent_at into v_status, v_sent_at
+    from public.notification_deliveries where id = v_delivery;
+  if v_status <> 'sent' or v_sent_at is null then
+    raise notice 'CHECK notification-claim-report: FAIL report did not persist sent state';
+    return;
+  end if;
+
+  raise notice 'CHECK notification-claim-report: OK (isolated delivery claimed and reported sent)';
+exception when others then
+  raise notice 'CHECK notification-claim-report: ERROR %', sqlerrm;
 end $$;

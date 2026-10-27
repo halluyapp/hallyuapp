@@ -7,13 +7,11 @@ name: Backend verification
 #                every function body is compiled, and the backend behaviour checks are replayed
 #                against that database. A SQL parser cannot see inside a function body, so this is
 #                the only place a body-level regression is caught before it reaches the project.
-#   migrate    — brings the LIVE project in step with supabase/migrations, in filename order, before
-#                anything is tested against it. The repository owns the schema; without this the live
-#                suite proves an older branch's behaviour and reports it as this branch's failures.
-#                Needs the privileged SUPABASE_DB_URL secret — CI only, never in a client bundle.
-#   connected  — the live suite against the real project (scripts/verify-backend.mjs). REQUIRED
-#                REPOSITORY SECRETS: the Supabase URL + anon key + service-role key. Missing =
-#                configuration failure (red), never a silent skip. This job gates the backend.
+#   migrate    — explicit manual opt-in only; applies supabase/migrations to the configured live
+#                project. Requires workflow_dispatch apply_migrations=true AND SUPABASE_DB_URL.
+#   connected  — explicit manual opt-in only; run_connected_tests=true after confirming the project.
+#                The suite creates/removes test data, never drains global queues or invokes push providers.
+#                It still requires the Supabase URL + anon key + service-role key; missing = red.
 #   rork-auth  — the OPTIONAL Rork OAuth leg (Google/Apple sign-in), isolated on purpose: it needs
 #                a human-minted RORK_TEST_REFRESH_TOKEN, so its absence cannot masquerade as a
 #                broken backend. When the credentials ARE configured, the Rork suite runs here and
@@ -26,10 +24,20 @@ name: Backend verification
 
 on:
   workflow_dispatch:
-  # Any change that can move the backend contract re-verifies the live project: migrations, edge
-  # functions, the type contract, the verification scripts themselves, the client API layer and the
-  # dependency set. (The GitHub App used by this workspace cannot dispatch workflows directly, so a
-  # push trigger is also what makes verification automatic rather than manual.)
+    inputs:
+      run_connected_tests:
+        description: 'Run the connected suite against the configured Supabase project (creates and removes isolated test accounts/rows)'
+        required: false
+        type: boolean
+        default: false
+      apply_migrations:
+        description: 'Apply repository migrations to the configured Supabase project (requires explicit project approval)'
+        required: false
+        type: boolean
+        default: false
+#   Any change that can move the backend contract re-runs offline validation automatically; live
+#   access requires the explicit workflow_dispatch inputs above. Changes to migrations, edge functions,
+#   the type contract, verification scripts, client API, or dependencies trigger the workflow.
   push:
     branches:
       - main
@@ -129,6 +137,7 @@ jobs:
 
   migrate:
     name: Apply migrations to the live project
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_migrations == true }}
     needs: offline
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -183,10 +192,10 @@ jobs:
   connected:
     name: Connected backend (live project)
     needs: [offline, migrate]
-    # The live suite runs even when the apply step could not: a project that is behind needs its
-    # drift reported by name, not hidden behind the failure of the step that would have fixed it.
-    # It still waits for `offline`, so a broken migration set never reaches the live project.
-    if: ${{ always() && needs.offline.result == 'success' }}
+    # No connected writes or schema changes run automatically from pushes. A maintainer must
+    # explicitly dispatch with run_connected_tests=true after confirming the target project;
+    # migrations are a separate explicit opt-in. Offline PostgreSQL checks still run on every push.
+    if: ${{ always() && needs.offline.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.run_connected_tests == true }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
 
@@ -299,6 +308,7 @@ jobs:
 
   rork-auth:
     name: Rork Auth (optional credentials)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_connected_tests == true }}
     needs: offline
     runs-on: ubuntu-22.04
     timeout-minutes: 10

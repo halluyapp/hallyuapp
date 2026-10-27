@@ -5,6 +5,7 @@
  * downloadable link is a proxy link issued by the `playback` action, with a sealed token that expires
  * after 4 hours. Mobile and web use the same rule, so a stream that plays on web also plays natively.
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ensureBackendSessionToken, supabase } from './client';
 import { normaliseDetail, normaliseDiagnostics, normaliseHome, normalisePlayback, normaliseSearch, normaliseStreams, type WatchDetail, type WatchPlayback, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
 
@@ -13,6 +14,58 @@ export * from '../watchModel';
 type Body = Record<string, unknown>;
 type Raw = Record<string, unknown>;
 type CallError = Extract<WatchResult<never>, { ok: false }>;
+
+const CALL_TIMEOUT_MS = 25_000;
+const SESSION_TIMEOUT_MS = 10_000;
+const HOME_CACHE_KEY = 'watch.home.cache.v1';
+const HOME_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const DETAIL_TTL_MS = 10 * 60_000;
+const STREAM_TTL_MS = 60_000;
+
+let homeMemory: { rows: WatchRow[]; savedAt: number } | null = null;
+const detailCache = new Map<string, { value: WatchDetail; until: number }>();
+const streamCache = new Map<string, { value: WatchStreams; until: number }>();
+const inFlight = new Map<string, Promise<WatchResult<Raw>>>();
+
+/** Returns the last successful Hallyu TV home snapshot for an immediate first paint. */
+export async function readWatchHomeCache(): Promise<WatchRow[] | null> {
+  if (homeMemory && Date.now() - homeMemory.savedAt < HOME_CACHE_MAX_AGE_MS) return homeMemory.rows;
+  try {
+    const raw = await AsyncStorage.getItem(HOME_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { rows?: unknown; savedAt?: unknown };
+    if (!Array.isArray(parsed.rows) || typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > HOME_CACHE_MAX_AGE_MS) return null;
+    const rows = parsed.rows as WatchRow[];
+    homeMemory = { rows, savedAt: parsed.savedAt };
+    return rows;
+  } catch {
+    return null;
+  }
+}
+
+async function saveWatchHomeCache(rows: WatchRow[]): Promise<void> {
+  const savedAt = Date.now();
+  homeMemory = { rows, savedAt };
+  try {
+    await AsyncStorage.setItem(HOME_CACHE_KEY, JSON.stringify({ rows, savedAt }));
+  } catch {
+    // The in-memory cache still provides first paint for the current app session.
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('watch_timeout')), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** supabase-js returns non-2xx responses as `error`, and the JSON body sits on `error.context`. */
 async function errorBody(error: unknown): Promise<Raw | null> {
@@ -34,19 +87,40 @@ function mapError(body: Raw | null): CallError {
   return { ok: false, reason: 'failed' };
 }
 
-async function call(body: Body): Promise<WatchResult<Raw>> {
+async function callOnce(body: Body): Promise<WatchResult<Raw>> {
   if (!supabase) return { ok: false, reason: 'offline' };
-  if (!(await ensureBackendSessionToken())) return { ok: false, reason: 'signed_out' };
-  const { data, error } = await supabase.functions.invoke<Raw>('moviebox', { body });
-  if (error) return mapError(await errorBody(error));
-  if (!data) return { ok: false, reason: 'failed' };
-  if (data.error) return mapError(data);
-  return { ok: true, value: data };
+  try {
+    const hasSession = await withTimeout(ensureBackendSessionToken(), SESSION_TIMEOUT_MS);
+    if (!hasSession) return { ok: false, reason: 'signed_out' };
+    const { data, error } = await withTimeout(supabase.functions.invoke<Raw>('moviebox', { body }), CALL_TIMEOUT_MS);
+    if (error) {
+      const body = await withTimeout(errorBody(error), 4_000).catch(() => null);
+      return mapError(body);
+    }
+    if (!data) return { ok: false, reason: 'failed' };
+    if (data.error) return mapError(data);
+    return { ok: true, value: data };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error && error.message === 'watch_timeout' ? 'timeout' : 'offline' };
+  }
+}
+
+/** Identical in-flight actions share one bounded request. */
+function call(body: Body): Promise<WatchResult<Raw>> {
+  const key = JSON.stringify(body);
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+  const pending = callOnce(body).finally(() => inFlight.delete(key));
+  inFlight.set(key, pending);
+  return pending;
 }
 
 export async function fetchWatchHome(): Promise<WatchResult<WatchRow[]>> {
   const r = await call({ action: 'home' });
-  return r.ok ? { ok: true, value: normaliseHome(r.value.data) } : r;
+  if (!r.ok) return r;
+  const rows = normaliseHome(r.value.data);
+  if (rows.length > 0) void saveWatchHomeCache(rows);
+  return { ok: true, value: rows };
 }
 
 export async function searchWatch(q: string, page = 1): Promise<WatchResult<WatchTitle[]>> {
@@ -55,21 +129,32 @@ export async function searchWatch(q: string, page = 1): Promise<WatchResult<Watc
 }
 
 export async function fetchWatchDetail(detailPath: string): Promise<WatchResult<WatchDetail>> {
+  const hit = detailCache.get(detailPath);
+  if (hit && hit.until > Date.now()) return { ok: true, value: hit.value };
+  detailCache.delete(detailPath);
   const r = await call({ action: 'detail', detailPath });
   if (!r.ok) return r;
   const detail = normaliseDetail(r.value.data);
-  return detail ? { ok: true, value: detail } : { ok: false, reason: 'not_found' };
+  if (!detail) return { ok: false, reason: 'not_found' };
+  detailCache.set(detailPath, { value: detail, until: Date.now() + DETAIL_TTL_MS });
+  return { ok: true, value: detail };
 }
 
 /** Full-length stream metadata (quality list, availability). No URLs. */
 export async function fetchWatchStreams(subjectId: string, se?: number, ep?: number): Promise<WatchResult<WatchStreams>> {
+  const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}`;
+  const hit = streamCache.get(cacheKey);
+  if (hit && hit.until > Date.now()) return { ok: true, value: hit.value };
+  streamCache.delete(cacheKey);
   const body: Body = { action: 'stream', subjectId };
   if (se !== undefined) body.se = se;
   if (ep !== undefined) body.ep = ep;
   const r = await call(body);
   if (!r.ok) return r;
   const value = normaliseStreams(r.value);
-  return value.streams.length > 0 ? { ok: true, value } : { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics(r.value.diagnostics) };
+  if (value.streams.length === 0) return { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics(r.value.diagnostics) };
+  streamCache.set(cacheKey, { value, until: Date.now() + STREAM_TTL_MS });
+  return { ok: true, value };
 }
 
 /**
@@ -113,6 +198,6 @@ export async function fetchWatchPlayback(subjectId: string, se: number | undefin
 
 /** A fresh download link for one full-length stream. Returns null when no valid link exists. */
 export async function fetchWatchDownloadUrl(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null): Promise<string | null> {
-  const r = await fetchWatchPlayback(subjectId, se, ep, quality);
+  const r = await fetchWatchPlayback(subjectId, se, ep, quality, true);
   return r.ok ? r.value.downloadUrl : null;
 }

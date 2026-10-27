@@ -265,6 +265,19 @@ test('progress: no percentage when the total is unknown', () => {
   assert.equal(R.progressFraction(300, 200), 1);
 });
 
+test('download identity separates quality-specific files and stays stable for the same episode', () => {
+  const a = R.qualityDownloadKey('subject', 1, 2, '480p');
+  const b = R.qualityDownloadKey('subject', 1, 2, '720p');
+  assert.notEqual(a, b);
+  assert.equal(a, R.qualityDownloadKey('subject', 1, 2, '480p'));
+  assert.equal(R.qualityDownloadKey('subject', null, null, null), R.qualityDownloadKey('subject', null, null, 'auto'));
+});
+
+test('legacy transfer migration drops opaque resume data that may embed an expiring signed URL', () => {
+  const legacy = { key: 'show:1:1:480p', status: 'paused', resumeData: JSON.stringify({ url: 'https://signed.invalid/token' }) };
+  assert.deepEqual(R.withoutPersistedResumeData(legacy), { key: 'show:1:1:480p', status: 'paused' });
+});
+
 test('duplicates: no second active or finished copy of the same title and quality', () => {
   const active = [{ key: 'a:1:1', quality: '480p', status: 'downloading' }];
   assert.equal(R.canStartDownload(active, [], 'a:1:1', '480p').reason, 'already_downloading');

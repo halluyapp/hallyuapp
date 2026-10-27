@@ -132,6 +132,9 @@ jobs:
           test -f android/app/google-services.json
           test -f android/app/src/main/java/com/hallyu/app/HallyuApkInstallerModule.kt
           test -f android/app/src/main/java/com/hallyu/app/HallyuApkInstallerPackage.kt
+          test -f android/app/src/main/java/com/hallyu/app/HallyuDownloaderModule.kt
+          test -f android/app/src/main/java/com/hallyu/app/HallyuDownloaderPackage.kt
+          grep -q 'HallyuDownloaderPackage' android/app/src/main/java/com/hallyu/app/MainApplication.kt
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -281,6 +284,23 @@ jobs:
           check_abi_so "$REL/app-universal-release.apk" "lib/x86/libhermes.so"
           echo "All 6 APKs passed 16KB zipalign, v1/v2/v3 cert, SDK, extractNativeLibs & exact .so ABI verification!"
 
+      - name: Verify Android downloader is compiled into the signed APKs
+        working-directory: android
+        run: |
+          set -euo pipefail
+          REL=app/build/outputs/apk/release
+          for APK in "$REL/app-arm64-v8a-release.apk" "$REL/app-universal-release.apk"; do
+            FOUND=false
+            while IFS= read -r DEX; do
+              if unzip -p "$APK" "$DEX" | grep -a 'HallyuDownloader' >/dev/null; then FOUND=true; break; fi
+            done < <(unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\.dex$')
+            if [ "$FOUND" != true ]; then
+              echo "::error::HallyuDownloader is missing from $APK"
+              exit 1
+            fi
+            echo "Verified HallyuDownloader in $APK"
+          done
+
       - name: Verify the APK's baked backend configuration
         run: node scripts/ci/verify-apk-config.mjs android/app/build/outputs/apk/release/app-release.apk
 
@@ -317,6 +337,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm || true
 
       - name: Create the device-test member
+        if: github.ref == 'refs/heads/main'
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -325,7 +346,8 @@ jobs:
       - name: Verify ABI rejection, exact split install, in-place upgrade, native installer diagnostics, auth & UI bounds on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
-          CONNECTED_BUILD: "yes"
+          CONNECTED_BUILD: ${{ github.ref == 'refs/heads/main' && 'yes' || '' }}
+          HALLYU_TEST_UPGRADE_ONLY: ${{ github.ref != 'refs/heads/main' && 'yes' || '' }}
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         with:
@@ -337,6 +359,7 @@ jobs:
           script: sh scripts/ci/boot-check.sh && node scripts/ci/auth-flow-check.mjs
 
       - name: Verify the device actually reached the backend
+        if: github.ref == 'refs/heads/main'
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -378,7 +401,7 @@ jobs:
           retention-days: 14
 
       - name: Publish GitHub Release with all signed architecture APKs & changelog
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/arena/')
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
@@ -389,7 +412,7 @@ jobs:
           TAG="apk-${{ github.run_number }}"
           PREV_TAG=$(git tag --list "apk-*" --sort=-creatordate | head -n 1 || true)
           if [ -n "$PREV_TAG" ]; then
-            COMMIT_LOG=$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:"• %s" | head -n 8)
+            COMMIT_LOG=$(git log -n 8 "${PREV_TAG}..HEAD" --no-merges --pretty=format:"• %s")
           else
             COMMIT_LOG="• Universal Android compatibility (ARM64, ARMv7, x86_64, x86 & 16KB page alignment), verified self-updater & stability fixes"
           fi
@@ -452,6 +475,7 @@ jobs:
           fi
 
       - name: Publish all signed APKs + manifest + live CDN byte verification + push alert
+        if: github.ref == 'refs/heads/main'
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

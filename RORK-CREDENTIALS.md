@@ -1,12 +1,14 @@
 # Hallyu / Rork Credential Inventory
 
 Handoff document for future development sessions and agents. It is an **inventory** — variable
-names, purposes, storage locations and consumers — **not a secret dump**. No raw production secret
-belongs in this repository; if you find one, move it to the store named here, rotate it, and run
-`node scripts/verify-no-secrets.mjs` before committing.
+names, purposes, storage locations and consumers — **not a secret dump**. It is an operational
+inventory, not proof that each value or service is currently reachable; verify live configuration
+before relying on it (see [the production audit](docs/PRODUCTION-AUDIT-2026-10-27.md)). No raw
+production secret belongs in this repository; if you find one, move it to the store named here,
+rotate it, and run `node scripts/verify-no-secrets.mjs` before committing.
 
 - **Backend project (Rork Cloud / Supabase):** `kzxlbscfkixnswurpkzb` — `https://kzxlbscfkixnswurpkzb.supabase.co`
-- **GitHub repository:** `macaulay-spec/grok-hallyu`
+- **GitHub repository:** `halluyapp/hallyuapp`
 - **Connection contract:** `docs/RORK-CLOUD-CONNECTION-PROMPT.md` · **Connection report:** `docs/RORK-CLOUD-CONNECTION-REPORT.md`
 
 ---
@@ -152,7 +154,7 @@ Production secret values are intentionally **not** committed to Git.
 
 Authoritative secret locations:
 
-- **GitHub Actions Secrets** — `macaulay-spec/grok-hallyu` → Settings → Secrets and variables →
+- **GitHub Actions Secrets** — `halluyapp/hallyuapp` → Settings → Secrets and variables →
   Actions (the six names in the matrix above).
 - **Rork Cloud secrets/configuration** — Edge Function runtime env (platform-injected Supabase
   trio) and any TMDB/push overrides; manage via the Rork project or `supabase secrets` tooling.

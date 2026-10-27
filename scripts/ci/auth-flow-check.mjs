@@ -22,6 +22,7 @@ import process from 'node:process';
 
 const PKG = 'com.hallyu.app';
 const ACTIVITY = `${PKG}/.MainActivity`;
+const UPGRADE_ONLY = process.env.HALLYU_TEST_UPGRADE_ONLY === 'yes';
 const EMAIL = (process.env.HALLYU_TEST_EMAIL ?? '').trim();
 const PASSWORD = (process.env.HALLYU_TEST_PASSWORD ?? '');
 const TEST_USER_ID = (process.env.HALLYU_TEST_USER_ID ?? '').trim();
@@ -34,7 +35,7 @@ const EXPECTED_VERSION = (process.env.EXPO_PUBLIC_APP_VERSION ?? '').trim();
 const BAD_JS = /\[hallyu:crash\]|Attempted to navigate before mounting|index:nav-failed/;
 const FATAL = /FATAL EXCEPTION|ANR in/;
 
-if (!EMAIL || !PASSWORD) {
+if (!UPGRADE_ONLY && (!EMAIL || !PASSWORD)) {
   console.error('::error::auth-flow-check needs HALLYU_TEST_EMAIL and HALLYU_TEST_PASSWORD');
   process.exit(1);
 }
@@ -248,6 +249,15 @@ if (fs.existsSync(newUniversalApk)) {
   if (EXPECTED_VERSION && !upgradedPkgInfo.includes(`versionName=${EXPECTED_VERSION}`)) {
     fail(`Expected upgraded package versionName=${EXPECTED_VERSION}, got: ${newVerLine}`);
   }
+}
+
+if (UPGRADE_ONLY) {
+  const lines = logcat();
+  if (BAD_JS.test(lines)) fail('a swallowed JS error appeared during the APK upgrade check.');
+  if (FATAL.test(lines)) fail('FATAL EXCEPTION or ANR during the APK upgrade check.');
+  if (process.exitCode === 1) process.exit(1);
+  note('PASSED — signed previous APK upgraded in-place through the x86_64 split to this Universal APK; no live account or backend writes were used.');
+  process.exit(0);
 }
 
 // ── Phase 1 · clean state → welcome ───────────────────────────────────────────────────────────
