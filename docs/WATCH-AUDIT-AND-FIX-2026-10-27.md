@@ -114,3 +114,54 @@ path, `Content-Range`, the continuation offset and byte-exact completion are ver
 production CDN. `416` handling is covered by the unit suite (and by the device flow); this CDN does not
 emit a `416` for an out-of-range start, so a live `416` cannot be observed here and is not claimed.
 
+
+## Blank web page: the publish window, not the app
+
+Users reported a blank page on the web link.
+
+**What was checked first — because the obvious suspicion (the Watch changes) is wrong.** The published
+site from a clean load boots and renders: the app's own boot trail ran `entry:router-loaded →
+store:hydrated → gate:probe → gate:connected → index:redirect /(auth)/welcome`, `#root` had content and
+there were zero page errors. `/hallyuapp/watch` and `/hallyuapp/watch/downloads` behaved the same
+(`root children: 1`, landing content present, zero errors). CI's live verification — a real Chromium run
+that waits for the "Download Android APK" control and fails on any page error — passed for the same
+build. **No application code was changed for this issue.**
+
+**Root cause (a mechanism, verified from the serving headers):**
+
+- GitHub Pages serves the HTML shell with `cache-control: max-age=600`, and its edge ignores query
+  strings: `/?hallyu-shell=<random>` returns the same ETag and the same growing `age`, so nothing on the
+  client can bust it.
+- The publish replaces the whole tree (`force_orphan` mirror + `actions/deploy-pages`), so any bundle
+  not in the new build is gone — a non-current bundle hash returns 404.
+- Three deploys landed inside 40 minutes, so a visitor whose browser or the edge still held HTML from
+  before a deploy requested a bundle that no longer existed. The page never started: blank.
+
+**Fix (commit `082ae30`, `.github/workflows/deploy-web.yml` only — a workflow-only change, so the
+in-flight Android run was not cancelled):**
+
+1. **Carry the live build forward.** Before the artifact is uploaded, every file the deployed
+   `file-manifest.json` lists that this build does not already have is fetched into `dist-pages`. A
+   stale shell then starts the previous build instead of nothing. The manifest records only this
+   build's own files, so the site stays at two generations instead of growing without bound. On a first
+   run with no live manifest it falls back to the shell's own references, which covers the entry bundle
+   (that generation's fonts are not, and the guard below covers that case).
+2. **Startup guard on every published page** (`index.html` and `404.html`, both bundles): if the bundle
+   fails to load, or `#root` is still empty after ~10s, the page shows a real message — "A newer version
+   of Hallyu was published while this page was open… Tap Reload to get the new one" — and a Reload that
+   unregisters the service worker first. A page that genuinely cannot start is never silently blank.
+
+**Verification:**
+
+| Check | Result |
+| --- | --- |
+| Extracted CI step run in a sandbox against the live site | guard written to all four shells, previous bundle carried in, `file-manifest.json` written, exit 0 |
+| Guard on a healthy page | `root=1` from 2s, guard absent for 18s, zero page errors |
+| Guard with the bundle URL broken | guard present by 2s with the correct copy and a **Reload** button |
+| Live after deploy (`082ae30`, run `40551876184` **SUCCESS**) | `version.json` = `1.0.68`, shell contains `hallyu-startup-fallback`, `file-manifest.json` serves 43 files, previous bundle `index-9167df5d….js` answers **200** |
+| YAML validity / jobs | parses; both jobs intact; no GitHub expression inside the run block |
+
+**Not claimed:** the state of any individual user's browser (this environment has no real browser, so
+the blank page was not observed directly — the mechanism was reconstructed from the serving headers and
+the publish configuration), and the edge's 10-minute window cannot be shortened from the client. The
+window is now harmless rather than removed.
