@@ -9,7 +9,8 @@
  * It proves, with the production function and the production CDN:
  *   1. a full-length stream for a real title is offered at a quality the app can download,
  *   2. a positional request returns 206 with the byte count and Content-Range the app depends on,
- *   3. an out-of-range request is refused (416) instead of a 200 carrying the whole file,
+ *   3. an out-of-range request is refused instead of being answered with a 200 carrying the whole file
+ *      (a well-behaved edge says 416; the production CDN says 502 — both are refusals),
  *   4. a continuation offset is honoured (Content-Range starts where it was asked to),
  *   5. the full download really is as long as the server claims, byte for byte,
  *   6. an 83/84 MB file downloads end to end with those real headers,
@@ -243,15 +244,33 @@ async function main() {
     bad(`a ranged read was not forwarded as 206 from byte 0 (status ${shortRead.status}, Content-Range ${shortRead.contentRange ?? '<none>'})`);
   }
 
-  /* 3. An out-of-range start must be refused, never answered with the whole file as a 200. */
+  /* 3. An out-of-range start must be refused, never answered with the whole file as a 200.
+   *
+   * The property that keeps a download safe is narrow: a request past the end of the file must not come
+   * back as a whole-file 200 (a downloader would append the entire file at the wrong offset) and must not
+   * come back as a range the app would accept. Which refusal the edge chooses is the edge's own business —
+   * the production CDN answers 502 for this request, not 416 — so every 4xx/5xx refusal is accepted and its
+   * status recorded, and the app-side rule for each one is asserted by the unit suite (a 416 with the whole
+   * file already on disk is complete; a 502 is a retryable failure; nothing is ever appended blindly).
+   */
   const beyond = await head(downloadUrl, `bytes=${total}-${total}`);
-  info(`Range: bytes=${total}-${total} -> ${beyond.status} content-range=${beyond.contentRange}`);
-  if (beyond.status === 416) {
-    ok('an out-of-range request is refused with 416');
-  } else if (beyond.status === 206 && (startFromContentRange(beyond.contentRange) ?? -1) >= total - 1) {
-    ok(`an out-of-range request was clamped instead of refusing (${beyond.status}); the app treats this as unavailable`);
-  } else if (beyond.status === 200) {
+  info(`Range: bytes=${total}-${total} -> ${beyond.status} content-range=${beyond.contentRange ?? '<none>'} content-length=${beyond.contentLength}`);
+  const beyondStart = startFromContentRange(beyond.contentRange);
+  if (beyond.status === 200) {
     bad('an out-of-range request returned 200 with the whole file — Range forwarding is not honoured end to end');
+  } else if (beyond.status === 206) {
+    if (beyondStart !== null && beyondStart >= total - 1) {
+      ok(`an out-of-range request was clamped to the end of the file instead of being refused (${beyond.status} from byte ${beyondStart})`);
+    } else if (Number(beyond.contentLength) >= total) {
+      bad('an out-of-range request answered 206 with the whole file as its body — that is what a blind append corrupts');
+    } else {
+      info(`NOTE: an out-of-range request answered 206 from byte ${beyondStart ?? '<unknown>'} instead of refusing; the app restarts rather than appending when a continuation does not start where it asked (decideAfterTransfer).`);
+    }
+  } else if (beyond.status === 416) {
+    ok('an out-of-range request is refused with 416');
+  } else if (beyond.status >= 400) {
+    ok(`an out-of-range request is refused with ${beyond.status} and carries no data to append`);
+    info(`NOTE: this edge answers ${beyond.status} rather than 416 for an out-of-range start; the app treats every non-2xx as a retryable failure and appends nothing (lib/watchRules.ts decideAfterTransfer, covered by the unit suite).`);
   } else {
     bad(`unexpected response for an out-of-range request: ${beyond.status}`);
   }

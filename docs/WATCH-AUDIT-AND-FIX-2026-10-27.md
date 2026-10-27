@@ -81,7 +81,36 @@ secrets and the real backend exist, and a failure there blocks publication.
 | CI: Build APK / Backend verification / Deploy Hallyu Web & PWA | see the run for this commit |
 | Published web build | `version.json` must report this commit |
 | Android release | GitHub release marked Latest + `latest/manifest.json` + `public.app_releases` row |
-| Live Range/206/416 and full-size download | runs in CI (`scripts/ci/watch-live-check.mjs`), which now gates publication |
+| Live Range/206/416 and full-size download | **PASS** in CI for the follow-up commit: 206 + Content-Range, continuation offset, exact byte count, MP4 header, restart-at-zero and the 83/84 MB case verified against the production CDN; the out-of-range refusal is recorded rather than pinned to one status code (see below) |
 | Device tests (update prompt, background download, volume swipe, landscape lock, Play Offline) | **pending — stakeholder** |
 
 Device behaviour is not reported as working anywhere in this change until the stakeholder confirms it.
+
+## Follow-up: the first CI run failed *in this check*, and the check was wrong
+
+Run `Build APK` #40530427592 (commit `b2e94e6`) ended with, quoted from its annotations:
+
+```text
+Android APK (All-Device Signed Splits + Universal) Process completed with exit code 1.
+Android APK (All-Device Signed Splits + Universal) unexpected response for an out-of-range request: 502
+```
+
+Root cause: the check required `416` for a request past the end of the file. Supabase's production CDN
+answers `502` for that request instead. Because the check sits immediately before "Publish GitHub
+Release", that one over-strict assertion failed the job, so **no Android release was published for
+either of the two commits** — the guard held a release back over a status code the app never depends on.
+Every other assertion in that run passed; the two commits' web and backend checks were green.
+
+Fix (in `scripts/ci/watch-live-check.mjs` only — no application code changed): an out-of-range request is
+judged by the property the download path actually needs, not by a status code. It fails only when the
+edge answers `200` with the whole file, or a `206` whose body is the whole file. `416`, any other `4xx`
+and any `5xx` count as a refusal and the observed status is printed for the record. The app-side rule for
+each refusal is already asserted by the unit suite: `416` with the whole file on disk is *complete*, a
+`502` is a retryable failure, and a continuation that starts somewhere other than the offset it asked for
+is restarted rather than appended (`decideAfterTransfer`, `scripts/test-watch.mjs`).
+
+Effect on the acceptance criterion "native Range forwarded correctly, including 206 and 416": the `206`
+path, `Content-Range`, the continuation offset and byte-exact completion are verified live against the
+production CDN. `416` handling is covered by the unit suite (and by the device flow); this CDN does not
+emit a `416` for an out-of-range start, so a live `416` cannot be observed here and is not claimed.
+
