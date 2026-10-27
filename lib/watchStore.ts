@@ -227,7 +227,6 @@ async function putTransfer(t: TransferEntry): Promise<void> {
   const all = raw.map(stripLegacyResumeData);
   await writeJson(TRANSFERS_KEY, [safe, ...all.filter((x) => x.key !== safe.key)]);
   notifyTransfers();
-  if (safe.engine === 'native' && safe.status === 'downloading') return; // DownloadManager owns its visible system notification.
   if (safe.status === 'downloading') void reportDownload(safe.key, noticeTitle(safe), 'progress', safe.bytesWritten, safe.totalBytes);
   else if (safe.status === 'paused') void reportDownload(safe.key, noticeTitle(safe), 'paused', safe.bytesWritten, safe.totalBytes);
   else if (safe.status === 'failed') void reportDownload(safe.key, noticeTitle(safe), 'failed', safe.bytesWritten, safe.totalBytes, safe.error);
@@ -259,7 +258,7 @@ const active = new Map<string, ActiveTransfer>();
 const queuedKeys = new Set<string>();
 
 function fileUriFor(key: string): string {
-  return `${DOWNLOAD_DIR}${key.replace(/[^A-Za-z0-9:_-]/g, '_')}.mp4`;
+  return `${DOWNLOAD_DIR}${key.replace(/[^A-Za-z0-9_-]/g, '_')}.mp4`;
 }
 
 async function failTransfer(key: string, reason: TransferFailure, message: string): Promise<void> {
@@ -538,20 +537,27 @@ async function settleNativeSuccess(key: string, localPath: string | null): Promi
   // Ensure file is safely placed inside the app's private document directory (sandboxed, never in gallery)
   await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true }).catch(() => {});
   const dest = t.fileUri;
+  let finalUri = from;
+
   if (from !== dest) {
     try {
       await FileSystem.copyAsync({ from, to: dest });
-      await FileSystem.deleteAsync(from, { idempotent: true }).catch(() => {});
+      const destBytes = await bytesOnDisk(dest);
+      if (destBytes >= MIN_PLAYABLE_BYTES) {
+        await FileSystem.deleteAsync(from, { idempotent: true }).catch(() => {});
+        finalUri = dest;
+      }
     } catch {
-      await FileSystem.moveAsync({ from, to: dest }).catch(() => {});
+      // If cross-device partition copy is constrained, keep 'from' (it is already in the app-scoped directory)
+      finalUri = from;
     }
   }
 
-  const savedBytes = await bytesOnDisk(dest);
+  const savedBytes = await bytesOnDisk(finalUri);
   if (savedBytes === 0 || savedBytes < MIN_PLAYABLE_BYTES) {
     return failTransfer(key, 'unknown', 'Could not save the download to app storage. Tap retry.');
   }
-  const registered: TransferEntry = { ...t, fileUri: dest, bytesWritten: savedBytes, totalBytes: savedBytes };
+  const registered: TransferEntry = { ...t, fileUri: finalUri, bytesWritten: savedBytes, totalBytes: savedBytes };
   await putTransfer(registered);
   await finalize(key, registered, savedBytes);
 }
