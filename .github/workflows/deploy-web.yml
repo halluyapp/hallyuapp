@@ -97,7 +97,10 @@ jobs:
           ! grep -q "__HALLYU_SW_BUILD_ID__" dist-pages/sw.js
           cat dist-pages/version.json
 
+      # This authenticated browser audit creates/promotes a temporary account in the configured
+      # Supabase project. Keep it off feature branches; only the protected production branch runs it.
       - name: Pre-deploy Headless Chrome verification (Landing Page, SW, version.json & 360x800 routes)
+        if: github.ref == 'refs/heads/main'
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
@@ -276,6 +279,7 @@ jobs:
 
   deploy:
     name: Deploy & Verify Live Public Website
+    if: github.ref == 'refs/heads/main'
     needs: verify-and-build
     runs-on: ubuntu-22.04
     environment:
