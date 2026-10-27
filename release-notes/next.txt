@@ -1,0 +1,2 @@
+• Titles now start in 360p by default, so they open faster and use less data. If a title has no 360p, it starts in its lowest quality. You can still pick a higher quality any time.
+• Watch loads more reliably on slow connections: the app no longer shows "Hallyu's backend could not be reached" just because a sign-in refresh took a moment.

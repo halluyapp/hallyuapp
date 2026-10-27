@@ -189,11 +189,13 @@ test('playback: a stream with no reported size still needs a full duration', () 
   assert.equal(normalisePlayback({ ...base, duration_sec: null }), null);
 });
 
-test('pickStream default: 480p, then 360p, then the best available', () => {
+test('pickStream default: 360p, else the lowest full-length quality the title has', () => {
   const mk = (qs) => normaliseStreams({ streams: qs.map((q) => raw({ quality: q, quality_value: parseInt(q, 10) })) }).streams;
-  assert.equal(pickStream(mk(['1080p', '480p', '360p']), null).quality, '480p');
+  assert.equal(pickStream(mk(['1080p', '480p', '360p']), null).quality, '360p');
   assert.equal(pickStream(mk(['1080p', '360p']), undefined).quality, '360p');
-  assert.equal(pickStream(mk(['1080p', '720p']), null).quality, '1080p');
+  assert.equal(pickStream(mk(['1080p', '720p', '480p']), null).quality, '480p');
+  assert.equal(pickStream(mk(['1080p', '720p']), null).quality, '720p');
+  assert.equal(pickStream(mk(['1080p', '480p']), '1080p').quality, '1080p');
 });
 
 /* ---------- Player and download rules (lib/watchRules.ts) ---------- */

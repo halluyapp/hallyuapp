@@ -208,12 +208,12 @@ export function normalisePlayback(data: unknown): WatchPlayback | null {
   };
 }
 
-/** Default quality on phones and web: 480p, then 360p, to keep data use and start-up time low. */
-export const DEFAULT_QUALITIES = ['480p', '360p'];
+/** Default quality on phones and web: 360p, to keep data use and start-up time low. */
+export const DEFAULT_QUALITIES = ['360p'];
 
 /**
- * The stream to play: the requested quality when available. Otherwise 480p, then 360p, then the best
- * full-length stream. The viewer can pick a higher quality from the quality chips.
+ * The stream to play: the requested quality when available. Otherwise 360p. If the title has no 360p,
+ * its lowest full-length quality. The viewer can pick a higher quality from the quality chips.
  */
 export function pickStream(streams: WatchStream[], quality?: string | null): WatchStream | undefined {
   const full = streams.filter(isFullStream).sort(compareStreams);
@@ -223,7 +223,8 @@ export function pickStream(streams: WatchStream[], quality?: string | null): Wat
     const s = full.find((x) => x.quality === q);
     if (s) return s;
   }
-  return full[0];
+  // Lowest available: compareStreams sorts best first, so the last full-length stream is the lowest.
+  return full[full.length - 1];
 }
 
 /** Distinct qualities offered, best first. */

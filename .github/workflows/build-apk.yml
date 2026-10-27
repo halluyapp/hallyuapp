@@ -422,9 +422,13 @@ jobs:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HALLYU_PAGES_TOKEN: ${{ secrets.HALLYU_PAGES_TOKEN }}
-          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes || github.event.head_commit.message }}
+          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           set -euo pipefail
+          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ] && [ -f release-notes/next.txt ]; then
+            HALLYU_RELEASE_NOTES="$(cat release-notes/next.txt)"
+            export HALLYU_RELEASE_NOTES
+          fi
           if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
             echo "::error title=Release notes required::Provide user-facing What's New notes before publishing this build."
             exit 1
@@ -500,10 +504,20 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes || github.event.head_commit.message }}
+          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes }}
           HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
           GITHUB_REPO_SLUG: ${{ env.PUBLIC_RELEASE_REPO || github.repository }}
           GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
-        run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk
+        run: |
+          set -euo pipefail
+          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ] && [ -f release-notes/next.txt ]; then
+            HALLYU_RELEASE_NOTES="$(cat release-notes/next.txt)"
+            export HALLYU_RELEASE_NOTES
+          fi
+          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
+            echo "::error title=Release notes required::Add release-notes/next.txt with user-facing What's New notes."
+            exit 1
+          fi
+          node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk
 
 # Android build and publish run from arena/c5e9499c-grok-hallyu on push.
