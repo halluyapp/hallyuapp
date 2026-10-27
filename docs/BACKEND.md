@@ -4,11 +4,14 @@ The Hallyu backend is defined, end to end, by the source in `supabase/`. There i
 anywhere: every table, index, constraint, trigger, function, RLS policy, the storage bucket and the
 scheduled jobs are created by an ordered migration that replays on a fresh Supabase project.
 
-The backend is **not connected**. There is no credential in this repository, the app still runs
-device-local, and connecting it is a later phase. See
-[docs/BACKEND-CREDENTIALS.md](BACKEND-CREDENTIALS.md) for the credential map and the connection
-sequence, and [docs/BACKEND-CONNECTION-CONTRACT.md](BACKEND-CONNECTION-CONTRACT.md) for what the
-client consumes once the project exists.
+The app has a Supabase-backed path (`lib/api/`, `lib/auth.tsx`, and the ordered migrations) when
+its build is configured with the public Supabase URL and anon key. Device-local behavior remains as
+a deliberate fallback for builds without those values. **Production status is not guaranteed by this
+repository alone:** the latest connected GitHub backend verification failed on 2026-10-27, and the
+production Supabase project is not visible in the Supabase account currently connected to this audit.
+See [the production audit](PRODUCTION-AUDIT-2026-10-27.md) for verified scope, failures, and safe
+next steps. See [docs/BACKEND-CREDENTIALS.md](BACKEND-CREDENTIALS.md) for the credential map and
+[docs/BACKEND-CONNECTION-CONTRACT.md](BACKEND-CONNECTION-CONTRACT.md) for the client contract.
 
 ## The catalog path
 
@@ -28,7 +31,7 @@ playback are deliberately out of scope: `titles.trailer_url` still exists, and n
 ```
 supabase/
 ├── config.toml                     project configuration for `supabase start` / `db reset`
-├── migrations/                     40 ordered migrations — the schema, applied in filename order
+├── migrations/                     57 ordered migrations — the schema, applied in filename order
 ├── seed.sql                        reference rows only (4 worlds, 1 provider, 4 official rooms)
 ├── env.example                     every credential name, placeholder values only
 ├── functions/
@@ -38,11 +41,13 @@ supabase/
 │   ├── push-dispatch/              claims deliveries, sends them, records per-delivery outcomes
 │   ├── media-cleanup/              reconciles media rows against storage objects
 │   ├── purge-deleted-accounts/     retention: hard-deletes tombstoned accounts and their objects
-│   └── moderation-digest/          groups open reports into one decision per target
+│   ├── moderation-digest/          groups open reports into one decision per target
+│   ├── megan-metadata/             retrieves protected entertainment metadata
+│   └── moviebox/                   playback/search integration (review its external-provider and rights controls)
 └── types/database.ts               the typed contract (tables, rows, inserts, updates, RPCs, enums)
 ```
 
-## Migrations, in order
+## Migrations, in order (core set 00–39; extended by 40–56)
 
 | # | File | What it creates |
 | --- | --- | --- |
@@ -86,6 +91,12 @@ supabase/
 | 37 | `20260101123700_37_storage_removal_queue.sql` | `media_removal_queue` and the claim/complete RPCs — storage deletion goes through the Storage API — plus the `profiles_guard_privileges` trigger |
 | 38 | `20260101123800_38_browse_ranking.sql` | `browse_titles` — the ranked browse surface behind Explore, with the sort degrading to the app-wide ordering rather than failing |
 | 39 | `20260101123900_39_video_publishing.sql` | `video_creators` (the allowlist), `video_access_requests` (the queue), the grant/revoke/review RPCs, and the video gates on `begin_media_upload` + `post_media` |
+
+Migrations **40–56** extend the original backend with client sync/realtime, catalog reconciliation
+and ranking, polls/DMs/ratings, follow requests and staff queues, launch and audit fixes, stricter
+pre-release privacy/integrity rules, recognition/admin features, watch and reading trackers, diary
+fixes, timezone-aware reminder dedupe, and privileged-function grants. The 57 SQL files themselves
+are authoritative; this summary table predates those follow-on migrations.
 
 ## Freshness, ranking and discovery
 

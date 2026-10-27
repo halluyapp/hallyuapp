@@ -54,7 +54,7 @@ class HallyuDownloaderModule(private val reactContext: ReactApplicationContext) 
         reactContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
     @ReactMethod
-    fun start(key: String, url: String, promise: Promise) {
+    fun start(key: String, url: String, title: String, promise: Promise) {
         try {
             val dm = downloadManager()
             val old = prefs.getLong(key, -1L)
@@ -62,8 +62,11 @@ class HallyuDownloaderModule(private val reactContext: ReactApplicationContext) 
             val file = targetFile(key)
             file.parentFile?.mkdirs()
             if (file.exists()) file.delete()
+            val safeTitle = title.trim().take(80).ifEmpty { "Hallyu download" }
             val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle("Hallyu download")
+                .setTitle(safeTitle)
+                .setDescription("Saving for offline viewing")
+                .setMimeType("video/mp4")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setAllowedOverRoaming(false)
                 .setDestinationInExternalFilesDir(reactContext, null, relativePath(key))
@@ -96,6 +99,7 @@ class HallyuDownloaderModule(private val reactContext: ReactApplicationContext) 
                 val label = when (state) {
                     DownloadManager.STATUS_SUCCESSFUL -> "successful"
                     DownloadManager.STATUS_FAILED -> "failed"
+                    DownloadManager.STATUS_PAUSED -> "paused"
                     else -> "running"
                 }
                 out.putString("status", label)

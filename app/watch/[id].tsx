@@ -49,6 +49,8 @@ export default function WatchTitleScreen() {
 
   const [detail, setDetail] = useState<WatchDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailReload, setDetailReload] = useState(0);
+  const [streamReload, setStreamReload] = useState(0);
   const [season, setSeason] = useState<number | null>(null);
   const [episode, setEpisode] = useState<number | null>(null);
   const [playable, setPlayable] = useState<Playable | undefined>(undefined);
@@ -88,7 +90,7 @@ export default function WatchTitleScreen() {
     return () => {
       alive = false;
     };
-  }, [detailPath]);
+  }, [subjectId, detailPath, detailReload]);
 
   // Decide once per episode whether a full-length stream exists. Movies are requested without season or episode.
   useEffect(() => {
@@ -111,7 +113,7 @@ export default function WatchTitleScreen() {
     return () => {
       alive = false;
     };
-  }, [detail, subjectId, isSeries, season, episode]);
+  }, [detail, subjectId, isSeries, season, episode, streamReload]);
 
   useEffect(() => {
     let alive = true;
@@ -139,7 +141,7 @@ export default function WatchTitleScreen() {
   const qualities = playable ? qualityOptions(playable.streams) : [];
   const watchable = playable ? pickStream(playable.streams, chosen) : undefined;
   const downloadable = watchable && isDownloadable(watchable) ? watchable : undefined;
-  const active = transfers.filter((t) => t.key === key);
+  const active = transfers.filter((t) => t.subjectId === subjectId && t.season === seasonValue && t.episode === episodeValue);
 
   const pickQuality = (q: string) => {
     setQuality(q);
@@ -191,7 +193,7 @@ export default function WatchTitleScreen() {
             {detailError === 'not_found' ? (
               <InlineNotice tone="warning" text="This title is no longer available." />
             ) : (
-              <ErrorState kind="server" title="Could not load this title" body="Check your connection and try again." onRetry={() => router.replace({ pathname: '/watch/[id]', params: { id: subjectId, detailPath, title: String(params.title ?? '') } })} />
+              <ErrorState kind="server" title="Could not load this title" body="Check your connection and try again." onRetry={() => setDetailReload((n) => n + 1)} />
             )}
           </View>
         ) : null}
@@ -227,7 +229,14 @@ export default function WatchTitleScreen() {
             ) : null}
 
             {playable === undefined && !playError ? <ActivityIndicator color={colors.accent} style={{ alignSelf: 'flex-start' }} /> : null}
-            {playError ? <InlineNotice tone="warning" text="Playback check failed. Reopen this title to try again." /> : null}
+            {playError ? (
+              <View style={{ gap: space.x2 }}>
+                <InlineNotice tone="warning" text={playError === 'timeout' ? 'The playback check took too long.' : 'Playback check failed.'} />
+                <Pressable onPress={() => setStreamReload((n) => n + 1)} accessibilityRole="button" style={styles.ghost}>
+                  <Text variant="caption" tone="accent">Retry playback check</Text>
+                </Pressable>
+              </View>
+            ) : null}
             {playable === null && !playError ? (
               <InlineNotice tone="info" text={isSeries ? 'Only short previews are available for this episode, so it cannot be played in full.' : 'Only short previews are available for this title, so it cannot be played in full.'} />
             ) : null}
@@ -280,7 +289,7 @@ export default function WatchTitleScreen() {
             {!saved && anyActive ? (
               <View style={styles.transfer}>
                 <Text variant="caption" tone="secondary">
-                  {anyActive.status === 'downloading' ? 'Downloading' : anyActive.status === 'paused' ? 'Paused' : 'Download stopped'}
+                  {anyActive.nativeWaiting ? 'Waiting for connection' : anyActive.status === 'downloading' ? 'Downloading' : anyActive.status === 'paused' ? 'Paused' : 'Download stopped'}
                   {anyActive.quality ? ` · ${anyActive.quality}` : ''}
                 </Text>
                 {progressFraction(anyActive.bytesWritten, anyActive.totalBytes) !== null ? (
@@ -292,14 +301,14 @@ export default function WatchTitleScreen() {
                 {anyActive.error ? <Text variant="caption" tone="danger">{anyActive.error}</Text> : null}
                 <View style={styles.transferActions}>
                   {anyActive.status === 'downloading' && anyActive.engine === 'native' ? (
-                    <Text variant="caption" tone="tertiary">Runs in the background until it finishes</Text>
+                    <Text variant="caption" tone="tertiary">{anyActive.nativeWaiting ? 'Android will resume when its network requirements are met' : 'Runs in the background until it finishes'}</Text>
                   ) : anyActive.status === 'downloading' ? (
                     <Pressable onPress={() => void pauseDownload(anyActive.key)} accessibilityRole="button" style={styles.chipBtn}>
                       <Text variant="caption">Pause</Text>
                     </Pressable>
                   ) : (
                     <Pressable onPress={() => void retryOrResume(anyActive)} accessibilityRole="button" style={[styles.chipBtn, styles.chipBtnOn]}>
-                      <Text variant="caption" tone="onAccent">{anyActive.status === 'paused' ? 'Resume' : 'Retry'}</Text>
+                      <Text variant="caption" tone="onAccent">{anyActive.status === 'paused' ? 'Restart' : 'Retry'}</Text>
                     </Pressable>
                   )}
                   <Pressable onPress={() => void cancelDownload(anyActive.key)} accessibilityRole="button" style={styles.chipBtn}>

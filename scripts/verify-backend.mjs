@@ -1132,6 +1132,8 @@ await test('A preference switch is respected at creation time', async () => {
     p_group: 'drama',
     p_dedupe_key: `verify-unmuted-${suffix}`,
     p_title_id: airingTitleId,
+    // Keep this test-owned row out of the production push worker's due queue.
+    p_scheduled_for: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   });
   assert(after, 'a notification was not created after the preference was turned back on');
   return 'notify_episodes = false suppressed, true allowed';
@@ -1170,51 +1172,56 @@ await test('Fan-out creates one delivery per active device', async () => {
   return `${Math.max(created ?? 0, totalDeliveries ?? 0)} delivery row(s), repeated fan-out added 0`;
 });
 
-await test('A claimed delivery can be reported sent', async () => {
-  let { data, error } = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
-  assert(!error, `claim_notification_deliveries failed: ${error?.message}`);
-  let claimed = data ?? [];
-  if (claimed.length === 0) {
-    // Live 24/7 push-dispatch Edge Function can claim the test row within ~150ms before this step runs;
-    // re-arm this test run's own verification notification row so claim + report_delivery is always tested deterministically.
-    const { data: notif } = await admin()
-      .from('notifications')
-      .select('id')
-      .eq('dedupe_key', `verify-unmuted-${suffix}`)
-      .single();
-    if (notif?.id) {
-      await admin()
-        .from('push_tokens')
-        .update({ disabled_at: null })
-        .eq('user_id', aliceId);
-      const { error: rearmErr } = await admin()
-        .from('notification_deliveries')
-        .update({ status: 'queued', attempt: 0, next_attempt_at: new Date(Date.now() - 1000).toISOString() })
-        .eq('notification_id', notif.id);
-      assert(!rearmErr, `rearm delivery failed: ${rearmErr?.message}`);
-      const retry = await admin().rpc('claim_notification_deliveries', { p_limit: 10, p_max_attempts: 5 });
-      assert(!retry.error, `claim_notification_deliveries retry failed: ${retry.error?.message}`);
-      claimed = retry.data ?? [];
-    }
-  }
-  assert(claimed.length > 0, 'nothing was claimable');
+await test('A future test-owned delivery can be reported sent without draining the live queue', async () => {
+  // Never call claim_notification_deliveries from a connected suite: that RPC has no row filter and
+  // can claim customer notifications. The actual claim algorithm is exercised by the disposable
+  // PostgreSQL suite; here we report only a row created for this run and scheduled in the future,
+  // so no real dispatcher/provider can pick it up.
+  const token = `verification-report-${suffix}-dddddddddddddddddddd`;
+  const { error: registerError } = await alice.rpc('register_push_token', { p_token: token, p_platform: 'android' });
+  assert(!registerError, `register test token failed: ${registerError?.message}`);
+  const { data: pushToken, error: tokenError } = await admin()
+    .from('push_tokens')
+    .select('id')
+    .eq('token', token)
+    .single();
+  assert(!tokenError && pushToken?.id, `test token not found: ${tokenError?.message ?? 'no row'}`);
 
-  const first = claimed[0];
+  const { data: notification, error: enqueueError } = await admin().rpc('enqueue_notification', {
+    p_recipient: aliceId,
+    p_kind: 'system',
+    p_group: 'system',
+    p_dedupe_key: `verify-report-${suffix}`,
+    p_title: 'Isolated delivery test',
+    p_scheduled_for: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  });
+  assert(!enqueueError && notification, `future test notification failed: ${enqueueError?.message ?? 'no row'}`);
+
+  const { data: delivery, error: deliveryError } = await admin()
+    .from('notification_deliveries')
+    .select('id, status')
+    .eq('notification_id', notification)
+    .eq('push_token_id', pushToken.id)
+    .single();
+  assert(!deliveryError && delivery?.id, `test-owned future delivery not found: ${deliveryError?.message ?? 'no row'}`);
+  assert(delivery.status === 'queued', `test delivery status is ${delivery.status}, expected queued`);
+
   const { error: reportError } = await admin().rpc('report_delivery', {
-    p_delivery_id: first.delivery_id,
+    p_delivery_id: delivery.id,
     p_sent: true,
     p_provider_message_id: `verify-${suffix}`,
   });
   assert(!reportError, `report_delivery failed: ${reportError?.message}`);
 
-  const { data: stored } = await admin()
+  const { data: stored, error: storedError } = await admin()
     .from('notification_deliveries')
     .select('status, sent_at')
-    .eq('id', first.delivery_id)
+    .eq('id', delivery.id)
     .single();
+  assert(!storedError, `test delivery could not be read: ${storedError?.message}`);
   assert(stored.status === 'sent', `status is "${stored.status}", expected sent`);
   assert(stored.sent_at, 'no delivery timestamp was recorded');
-  return `delivery ${first.delivery_id} marked sent`;
+  return `test-owned future delivery ${delivery.id} marked sent; global queue was not claimed`;
 });
 
 await test('A rejected token is disabled and its other deliveries are failed', async () => {
@@ -1236,6 +1243,7 @@ await test('A rejected token is disabled and its other deliveries are failed', a
     p_group: 'system',
     p_dedupe_key: dedupe,
     p_title: 'Invalid token test',
+    p_scheduled_for: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   });
   await admin().rpc('fanout_notification', { p_notification_id: notification });
 
@@ -1274,6 +1282,7 @@ await test('A transient failure schedules a retry instead of losing the notifica
     p_group: 'system',
     p_dedupe_key: `verify-flaky-${suffix}`,
     p_title: 'Flaky device',
+    p_scheduled_for: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   });
 
   const token = `verification-flaky-${suffix}-cccccccccccccccccccc`;

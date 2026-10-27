@@ -171,24 +171,31 @@ async function upstream(path: string, params: Record<string, string>, key: strin
   const url = new URL(`${BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set('api_key', key);
-  // One retry for network errors and 5xx responses.
-  let res: Response | null = null;
+  // At most two bounded upstream attempts; parsing JSON remains inside the same deadline.
+  let lastStatus = 502;
   for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12_000);
     try {
-      res = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (res.ok || res.status < 500) break;
+      const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+      lastStatus = res.status;
+      if (res.ok) {
+        try {
+          return { ok: true, body: await res.json() };
+        } catch {
+          lastStatus = 502;
+        }
+      } else if (res.status < 500) {
+        return { ok: false, status: res.status === 429 ? 429 : 502 };
+      }
     } catch {
-      res = null;
+      lastStatus = 502;
+    } finally {
+      clearTimeout(timeout);
     }
     if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
   }
-  if (!res) return { ok: false, status: 502 };
-  if (!res.ok) return { ok: false, status: res.status === 429 ? 429 : 502 };
-  try {
-    return { ok: true, body: await res.json() };
-  } catch {
-    return { ok: false, status: 502 };
-  }
+  return { ok: false, status: lastStatus === 429 ? 429 : 502 };
 }
 
 /** The verified envelope is body.data.result.data. Everything else is an error. */
@@ -241,6 +248,43 @@ interface Candidate {
 }
 
 type StreamLoad = { ok: true; subject_id: string; season: number | null; episode: number | null; available_formats: unknown; diagnostics: unknown[]; candidates: Candidate[] } | { ok: false; status: number; body: unknown };
+
+// Validated upstream candidates include their signed URL, so this server-only cache is deliberately
+// short-lived and never serialized into a response. Both stream metadata and token minting reuse it.
+const CANDIDATE_TTL_MS = 60_000;
+const CANDIDATE_MAX_ENTRIES = 100;
+const candidateCache = new Map<string, { until: number; value: Extract<StreamLoad, { ok: true }> }>();
+const candidateInflight = new Map<string, Promise<StreamLoad>>();
+
+function candidateKey(input: Record<string, unknown>): string | null {
+  const subjectId = validId(input.subjectId);
+  if (!subjectId) return null;
+  const season = input.se === undefined ? '' : String(intParam(input.se, 0, 99, 0));
+  const episode = input.ep === undefined ? '' : String(intParam(input.ep, 0, 999, 0));
+  return `${subjectId}|${season}|${episode}`;
+}
+
+async function loadStreamsCached(input: Record<string, unknown>, key: string): Promise<StreamLoad> {
+  const cacheKey = candidateKey(input);
+  if (!cacheKey) return loadStreams(input, key);
+  const hit = candidateCache.get(cacheKey);
+  if (hit && hit.until > Date.now()) return { ok: true, ...hit.value };
+  candidateCache.delete(cacheKey);
+  const pending = candidateInflight.get(cacheKey);
+  if (pending) return pending;
+  const request = loadStreams(input, key).then((result) => {
+    if (result.ok) {
+      if (candidateCache.size >= CANDIDATE_MAX_ENTRIES) {
+        const oldest = candidateCache.keys().next().value;
+        if (oldest !== undefined) candidateCache.delete(oldest);
+      }
+      candidateCache.set(cacheKey, { until: Date.now() + CANDIDATE_TTL_MS, value: result });
+    }
+    return result;
+  }).finally(() => candidateInflight.delete(cacheKey));
+  candidateInflight.set(cacheKey, request);
+  return request;
+}
 
 /** Loads upstream streams for a subject and applies the full-length rule. Shared by stream and playback. */
 async function loadStreams(input: Record<string, unknown>, key: string): Promise<StreamLoad> {
@@ -309,7 +353,7 @@ function publicCandidate(c: Candidate) {
 
 async function handlePlayback(input: Record<string, unknown>, baseUrl: string): Promise<Response> {
   if (!(await aesKey())) return json({ error: 'not_configured', detail: 'WATCH_PLAYBACK_KEY secret is not set' }, 503);
-  const set = await loadStreams(input, (Deno.env.get('MEGAN_API_KEY') ?? '').trim());
+  const set = await loadStreamsCached(input, (Deno.env.get('MEGAN_API_KEY') ?? '').trim());
   if (!set.ok) return json(set.body, set.status);
   const want = typeof input.quality === 'string' ? input.quality : null;
   const pick = (want ? set.candidates.find((c) => c.quality === want) : undefined) ?? set.candidates[0];
@@ -358,9 +402,9 @@ async function handleMedia(req: Request): Promise<Response> {
   } catch {
     return json({ error: 'upstream_unreachable' }, 502);
   }
-  if (!res.ok && res.status !== 206) return json({ error: 'upstream_error', status: res.status }, res.status === 429 ? 429 : 502);
+  if (!res.ok && res.status !== 206 && res.status !== 416) return json({ error: 'upstream_error', status: res.status }, res.status === 429 ? 429 : 502);
 
-  const out: Record<string, string> = { ...corsHeaders };
+  const out: Record<string, string> = { ...corsHeaders, 'Cache-Control': 'no-store' };
   for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition']) {
     const v = res.headers.get(h);
     if (v) out[h] = v;
@@ -386,7 +430,10 @@ Deno.serve(async (req) => {
     return json({ error: 'bad_request' }, 400);
   }
 
-  switch (input.action) {
+  const action = typeof input.action === 'string' ? input.action : 'unknown';
+  const actionStarted = Date.now();
+  try {
+    switch (input.action) {
     case 'home':
     case 'trending':
     case 'ranking': {
@@ -424,7 +471,7 @@ Deno.serve(async (req) => {
       const cacheKey = `stream|${String(input.subjectId ?? '')}|${String(input.se ?? '')}|${String(input.ep ?? '')}`;
       const hit = metaGet(cacheKey);
       if (hit !== undefined) return json(hit);
-      const set = await loadStreams(input, key);
+      const set = await loadStreamsCached(input, key);
       if (!set.ok) return json(set.body, set.status);
       const body = {
         subject_id: set.subject_id,
@@ -448,5 +495,9 @@ Deno.serve(async (req) => {
 
     default:
       return json({ error: 'unknown_action' }, 400);
+    }
+  } finally {
+    // Operational timing only; never log user identifiers, upstream URLs, tokens, headers, or secrets.
+    console.log(JSON.stringify({ event: 'moviebox_action', action, duration_ms: Date.now() - actionStarted }));
   }
 });

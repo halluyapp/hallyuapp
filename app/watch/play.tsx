@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { AVPlaybackStatus, ResizeMode, Video } from 'expo-av';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, PanResponder, Platform, Pressable, StatusBar, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, AppState, BackHandler, PanResponder, Platform, Pressable, StatusBar, StyleSheet, useWindowDimensions, View } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { ScrollScreen, Screen } from '../../components/ui/Screen';
 import { ErrorState } from '../../components/ui/States';
@@ -59,7 +59,7 @@ export default function WatchPlayer() {
     local?: string;
   }>();
   const { width: winW, height: winH } = useWindowDimensions();
-  const landscape = winW > winH;
+  const landscape = Platform.OS !== 'web' && winW > winH;
 
   const season = params.season ? Number(params.season) : null;
   const episode = params.episode ? Number(params.episode) : null;
@@ -85,6 +85,7 @@ export default function WatchPlayer() {
   const lastTap = useRef<{ zone: Zone; at: number } | null>(null);
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSeq = useRef(0);
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [source, setSource] = useState<{ uri: string } | null>(null);
@@ -101,6 +102,7 @@ export default function WatchPlayer() {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [immersive, setImmersive] = useState(false);
+  const [dismissLandscape, setDismissLandscape] = useState(false);
   const [rate, setRate] = useState(1);
   const [locked, setLocked] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -114,12 +116,13 @@ export default function WatchPlayer() {
   const rateRef = useRef(1);
   const [interaction, setInteraction] = useState(0);
 
-  const fullScreen = landscape || immersive;
+  const fullScreen = immersive || (landscape && !dismissLandscape);
   fullRef.current = fullScreen;
 
   /* ----- loading ----- */
 
   const loadRemote = async (quality: string | null, resumeAt: number | null, fresh = false): Promise<boolean> => {
+    const seq = ++requestSeq.current;
     setPhase('loading');
     setErrorMessage(null);
     pendingSeek.current = resumeAt;
@@ -130,6 +133,7 @@ export default function WatchPlayer() {
       quality,
       fresh,
     );
+    if (seq !== requestSeq.current) return false;
     if (!r.ok) {
       setErrorMessage(messageFor(r.reason));
       setPhase('error');
@@ -153,6 +157,20 @@ export default function WatchPlayer() {
     // One initial load per mounted player. Later loads go through the handlers below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (phase !== 'loading' || !source?.uri) return;
+    const timer = setTimeout(() => {
+      if (phaseRef.current === 'loading') {
+        requestSeq.current += 1;
+        setErrorMessage('The stream took too long to start. Check your connection and try again.');
+        setPhase('error');
+      }
+    }, 60_000);
+    return () => clearTimeout(timer);
+  }, [phase, source?.uri]);
+
+  useEffect(() => () => { requestSeq.current += 1; }, []);
 
   /* ----- playback status ----- */
 
@@ -247,9 +265,11 @@ export default function WatchPlayer() {
   const switchQuality = async (q: string) => {
     if (q === playingQuality || switchingTo || isLocal) return;
     const resumeAt = latest.current.positionMs;
+    const seq = ++requestSeq.current;
     setSwitchingTo(q);
     setNotice(null);
     const r = await fetchWatchPlayback(ref.subjectId, ref.season ?? undefined, ref.episode ?? undefined, q);
+    if (seq !== requestSeq.current) return;
     if (!r.ok) {
       setSwitchingTo(null);
       setNotice(`Could not switch to ${q}. Still playing ${playingQuality ?? 'the current quality'}.`);
@@ -273,7 +293,7 @@ export default function WatchPlayer() {
       setSource({ uri: String(params.local) });
       return;
     }
-    void loadRemote(playingQuality, latest.current.positionMs > RESUME_MIN_MS ? latest.current.positionMs : null);
+    void loadRemote(playingQuality, latest.current.positionMs > RESUME_MIN_MS ? latest.current.positionMs : null, true);
   };
 
   /* ----- gestures: double tap and hold on the left and right thirds ----- */
@@ -338,11 +358,34 @@ export default function WatchPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Full screen locks the screen to landscape. Leaving full screen, or leaving the player, returns the app to its default orientation.
+  const exitFullScreen = () => {
+    setImmersive(false);
+    setDismissLandscape(true);
+    if (Platform.OS !== 'web') void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+  };
+
+  const enterFullScreen = () => {
+    setDismissLandscape(false);
+    setImmersive(true);
+  };
+
+  // Explicit fullscreen is landscape-locked. Exit returns to portrait; after natural rotation, unlock again.
   useEffect(() => {
     if (Platform.OS === 'web') return;
-    if (fullScreen) void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+    if (immersive) void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+    else if (dismissLandscape) void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     else void ScreenOrientation.unlockAsync().catch(() => {});
+  }, [immersive, dismissLandscape]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !fullScreen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setImmersive(false);
+      setDismissLandscape(true);
+      if (Platform.OS !== 'web') void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+      return true;
+    });
+    return () => sub.remove();
   }, [fullScreen]);
   useEffect(
     () => () => {
@@ -513,7 +556,7 @@ export default function WatchPlayer() {
       {showControls && !locked ? (
         <View style={styles.overlay} pointerEvents="box-none">
           <View style={styles.topBar}>
-            <Pressable onPress={() => (fullScreen && !landscape ? setImmersive(false) : router.back())} accessibilityRole="button" accessibilityLabel={fullScreen ? 'Exit full screen' : 'Back'} style={styles.iconBtn} hitSlop={8}>
+            <Pressable onPress={() => (fullScreen ? exitFullScreen() : router.back())} accessibilityRole="button" accessibilityLabel={fullScreen ? 'Exit full screen' : 'Back'} style={styles.iconBtn} hitSlop={8}>
               <Ionicons name={fullScreen ? 'contract-outline' : 'chevron-back'} size={22} color="#fff" />
             </Pressable>
             <Text variant="label" tone="onAccent" numberOfLines={1} style={{ flex: 1, marginHorizontal: space.x2 }}>
@@ -563,7 +606,7 @@ export default function WatchPlayer() {
               <Pressable onPress={() => setLocked(true)} accessibilityRole="button" accessibilityLabel="Lock controls" style={styles.iconBtn} hitSlop={8}>
                 <Ionicons name="lock-open-outline" size={20} color="#fff" />
               </Pressable>
-              <Pressable onPress={() => setImmersive((v) => !v)} accessibilityRole="button" accessibilityLabel={fullScreen ? 'Exit full screen' : 'Full screen'} style={styles.iconBtn} hitSlop={8}>
+              <Pressable onPress={() => (fullScreen ? exitFullScreen() : enterFullScreen())} accessibilityRole="button" accessibilityLabel={fullScreen ? 'Exit full screen' : 'Full screen'} style={styles.iconBtn} hitSlop={8}>
                 <Ionicons name={fullScreen ? 'contract-outline' : 'expand-outline'} size={20} color="#fff" />
               </Pressable>
             </View>

@@ -401,53 +401,28 @@ if (!insertRes.ok) {
 
 console.log(`Published release v${versionName} (build ${artifacts.universal.versionCode}) to app_releases.`);
 
-const notifyTitle = `Hallyu v${versionName} is Ready`;
-const notifyBody = `Tap to update in 1 tap: ${releaseNotes.split('\n')[0].replace(/^•\s*/, '')}`;
-
-const membersRes = await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id&limit=1000`, {
-  headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+const announceRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/announce_app_release`, {
+  method: 'POST',
+  headers: {
+    apikey: SERVICE_KEY,
+    Authorization: `Bearer ${SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    p_version_code: artifacts.universal.versionCode,
+    p_version_name: versionName,
+    p_release_notes: releaseNotes,
+  }),
 });
-if (membersRes.ok) {
-  const members = await membersRes.json();
-  if (Array.isArray(members) && members.length > 0) {
-    const rows = members.map((m) => ({
-      recipient_id: m.id,
-      kind: 'system',
-      group: 'system',
-      title: notifyTitle,
-      body: notifyBody,
-      deep_link: '/settings/updates',
-    }));
-    await fetch(`${SUPABASE_URL}/rest/v1/notifications`, {
-      method: 'POST',
-      headers: {
-        apikey: SERVICE_KEY,
-        Authorization: `Bearer ${SERVICE_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify(rows),
-    });
-    console.log(`Delivered in-app release alert to ${members.length} members.`);
-  }
+if (!announceRes.ok) {
+  throw new Error(`Announce app release failed (${announceRes.status}): ${await announceRes.text()}`);
 }
 
-try {
-  const pushRes = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
-    method: 'POST',
-    headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      broadcast: true,
-      title: notifyTitle,
-      body: notifyBody,
-      path: '/settings/updates',
-    }),
-  });
-  console.log('Release push broadcast status:', pushRes.status);
-} catch (err) {
-  console.warn('Release push broadcast non-fatal warning:', err);
+const announcement = await announceRes.json();
+const recipientsNotified = Number(announcement?.recipients_notified ?? 0);
+if (!Number.isFinite(recipientsNotified) || recipientsNotified < 0) {
+  throw new Error(`Announce app release returned an invalid response: ${JSON.stringify(announcement)}`);
 }
+console.log(
+  `Queued update-available notifications for ${recipientsNotified} eligible members; full release notes are available at /settings/updates.`,
+);

@@ -3,15 +3,17 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import { WatchCard, WatchRail } from '../../components/watch/WatchCard';
+import { WatchNav } from '../../components/watch/WatchNav';
 import { SearchField } from '../../components/search/SearchField';
 import { ScrollScreen, Screen } from '../../components/ui/Screen';
 import { EmptyState, ErrorState, InlineNotice } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
-import { fetchWatchHome, searchWatch, type WatchResult, type WatchRow, type WatchTitle } from '../../lib/api/moviebox';
+import { fetchWatchHome, readWatchHomeCache, searchWatch, type WatchResult, type WatchRow, type WatchTitle } from '../../lib/api/moviebox';
 import { useCompletedDownloads, useTransfers } from '../../components/watch/useWatchDownloads';
 import { listProgress, type ProgressEntry } from '../../lib/watchStore';
+import { PosterRowSkeleton } from '../../components/ui/Skeleton';
 
 function downloadsSummary(completed: number, active: number): string {
   if (completed === 0 && active === 0) return 'Save episodes to watch without a connection.';
@@ -37,8 +39,13 @@ export default function WatchHome() {
 
   useEffect(() => {
     let alive = true;
+    let networkFinished = false;
     setHomeError(null);
+    void readWatchHomeCache().then((cached) => {
+      if (alive && !networkFinished && cached) setRows(cached);
+    });
     fetchWatchHome().then((r: WatchResult<WatchRow[]>) => {
+      networkFinished = true;
       if (!alive) return;
       if (r.ok) setRows(r.value);
       else setHomeError(r.reason);
@@ -102,6 +109,7 @@ export default function WatchHome() {
         <View style={styles.search}>
           <SearchField value={q} onChangeText={setQ} placeholder="Search films and series" />
         </View>
+        <WatchNav active="browse" />
 
         {searchMode ? (
           <View style={{ paddingHorizontal: space.x4, marginTop: space.x4 }}>
@@ -178,7 +186,13 @@ export default function WatchHome() {
                 )}
               </View>
             ) : null}
-            {!rows && !homeError ? <ActivityIndicator color={colors.accent} style={{ marginTop: space.x6 }} /> : null}
+            {!rows && !homeError ? (
+              <View style={{ gap: space.x5, marginTop: space.x5 }}>
+                <PosterRowSkeleton count={4} />
+                <PosterRowSkeleton count={4} />
+                <PosterRowSkeleton count={4} />
+              </View>
+            ) : null}
             {rows?.map((row, i) => (
               <WatchRail
                 key={`${i}-${row.title}`}
@@ -201,6 +215,5 @@ const styles = StyleSheet.create({
   heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)' },
   heroText: { padding: space.x4, gap: space.x1 },
   search: { paddingHorizontal: space.x4, paddingTop: space.x2 },
-  downloadRow: { marginTop: space.x3, paddingVertical: space.x2 },
   downloadsCard: { marginHorizontal: space.x4, marginTop: space.x5, padding: space.x4, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle, backgroundColor: colors.surface1, flexDirection: 'row', alignItems: 'center', gap: space.x3 },
 });

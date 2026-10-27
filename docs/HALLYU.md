@@ -91,11 +91,13 @@ Deep blacks + luminous magenta. Cinematic, Apple-level restraint.
 ## 4. Technical Architecture
 
 - **App**: Expo (React Native + TypeScript) + Expo Router
-- **Backend**: defined in `supabase/migrations` (Supabase/Postgres) but not attached — the app runs
-  device-local until credentials are supplied; see docs/BACKEND.md
+- **Backend**: Supabase/Postgres schema in `supabase/migrations`; configured builds use the hosted
+  Supabase path, with device-local behavior as a fallback when public backend settings are absent;
+  see docs/BACKEND.md and the dated production audit.
 - **State**: Zustand (ready) + Auth Context
 - **Media**: expo-image-picker → device storage (the `media` bucket exists in the backend, private)
-- **Distribution**: EAS Build → APK
+- **Hallyu TV downloads**: the signed Android APK workflow injects `HallyuDownloader` (Android DownloadManager), so Android downloads continue in the background with a title-specific system notification. EAS builds and Expo Go do not run the repository's release-injection step; they use the foreground transfer and must remain open. Background transfer in EAS/Expo Go is explicitly unsupported until that native module is integrated and verified there.
+- **Distribution**: signed Android APK workflow (`.github/workflows/build-apk.yml`) for the supported release build; EAS builds remain available but are not background-download-enabled
 
 ### Core data model
 The schema is in `supabase/migrations` and the typed contract in `supabase/types/database.ts`:

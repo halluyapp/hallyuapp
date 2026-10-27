@@ -92,6 +92,18 @@ test('Repo rename: links, App Links intent filters, Web Push SW path, OpenGraph 
   const publishScript = fs.readFileSync(path.resolve(ROOT, 'scripts/ci/publish-app-release.mjs'), 'utf8');
   assert.ok(publishScript.includes("'halluyapp/hallyuapp'"));
   assert.ok(!publishScript.includes('macaulay-spec'));
+  assert.ok(publishScript.includes('/rest/v1/rpc/announce_app_release'), 'release publisher must use the canonical deduplicated release-announcement RPC');
+  assert.ok(publishScript.includes('if (!announceRes.ok)'), 'release publisher must fail visibly if notification enqueueing fails');
+  assert.ok(!publishScript.includes('/functions/v1/send-push'), 'release publisher must not call the nonexistent broadcast function');
+
+  const apkWorkflow = fs.readFileSync(path.resolve(ROOT, '.github/workflows/build-apk.yml'), 'utf8');
+  assert.ok(apkWorkflow.includes('publish_release:'), 'production app release must require explicit workflow dispatch');
+  assert.ok(apkWorkflow.includes("inputs.publish_release == true"), 'production app release steps must be gated by explicit approval');
+  assert.ok(apkWorkflow.includes('release_notes:'), "release dispatch must accept user-facing What's New notes");
+  assert.ok(apkWorkflow.includes('inputs.run_live_device_auth_test == true'), 'production device test-account creation must be opt-in');
+
+  const webWorkflow = fs.readFileSync(path.resolve(ROOT, '.github/workflows/deploy-web.yml'), 'utf8');
+  assert.ok(webWorkflow.includes('inputs.run_live_browser_test == true'), 'production browser test-account creation must be opt-in');
 
   const enhanceHtml = fs.readFileSync(path.resolve(ROOT, 'scripts/ci/enhance-web-html.mjs'), 'utf8');
   assert.ok(enhanceHtml.includes("'halluyapp'"));

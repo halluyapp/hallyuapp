@@ -1,4 +1,5 @@
 import { Image } from 'expo-image';
+import { WatchNav } from '../../components/watch/WatchNav';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
@@ -15,7 +16,7 @@ import { formatBytes, progressFraction } from '../../lib/watchRules';
 
 const FAILURE_NOTE: Record<string, string> = {
   link_expired: 'The link expired. Tap retry to get a new one.',
-  network: 'Connection lost. Resume when you are back online.',
+  network: 'Connection lost. Retry to restart with a fresh link.',
   http_error: 'The server returned an error. Try again later.',
   invalid_file: 'The file was not a playable video and was removed.',
   insufficient_storage: 'Not enough free storage. Free up space and try again.',
@@ -27,8 +28,8 @@ function episodeLabel(season: number | null, episode: number | null): string {
 }
 
 /**
- * Downloads: every title Hallyu TV is saving, paused, failed, or has saved. Each item shows its real
- * bytes and its real state, with only the controls that apply. Downloads run while Hallyu is open.
+ * Downloads: every title Hallyu TV is saving, queued, needs attention, or has saved. Each item shows its real
+ * bytes and its real state, with only the controls that apply. APK Android builds use system background downloads.
  */
 export default function WatchDownloads() {
   const router = useRouter();
@@ -38,8 +39,7 @@ export default function WatchDownloads() {
 
   const downloading = transfers.filter((t) => t.status === 'downloading');
   const queued = transfers.filter((t) => t.status === 'queued');
-  const paused = transfers.filter((t) => t.status === 'paused');
-  const failed = transfers.filter((t) => t.status === 'failed');
+  const needsAttention = transfers.filter((t) => t.status === 'paused' || t.status === 'failed');
   const empty = transfers.length === 0 && completed.length === 0;
 
   const resume = async (t: TransferEntry) => {
@@ -66,7 +66,7 @@ export default function WatchDownloads() {
         : t.bytesWritten > 0
           ? `${formatBytes(t.bytesWritten)} saved · total size unavailable`
           : 'Size unavailable until the transfer starts';
-    const statusLabel = t.status === 'downloading' ? 'Downloading' : t.status === 'paused' ? 'Paused' : t.status === 'queued' ? 'Queued' : 'Failed';
+    const statusLabel = t.status === 'downloading' ? (t.nativeWaiting ? 'Waiting for connection' : t.engine === 'native' ? 'Downloading in background' : 'Downloading') : t.status === 'paused' ? 'Paused' : t.status === 'queued' ? 'Queued' : 'Needs attention';
     return (
       <View key={t.key} style={styles.card}>
         <View style={styles.cardTop}>
@@ -84,7 +84,7 @@ export default function WatchDownloads() {
         {t.status === 'failed' ? <Text variant="caption" tone="danger">{t.error ?? FAILURE_NOTE.network}</Text> : null}
         <View style={styles.actions}>
           {t.status === 'downloading' && t.engine === 'native' ? (
-            <Text variant="caption" tone="tertiary">Runs in the background until it finishes</Text>
+            <Text variant="caption" tone="tertiary">{t.nativeWaiting ? 'Android will resume when its network requirements are met' : 'Runs in the background until it finishes'}</Text>
           ) : t.status === 'downloading' ? (
             <Pressable onPress={() => void pause(t)} accessibilityRole="button" style={styles.btn}>
               <Text variant="caption">Pause</Text>
@@ -92,7 +92,7 @@ export default function WatchDownloads() {
           ) : null}
           {t.status === 'paused' ? (
             <Pressable onPress={() => void resume(t)} accessibilityRole="button" style={[styles.btn, styles.btnPrimary]}>
-              <Text variant="caption" tone="onAccent">Resume</Text>
+              <Text variant="caption" tone="onAccent">Restart</Text>
             </Pressable>
           ) : null}
           {t.status === 'queued' ? <Text variant="caption" tone="tertiary">Starts when the current download finishes</Text> : null}
@@ -146,18 +146,18 @@ export default function WatchDownloads() {
   return (
     <Screen header={<TopBar title="Downloads" mode="stack" />}>
       <ScrollScreen contentContainerStyle={{ padding: space.x4, gap: space.x5, paddingBottom: space.x8 }}>
+        <WatchNav active="downloads" />
         <Text variant="caption" tone="tertiary">
-          Downloads are saved privately inside Hallyu. They are not added to your gallery. They run while Hallyu is open, and pause when you leave the app.
+          Downloads stay private inside Hallyu and are not added to your gallery. On supported Android APK builds they continue in the background; other builds need Hallyu to stay open.
         </Text>
         {message ? <InlineNotice tone="warning" text={message} /> : null}
         {empty ? (
           <EmptyState title="No downloads yet" body="Open a title in Hallyu TV and tap Download. Finished episodes play here without a connection." />
         ) : null}
-        {section('Downloading', downloading.map(row))}
+        {section('Active', downloading.map(row))}
         {section('Queued', queued.map(row))}
-        {section('Paused', paused.map(row))}
-        {section('Failed', failed.map(row))}
-        {section('Completed', completed.map(doneRow))}
+        {section('Needs attention', needsAttention.map(row))}
+        {section('Downloaded', completed.map(doneRow))}
       </ScrollScreen>
     </Screen>
   );

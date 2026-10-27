@@ -11,6 +11,12 @@ export const SAVE_PROGRESS_EVERY_MS = 10_000;
 /** Lowest-data option we will pick automatically, and the default preference order. */
 export const AUTO_QUALITY_ORDER = ['480p', '360p'];
 
+/** Drops opaque Expo resume state from legacy persisted records; it may contain a signed URL. */
+export function withoutPersistedResumeData<T extends { resumeData?: unknown }>(entry: T): Omit<T, 'resumeData'> {
+  const { resumeData: _legacy, ...safe } = entry;
+  return safe;
+}
+
 /** Formats a position or duration as m:ss, or h:mm:ss past one hour. Negative and NaN values read as 0:00. */
 export function formatClock(ms: number | null | undefined): string {
   const total = Number.isFinite(ms) && (ms as number) > 0 ? Math.floor((ms as number) / 1000) : 0;
@@ -69,6 +75,12 @@ export function sortQualities(labels: string[]): string[] {
 
 /* ---------- Downloads ---------- */
 
+/** Stable file/task identity for a title, episode, and quality; distinct encodings prevent path collisions. */
+export function qualityDownloadKey(subjectId: string, season: number | null, episode: number | null, quality: string | null): string {
+  const encodedQuality = Array.from(quality || 'auto', (c) => (c.codePointAt(0) ?? 0).toString(16)).join('-');
+  return `${subjectId}:${season ?? 0}:${episode ?? 0}:q:${encodedQuality}`;
+}
+
 export type TransferStatus = 'queued' | 'downloading' | 'paused' | 'failed' | 'completed';
 
 export interface TransferSnapshot {
@@ -126,7 +138,7 @@ export function canTransition(from: TransferStatus, to: TransferStatus): boolean
   const table: Record<TransferStatus, TransferStatus[]> = {
     queued: ['downloading', 'failed'],
     downloading: ['paused', 'failed', 'completed'],
-    paused: ['downloading', 'failed'],
+    paused: ['downloading', 'queued', 'failed'],
     failed: ['downloading', 'queued'],
     completed: [],
   };
@@ -199,13 +211,13 @@ export function totalFromContentRange(contentRange: string | null | undefined): 
 /** Failure text when the connection drops mid-transfer and the exact server status is unknown. */
 export function lostMessage(bytes: number, total: number | null): string {
   const where = total ? `${formatBytes(bytes)} of ${formatBytes(total)}` : formatBytes(bytes);
-  return `Connection lost at ${where}. Tap retry to continue from here.`;
+  return `Connection lost at ${where}. Tap retry to start a fresh transfer safely.`;
 }
 
 /** Failure text for the Downloads screen. It says where the transfer stopped, so the user can tell a short file from a bad link. */
 export function stoppedMessage(bytes: number, total: number | null, status: number): string {
   const where = total ? `${formatBytes(bytes)} of ${formatBytes(total)}` : `${formatBytes(bytes)} (total size unknown)`;
-  return `Stopped at ${where} (server status ${status}). Tap resume to continue.`;
+  return `Stopped at ${where} (server status ${status}). Tap retry to restart safely.`;
 }
 
 /** Text for a download notification. Progress shows a percentage; failures and pauses show the reason. */

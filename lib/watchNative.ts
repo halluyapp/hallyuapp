@@ -6,14 +6,14 @@
 import { NativeModules, Platform } from 'react-native';
 
 export interface NativeDownloadStatus {
-  status: 'running' | 'successful' | 'failed' | 'missing';
+  status: 'running' | 'paused' | 'successful' | 'failed' | 'missing';
   bytes: number;
   total: number;
   localPath: string | null;
 }
 
 export interface HallyuDownloaderNative {
-  start(key: string, url: string): Promise<string>;
+  start(key: string, url: string, title: string): Promise<string>;
   query(key: string): Promise<NativeDownloadStatus>;
   remove(key: string): Promise<null>;
 }
