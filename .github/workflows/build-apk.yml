@@ -505,3 +505,5 @@ jobs:
           GITHUB_REPO_SLUG: ${{ env.PUBLIC_RELEASE_REPO || github.repository }}
           GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
         run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk
+
+# Android build and publish run from arena/c5e9499c-grok-hallyu on push.
