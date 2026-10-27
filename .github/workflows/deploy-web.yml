@@ -285,7 +285,7 @@ jobs:
 
   deploy:
     name: Deploy & Verify Live Public Website
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu'
     needs: verify-and-build
     runs-on: ubuntu-22.04
     environment:

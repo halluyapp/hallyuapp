@@ -416,13 +416,13 @@ jobs:
           retention-days: 14
 
       - name: Publish GitHub Release with all signed architecture APKs & changelog
-        if: github.ref == 'refs/heads/main' && inputs.publish_release == true
+        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
         env:
           GH_TOKEN: ${{ github.token }}
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HALLYU_PAGES_TOKEN: ${{ secrets.HALLYU_PAGES_TOKEN }}
-          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes }}
+          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes || github.event.head_commit.message }}
         run: |
           set -euo pipefail
           if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
@@ -496,11 +496,11 @@ jobs:
           fi
 
       - name: Publish all signed APKs + manifest + live CDN byte verification + update notification
-        if: github.ref == 'refs/heads/main' && inputs.publish_release == true
+        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes }}
+          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes || github.event.head_commit.message }}
           HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
           GITHUB_REPO_SLUG: ${{ env.PUBLIC_RELEASE_REPO || github.repository }}
           GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
