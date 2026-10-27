@@ -10,7 +10,7 @@ import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchPlayback } from '../../lib/api/moviebox';
-import { getProgress, saveProgress, setPreferredQuality, type WatchEpisodeRef } from '../../lib/watchStore';
+import { getProgress, saveProgress, setTitleQuality, type WatchEpisodeRef } from '../../lib/watchStore';
 import {
   BUFFER_STALL_MS,
   CONTROLS_AUTO_HIDE_MS,
@@ -313,7 +313,8 @@ export default function WatchPlayer() {
     pendingSeek.current = resumeAt > RESUME_MIN_MS ? resumeAt : null;
     setSwitchingTo(null);
     setPhase('loading');
-    void setPreferredQuality(r.value.quality);
+    // Remembered for this title only, so a one-off higher quality never silently upgrades every other title.
+    void setTitleQuality(ref.subjectId, ref.season, ref.episode, r.value.quality);
   };
 
   const retry = () => {

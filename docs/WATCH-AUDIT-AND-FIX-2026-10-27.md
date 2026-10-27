@@ -29,7 +29,7 @@ secrets and the real backend exist, and a failure there blocks publication.
 | 6 | Title-page lookups were sequential | The stream request was gated behind the detail request, although a movie's stream lookup does not depend on the detail response at all |
 | 7 | Long seasons rendered every episode | The episode picker mapped `maxEp` chips into a wrapping row instead of a virtualised rail |
 | 8 | Two contradictory 480p defaults | `lib/watchRules.ts` still carried `AUTO_QUALITY_ORDER = ['480p','360p']` next to `lib/watchModel.ts`'s `DEFAULT_QUALITIES = ['360p']` — dead code, but a second source of truth for the default quality |
-| 9 | A manual quality pick reset the default everywhere | `setPreferredQuality()` stored the pick globally and permanently, so one 1080p choice silently replaced the 360p default on every title |
+| 9 | A manual quality pick reset the default everywhere | `setPreferredQuality()` stored the pick globally and permanently, so one 1080p choice silently replaced the 360p default on every title. Quality is now remembered per title, and Auto (360p) clears it |
 | 10 | The web landing page could be replaced by an "unavailable" wall | `app/index.tsx` blocks navigation when the connection probe fails; on web the gate is the first route, so a failed probe hid the public page, and the blocked screen offered no way forward at all |
 
 ## Changed files
@@ -44,7 +44,9 @@ secrets and the real backend exist, and a failure there blocks publication.
   into an error with a working retry; `unavailable` is its own panel and is never retried.
 - `app/watch/[id].tsx` — Play and Download side by side; every saved quality listed separately with its
   own Remove; the movie-shaped stream lookup runs in parallel with the detail request; the episode
-  picker is a virtualised rail.
+  picker is a virtualised rail; the quality row gains an explicit "Auto (360p)" option.
+- `lib/watchStore.ts` — per-title quality memory (bounded to 60 titles), so a one-off higher-quality
+  pick no longer changes the default quality of every other title.
 - `app/watch/index.tsx` — Continue Watching refreshes on focus instead of polling every four seconds.
 - `app/watch/downloads.tsx` — a "Show load timings" readout of real device readings.
 - `components/watch/WatchNav.tsx` — Browse/Downloads is a full-width tab bar.

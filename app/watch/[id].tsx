@@ -27,11 +27,13 @@ import {
   downloadsSupported,
   getPreferredQuality,
   getProgress,
+  getTitleQuality,
   listDownloads,
   pauseDownload,
   removeDownload,
   resumeDownload,
   setPreferredQuality,
+  setTitleQuality,
   startDownload,
   episodeKey,
   type DownloadEntry,
@@ -57,7 +59,8 @@ export default function WatchTitleScreen() {
   const [episode, setEpisode] = useState<number | null>(null);
   const [playable, setPlayable] = useState<Playable | undefined>(undefined);
   const [playError, setPlayError] = useState<string | null>(null);
-  const [quality, setQuality] = useState<string | null>(null);
+  /** undefined = the viewer has not chosen on this screen; null = they chose Auto (the 360p default). */
+  const [quality, setQuality] = useState<string | null | undefined>(undefined);
   const [preferred, setPreferred] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<WatchDiagnostic[]>([]);
   const [showDebug, setShowDebug] = useState(false);
@@ -79,8 +82,15 @@ export default function WatchTitleScreen() {
   );
 
   useEffect(() => {
-    void getPreferredQuality().then(setPreferred);
-  }, []);
+    // The quality chosen for this title wins, then any older app-wide preference, then the 360p default.
+    let alive = true;
+    Promise.all([getTitleQuality(subjectId, seasonValue, episodeValue), getPreferredQuality()]).then(([title, global]) => {
+      if (alive) setPreferred(title ?? global);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [subjectId, seasonValue, episodeValue]);
 
   useEffect(() => {
     let alive = true;
@@ -170,8 +180,8 @@ export default function WatchTitleScreen() {
     episode: episodeValue,
   });
 
-  // The quality the viewer chose this session, else their saved preference, else the default rule (480p, 360p, best).
-  const chosen = quality ?? preferred;
+  // The quality chosen for this title, else the app-wide preference, else the 360p default rule.
+  const chosen = quality === undefined ? preferred : quality;
   const qualities = playable ? qualityOptions(playable.streams) : [];
   const watchable = playable ? pickStream(playable.streams, chosen) : undefined;
   const downloadable = watchable && isDownloadable(watchable) ? watchable : undefined;
@@ -191,9 +201,12 @@ export default function WatchTitleScreen() {
   const selectedSaved = selectedTarget?.savedBytes != null;
   const canDownloadSelected = !!downloadable && downloadsSupported() && !!selectedTarget && selectedTarget.canStart;
 
-  const pickQuality = (q: string) => {
+  const pickQuality = (q: string | null) => {
     setQuality(q);
-    void setPreferredQuality(q);
+    // A pick belongs to this title only. Auto clears it, and clears any older app-wide preference, which is
+    // exactly what a viewer means by "go back to the data-saving default".
+    void setTitleQuality(subjectId, seasonValue, episodeValue, q);
+    if (q === null) void setPreferredQuality(null);
   };
 
   const watch = (stream: WatchStream) => {
@@ -311,6 +324,7 @@ export default function WatchTitleScreen() {
               <>
                 <Text variant="caption" tone="tertiary">Quality</Text>
                 <ChipRow>
+                  <Chip label="Auto (360p)" selected={chosen === null} onPress={() => pickQuality(null)} accessibilityLabel="Auto, 360p by default" />
                   {qualities.map((q) => (
                     <Chip key={q} label={q} selected={(watchable?.quality ?? null) === q} onPress={() => pickQuality(q)} />
                   ))}

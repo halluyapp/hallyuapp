@@ -746,3 +746,31 @@ export async function setPreferredQuality(quality: string | null): Promise<void>
   if (quality === null) await AsyncStorage.removeItem(QUALITY_PREF_KEY);
   else await AsyncStorage.setItem(QUALITY_PREF_KEY, quality);
 }
+
+const TITLE_QUALITY_KEY = 'watch.quality.titles.v1';
+/** Titles remembered, newest first. Bounded so the map cannot grow without limit. */
+const TITLE_QUALITY_MAX = 60;
+
+/**
+ * The quality the viewer chose for this one title and episode, or null when they have not chosen there.
+ * Per-title, so a one-off 1080p pick no longer changes the default quality of every other title.
+ */
+export async function getTitleQuality(subjectId: string, season: number | null, episode: number | null): Promise<string | null> {
+  const all = await readJson<Record<string, string>>(TITLE_QUALITY_KEY, {});
+  const value = all[episodeKey(subjectId, season, episode)];
+  return value && /^\d{3,4}p$/.test(value) ? value : null;
+}
+
+/** Remembers the viewer's quality for this title only; null clears it and returns to the 360p default. */
+export async function setTitleQuality(subjectId: string, season: number | null, episode: number | null, quality: string | null): Promise<void> {
+  const all = await readJson<Record<string, string>>(TITLE_QUALITY_KEY, {});
+  const key = episodeKey(subjectId, season, episode);
+  const next: Record<string, string> = { ...all };
+  if (quality) next[key] = quality;
+  else delete next[key];
+  const keys = Object.keys(next);
+  const kept = keys.length > TITLE_QUALITY_MAX ? keys.slice(-TITLE_QUALITY_MAX) : keys;
+  const trimmed: Record<string, string> = {};
+  for (const k of kept) trimmed[k] = next[k];
+  await writeJson(TITLE_QUALITY_KEY, trimmed);
+}
