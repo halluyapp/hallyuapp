@@ -2,6 +2,12 @@ name: Deploy Hallyu Web & PWA
 
 on:
   workflow_dispatch:
+    inputs:
+      run_live_browser_test:
+        description: Create and remove a temporary production test member for authenticated browser checks
+        type: boolean
+        required: true
+        default: false
   push:
     branches:
       - main
@@ -97,10 +103,10 @@ jobs:
           ! grep -q "__HALLYU_SW_BUILD_ID__" dist-pages/sw.js
           cat dist-pages/version.json
 
-      # This authenticated browser audit creates/promotes a temporary account in the configured
-      # Supabase project. Keep it off feature branches; only the protected production branch runs it.
+      # This authenticated browser audit creates/promotes and removes a temporary production account.
+      # Run only when explicitly requested; ordinary main deployments remain data-nonmutating.
       - name: Pre-deploy Headless Chrome verification (Landing Page, SW, version.json & 360x800 routes)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && inputs.run_live_browser_test == true
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
