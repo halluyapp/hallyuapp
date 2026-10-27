@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { CollectionCard } from '../../components/collections/CollectionCard';
 import { ActorRail } from '../../components/drama/ActorCard';
@@ -22,24 +22,29 @@ import { TopBar } from '../../components/ui/TopBar';
 import { WorldTile } from '../../components/fandom/WorldTile';
 import { colors, radius, space } from '../../constants/theme';
 import { catalog, invalidateCatalogLists, friendlyCatalogCopy } from '../../lib/catalog';
-import { FANDOMS } from '../../lib/fandoms';
 import { adoptActors, adoptDramas } from '../../lib/catalogSync';
-import { Loadable, useApp, useCatalogHealth, useLayout, useLoad, useNetwork } from '../../lib/hooks';
-import { Actor, Drama, GENRES } from '../../lib/model';
+import { buildExploreRails } from '../../lib/exploreRails';
+import { discoverCatalogTitles } from '../../lib/api/features';
+import { exploreWatchLinks } from '../../lib/whereToWatch';
+import { Linking } from 'react-native';
+import { FANDOMS, fandomById } from '../../lib/fandoms';
+import { haptic, Loadable, useApp, useCatalogHealth, useLayout, useLoad, useNetwork } from '../../lib/hooks';
+import { useToast } from '../../components/ui/Toast';
+import { Actor, Drama, FandomId, GENRES } from '../../lib/model';
 import { publicCollections, shorts, trendingDiscussions, trendingHashtags, worldCounts } from '../../lib/selectors';
+import { getState } from '../../lib/store';
+import { adoptLocal, adoptPublicState } from '../../lib/sync';
 
 const NETFLIX = 8; // TMDB watch-provider id
 
-/** Live TMDB list → app records (adopted into the store so every poster opens a full Drama Hub). */
+/** Live catalog list → app records (adopted into the store so every poster opens a full Drama Hub). */
 function useDramas(run: (signal: AbortSignal) => Promise<Drama[]>, deps: unknown[] = []): Loadable<Drama[]> {
   return useLoad(async (signal) => adoptDramas(await run(signal)), deps, catalog.available);
 }
 
 /**
- * Explore — editorial browsing of the real K-drama world. Every drama on this screen comes live
- * from TMDB (trending, airing, top rated, premieres, by genre, on Netflix, trending faces); the
- * community sections (shorts, threads, shelves, tags) are Hallyu's own. Search is a different job
- * and lives one tap away.
+ * Explore — authoritative discovery across all four Hallyu worlds:
+ * K-Dramas, C-Dramas, Anime, and Hollywood.
  */
 export default function Explore() {
   const router = useRouter();
@@ -47,18 +52,58 @@ export default function Explore() {
   const refresh = useRefresh('explore');
   const online = useNetwork();
   const health = useCatalogHealth();
+  const toast = useToast();
   const { state } = useApp();
   const { width } = useLayout();
+  const [spinningPick, setSpinningPick] = useState(false);
 
-  const trending = useDramas((s) => catalog.trending(s));
-  const airing = useDramas((s) => catalog.airingSoon(7, s));
-  const topRated = useDramas((s) => catalog.topRated(1, s));
-  const upcoming = useDramas((s) => catalog.upcoming(s));
-  const netflix = useDramas((s) => catalog.onProvider(NETFLIX, s));
+  const surpriseTonight = async () => {
+    if (spinningPick) return;
+    setSpinningPick(true);
+    haptic.medium();
+    try {
+      const picks = await discoverCatalogTitles(
+        { sort: 'random', minRating: 7.2, limit: 1 },
+        state.importedDramas,
+      );
+      if (picks[0]) {
+        const [adopted] = adoptDramas([picks[0]]);
+        const chosen = adopted ?? picks[0];
+        toast.show({ message: `Tonight’s pick: ${chosen.title}`, icon: 'sparkles', tone: 'success' });
+        router.push(`/drama/${chosen.id}`);
+      }
+    } finally {
+      setSpinningPick(false);
+    }
+  };
+
+  const leadersLoad = useDramas((s) => catalog.worldLeaders(s));
+  const trendingLoad = useDramas((s) => catalog.trending(s));
+  const airingLoad = useDramas((s) => catalog.airingSoon(7, s));
+  const topRatedLoad = useDramas((s) => catalog.topRated(1, s));
+  const upcomingLoad = useDramas((s) => catalog.upcoming(s));
+  const netflixLoad = useDramas((s) => catalog.onProvider(NETFLIX, s));
   const faces = useLoad<Actor[]>(async (s) => adoptActors(await catalog.trendingPeople(s)), [], catalog.available);
 
-  // Community pulse — the last 24 hours *on this device*. There is no server in this build to
-  // count a global community, so this reports the local store and hides itself when it is empty.
+  const rails = useMemo(
+    () =>
+      buildExploreRails({
+        leaders: leadersLoad.data,
+        trending: trendingLoad.data,
+        airing: airingLoad.data,
+        topRated: topRatedLoad.data,
+        upcoming: upcomingLoad.data,
+        netflix: netflixLoad.data,
+      }),
+    [leadersLoad.data, trendingLoad.data, airingLoad.data, topRatedLoad.data, upcomingLoad.data, netflixLoad.data],
+  );
+
+  const [selectedLeaderWorld, setSelectedLeaderWorld] = useState<FandomId>('kdrama');
+  const activeLeader = useMemo(
+    () => rails.leaders.find((entry) => entry.world === selectedLeaderWorld) ?? rails.leaders[0] ?? null,
+    [rails.leaders, selectedLeaderWorld],
+  );
+
   const pulse = useMemo(() => {
     const since = Date.now() - 86_400_000;
     const fresh = (iso?: string) => !!iso && Date.parse(iso) >= since;
@@ -69,10 +114,9 @@ export default function Explore() {
     };
   }, [state]);
 
-  // Personalized rail: the member's own favorite genres (stored in the local profile).
   const favGenres = useMemo(() => state.profile.favoriteGenres?.slice(0, 2) ?? [], [state.profile.favoriteGenres]);
   const forYou = useLoad<Drama[]>(async (signal) => {
-    const lists = await Promise.all(favGenres.map((g) => catalog.byGenre(g, 8, signal)));
+    const lists = await Promise.all(favGenres.map((g) => catalog.byGenre(g, 1, signal)));
     const seen = new Set<string>();
     const out: Drama[] = [];
     for (const d of lists.flat()) {
@@ -81,20 +125,27 @@ export default function Explore() {
         out.push(d);
       }
     }
-    return out;
+    return adoptDramas(out);
   }, [favGenres.join('|')], catalog.available && favGenres.length > 0);
 
-  // Pull-to-refresh re-runs every live section.
   useEffect(() => {
     if (!refresh.refreshing) return;
     invalidateCatalogLists();
-    trending.reload();
-    airing.reload();
-    topRated.reload();
-    upcoming.reload();
-    netflix.reload();
+    leadersLoad.reload();
+    trendingLoad.reload();
+    airingLoad.reload();
+    topRatedLoad.reload();
+    upcomingLoad.reload();
+    netflixLoad.reload();
     faces.reload();
     forYou.reload();
+    void adoptPublicState({
+      getState,
+      apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+      addPosts: (posts) => {
+        for (const post of posts) adoptLocal({ type: 'addPost', post });
+      },
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh.refreshing]);
 
@@ -104,10 +155,30 @@ export default function Explore() {
   const counts = useMemo(() => worldCounts(state), [state]);
   const quickTags = useMemo(() => trendingHashtags(state, 6).map((x) => x.tag), [state]);
 
-  const lead = trending.data?.[0];
   const heroW = Math.min(width - space.margin * 2, 640);
-  const heroH = Math.round(Math.min(300, heroW * 0.58));
-  const catalogDown = !!trending.error && !trending.data;
+  const heroH = Math.round(Math.min(310, heroW * 0.6));
+  const catalogDown = !!trendingLoad.error && !trendingLoad.data && !leadersLoad.data;
+
+  const trendingState: Loadable<Drama[]> = useMemo(
+    () => ({ ...trendingLoad, data: trendingLoad.data ? rails.trending : null }),
+    [trendingLoad, rails.trending],
+  );
+  const airingState: Loadable<Drama[]> = useMemo(
+    () => ({ ...airingLoad, data: airingLoad.data ? rails.airing : null }),
+    [airingLoad, rails.airing],
+  );
+  const topRatedState: Loadable<Drama[]> = useMemo(
+    () => ({ ...topRatedLoad, data: topRatedLoad.data ? rails.topRated : null }),
+    [topRatedLoad, rails.topRated],
+  );
+  const upcomingState: Loadable<Drama[]> = useMemo(
+    () => ({ ...upcomingLoad, data: upcomingLoad.data ? rails.upcoming : null }),
+    [upcomingLoad, rails.upcoming],
+  );
+  const netflixState: Loadable<Drama[]> = useMemo(
+    () => ({ ...netflixLoad, data: netflixLoad.data ? rails.netflix : null }),
+    [netflixLoad, rails.netflix],
+  );
 
   return (
     <Screen header={<TopBar mode="root" title="Explore" large />}>
@@ -116,16 +187,26 @@ export default function Explore() {
           <View style={{ paddingHorizontal: space.margin }}>
             <SearchField asButton placeholder="Films, series, anime, actors, people…" onPressButton={() => router.push('/search')} />
           </View>
-          {/* Universe selector (spec 3.3): step into one world at a time. */}
+          <FlatList<{ key: string; label: string; icon: 'options-outline' | 'sparkles-outline' | 'people-circle-outline'; onPress: () => void }>
+            horizontal
+            data={[
+              { key: 'filter', label: 'Filter Catalog', icon: 'options-outline', onPress: () => router.push('/search') },
+              { key: 'surprise', label: spinningPick ? 'Picking…' : 'Surprise Me Tonight', icon: 'sparkles-outline', onPress: () => void surpriseTonight() },
+              { key: 'communities', label: 'Communities', icon: 'people-circle-outline', onPress: () => router.push('/communities') },
+            ]}
+            keyExtractor={(x) => x.key}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: space.margin, paddingTop: space.x3, gap: space.x2 }}
+            renderItem={({ item }) => <Chip label={item.label} icon={item.icon} tone={item.key === 'surprise' ? 'accent' : 'default'} onPress={item.onPress} />}
+          />
           <FlatList
             horizontal
             data={FANDOMS}
             keyExtractor={(f) => f.id}
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: space.margin, paddingTop: space.x3, gap: space.x2 }}
-            renderItem={({ item: f }) => <Chip label={f.short} onPress={() => router.push(`/world/${f.id}`)} />}
+            contentContainerStyle={{ paddingHorizontal: space.margin, paddingTop: space.x2, gap: space.x2 }}
+            renderItem={({ item: f }) => <Chip label={`${f.flag} ${f.short}`} onPress={() => router.push(`/world/${f.id}`)} />}
           />
-          {/* Trending searches — one tap from the hashtags the community is using right now. */}
           {quickTags.length > 0 ? (
             <FlatList
               horizontal
@@ -140,9 +221,14 @@ export default function Explore() {
           ) : null}
         </View>
 
-        {/* The four worlds: Hallyu's identity, and the fastest way into any of them. */}
         <View style={styles.section}>
-          <SectionHeader eyebrow="Fandoms" title="Four worlds, one community" subtitle="Hallyu shows you all four at once. Step into one when that is what you want." />
+          <SectionHeader
+            eyebrow="Fandoms"
+            title="Four worlds, one community"
+            subtitle="Hallyu shows you all four at once. Step into one when that is what you want."
+            actionLabel="Fandom rooms"
+            onAction={() => router.push('/communities')}
+          />
           <FlatList
             horizontal
             data={FANDOMS}
@@ -162,7 +248,7 @@ export default function Explore() {
             style={{ marginHorizontal: space.margin, marginBottom: space.x6 }}
           />
         ) : catalogDown ? (
-          <Pressable onPress={trending.reload} accessibilityRole="button" accessibilityLabel="Retry loading the catalog" style={{ marginHorizontal: space.margin, marginBottom: space.x6 }}>
+          <Pressable onPress={trendingLoad.reload} accessibilityRole="button" accessibilityLabel="Retry loading the catalog" style={{ marginHorizontal: space.margin, marginBottom: space.x6 }}>
             <InlineNotice
               tone="warning"
               icon={online ? 'cloud-offline-outline' : 'wifi-outline'}
@@ -171,10 +257,9 @@ export default function Explore() {
           </Pressable>
         ) : null}
 
-        {/* Your activity — the last 24 hours on this device (no server counts a global community here). */}
         {pulse.posts > 0 || pulse.comments > 0 || pulse.people > 1 ? (
           <View style={styles.section}>
-            <SectionHeader eyebrow="On device" title="Your last 24 hours" subtitle="Everything captured on this device" />
+            <SectionHeader eyebrow="Community" title="Recent pulse" subtitle="Posts, replies and members across your feed" />
             <View style={styles.pulseRow}>
               <PulsePill icon="flame-outline" label="New posts" value={pulse.posts} onPress={() => router.push('/trending')} />
               <PulsePill icon="chatbubbles-outline" label="Comments" value={pulse.comments} onPress={() => router.push('/trending')} />
@@ -183,48 +268,131 @@ export default function Explore() {
           </View>
         ) : null}
 
-        {/* Hero — #1 trending K-drama this week */}
-        {lead ? (
-          <Tap
-            onPress={() => router.push(`/drama/${lead.id}`)}
-            style={[styles.hero, { width: heroW, height: heroH, backgroundColor: lead.tone }]}
-            accessibilityRole="button"
-            accessibilityLabel={`Trending now: ${lead.title}`}
-          >
-            <Backdrop uri={lead.backdropUrl ?? lead.posterUrl} fallbackColor={lead.tone} width={heroW} height={heroH} style={StyleSheet.absoluteFill} />
-            <View style={styles.heroScrim} />
-            <View style={styles.heroBody}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
-                <View style={styles.signal} />
-                <Text variant="overline" tone="accent">
-                  #1 this week
+        {/* Four genuine calculated world leaders: #1 K-Drama, #1 C-Drama, #1 Anime, #1 Hollywood */}
+        {activeLeader ? (
+          <View style={styles.section}>
+            <SectionHeader
+              eyebrow="This week’s leaders"
+              title="#1 across every world"
+              subtitle="Calculated per world from airing momentum, community follows, and live audience demand"
+            />
+            <FlatList
+              horizontal
+              data={rails.leaders}
+              keyExtractor={(item) => item.world}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: space.margin, paddingBottom: space.x3, gap: space.x2 }}
+              renderItem={({ item }) => {
+                const worldMeta = fandomById(item.world);
+                const selected = item.world === activeLeader.world;
+                return (
+                  <Chip
+                    label={`${worldMeta.flag} #1 ${worldMeta.short}`}
+                    selected={selected}
+                    onPress={() => setSelectedLeaderWorld(item.world)}
+                  />
+                );
+              }}
+            />
+            <Tap
+              onPress={() => router.push(`/drama/${activeLeader.drama.id}`)}
+              style={[styles.hero, { width: heroW, height: heroH, backgroundColor: activeLeader.drama.tone, marginBottom: space.x3 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`#1 in ${fandomById(activeLeader.world).short}: ${activeLeader.drama.title}`}
+            >
+              <Backdrop
+                uri={activeLeader.drama.backdropUrl ?? activeLeader.drama.posterUrl}
+                fallbackColor={activeLeader.drama.tone}
+                width={heroW}
+                height={heroH}
+                cinemaGradient
+                accentGlow={fandomById(activeLeader.world).tint}
+                style={StyleSheet.absoluteFill}
+              />
+              <View style={styles.heroBody}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+                  <View style={[styles.signal, { backgroundColor: fandomById(activeLeader.world).tint }]} />
+                  <Text variant="overline" tone="accent">
+                    {`${fandomById(activeLeader.world).flag} #1 ${fandomById(activeLeader.world).short}`}
+                  </Text>
+                  {activeLeader.drama.rating ? (
+                    <Text variant="overline" tone="secondary">
+                      · ★ {activeLeader.drama.rating.toFixed(1)}
+                    </Text>
+                  ) : null}
+                  {activeLeader.drama.status === 'airing' ? (
+                    <Text variant="overline" tone="secondary">
+                      · Airing now
+                    </Text>
+                  ) : null}
+                  {activeLeader.drama.network ? (
+                    <Text variant="overline" tone="secondary" numberOfLines={1}>
+                      · {activeLeader.drama.network}
+                    </Text>
+                  ) : null}
+                </View>
+                <Text variant={activeLeader.drama.title.length <= 22 ? 'display' : 'headline'} style={{ color: colors.onMedia, letterSpacing: -0.8 }} numberOfLines={2}>
+                  {activeLeader.drama.title}
                 </Text>
-                {lead.rating ? (
-                  <Text variant="overline" tone="secondary">
-                    · ★ {lead.rating.toFixed(1)}
-                  </Text>
-                ) : null}
-                {lead.network ? (
-                  <Text variant="overline" tone="secondary" numberOfLines={1}>
-                    · {lead.network}
-                  </Text>
-                ) : null}
+                <Text variant="bodySmall" style={{ color: colors.textSecondary }} numberOfLines={2}>
+                  {activeLeader.drama.synopsis}
+                </Text>
               </View>
-              <Text variant={lead.title.length <= 22 ? 'display' : 'headline'} style={{ color: colors.onMedia, letterSpacing: -0.8 }} numberOfLines={2}>
-                {lead.title}
-              </Text>
-              <Text variant="bodySmall" style={{ color: colors.textSecondary }} numberOfLines={2}>
-                {lead.synopsis}
-              </Text>
-            </View>
-          </Tap>
-        ) : trending.showSkeleton || (trending.loading && !trending.data) ? (
+            </Tap>
+
+            <FlatList
+              horizontal
+              data={rails.leaders}
+              keyExtractor={(item) => item.drama.id}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: space.margin, gap: space.gutter }}
+              renderItem={({ item }) => {
+                const w = fandomById(item.world);
+                return (
+                  <Tap
+                    onPress={() => router.push(`/drama/${item.drama.id}`)}
+                    style={[
+                      styles.leaderMiniCard,
+                      item.world === activeLeader.world && { borderColor: w.tint },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`#1 ${w.short}: ${item.drama.title}`}
+                  >
+                    <Poster drama={item.drama} width={48} rounded={radius.sm} />
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text variant="caption" style={{ color: w.tint }}>
+                        {`${w.flag} #1 ${w.short}`}
+                      </Text>
+                      <Text variant="titleSmall" numberOfLines={1}>
+                        {item.drama.title}
+                      </Text>
+                      <Text variant="caption" tone="secondary" numberOfLines={1}>
+                        {[
+                          item.drama.status === 'airing' ? 'Airing' : item.drama.status === 'upcoming' ? 'Upcoming' : String(item.drama.year),
+                          item.drama.rating ? `★ ${item.drama.rating.toFixed(1)}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    </View>
+                  </Tap>
+                );
+              }}
+            />
+          </View>
+        ) : leadersLoad.showSkeleton || (leadersLoad.loading && !leadersLoad.data) ? (
           <Skeleton width={heroW} height={heroH} radius={radius.lg} style={{ alignSelf: 'center', marginBottom: space.section }} />
         ) : null}
 
-        <LiveRail eyebrow="Trending" title="Everyone’s talking about" subtitle="K-Dramas, C-Dramas, anime and Hollywood together" state={trending} slice={[1]} size="m" onAction={() => router.push('/trending')} />
+        <LiveRail
+          eyebrow="Trending"
+          title="Everyone’s talking about"
+          subtitle="Balanced across K-Dramas, C-Dramas, Anime and Hollywood"
+          state={trendingState}
+          size="m"
+          onAction={() => router.push('/trending')}
+        />
 
-        {/* For you — the member's own favorite genres, from the local profile. */}
         {favGenres.length > 0 ? (
           <LiveRail
             eyebrow="For you"
@@ -235,9 +403,8 @@ export default function Explore() {
           />
         ) : null}
 
-        <LiveRail eyebrow="This week" title="New episodes airing" live state={airing} size="l" onAction={() => router.push('/schedule')} actionLabel="Schedule" />
+        <LiveRail eyebrow="This week" title="New episodes airing" live state={airingState} size="l" onAction={() => router.push('/schedule')} actionLabel="Schedule" />
 
-        {/* Genres — each tile carries the current #1 of that genre from the live catalog */}
         <View style={styles.section}>
           <SectionHeader eyebrow="Browse" title="By genre" />
           <FlatList
@@ -251,14 +418,13 @@ export default function Explore() {
           />
         </View>
 
-        <LiveRail eyebrow="All time" title="Highest rated" state={topRated} size="m" badges={(d) => (d.rating ? `★ ${d.rating.toFixed(1)}` : undefined)} />
+        <LiveRail eyebrow="All time" title="Highest rated" state={topRatedState} size="m" badges={(d) => (d.rating ? `★ ${d.rating.toFixed(1)}` : undefined)} />
 
-        {/* The wall (spec 4): a masonry-style two-column poster grid across every world. */}
-        {trending.data && trending.data.length > 1 ? (
+        {rails.wall.length > 0 ? (
           <View style={styles.section}>
-            <SectionHeader eyebrow="Discover" title="The wall" subtitle="What every world is watching, side by side" />
+            <SectionHeader eyebrow="Discover" title="The wall" subtitle="More standouts across all four worlds" />
             <FlatList
-              data={trending.data.slice(1, 9)}
+              data={rails.wall}
               keyExtractor={(d) => d.id}
               numColumns={2}
               scrollEnabled={false}
@@ -268,7 +434,23 @@ export default function Explore() {
           </View>
         ) : null}
 
-        <LiveRail eyebrow="Streaming" title="On Netflix" state={netflix} size="m" />
+        <LiveRail eyebrow="Streaming" title="On Netflix" state={netflixState} size="m" />
+
+        <View style={styles.section}>
+          <SectionHeader eyebrow="Where to watch" title="Official apps and sites" />
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16 }}>
+            {exploreWatchLinks().map((link) => (
+              <Chip
+                key={link.service}
+                label={`${link.label} ↗`}
+                onPress={() => Linking.openURL(link.url).catch(() => toast.show({ message: `Could not open ${link.label}` }))}
+              />
+            ))}
+          </View>
+          <Text variant="caption" tone="tertiary" style={{ paddingHorizontal: 16 }}>
+            These open the official service. Hallyu does not play third-party streams.
+          </Text>
+        </View>
 
         {shortList.length ? (
           <View style={styles.section}>
@@ -286,7 +468,7 @@ export default function Explore() {
 
         {faces.data?.length ? (
           <View style={styles.section}>
-            <SectionHeader eyebrow="Actors" title="Faces of the week" subtitle="Trending on TMDB right now" />
+            <SectionHeader eyebrow="Actors" title="Faces of the week" subtitle="Trending across film & television" />
             <ActorRail actors={faces.data} size={80} />
           </View>
         ) : faces.showSkeleton ? (
@@ -300,9 +482,13 @@ export default function Explore() {
         <LiveRail
           eyebrow="Coming soon"
           title="Premieres"
-          state={upcoming}
+          state={upcomingState}
           size="m"
-          badges={(d) => (d.nextEpisodeAt ? new Date(d.nextEpisodeAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Soon')}
+          badges={(d) =>
+            d.nextEpisodeAt
+              ? new Date(d.nextEpisodeAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+              : String(d.year)
+          }
         />
 
         <View style={styles.section}>
@@ -331,8 +517,8 @@ export default function Explore() {
         </View>
 
         <View style={{ paddingHorizontal: space.margin, marginTop: space.x4, flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
-          <Ionicons name="film-outline" size={14} color={colors.textDisabled} />
-          <Text variant="caption" tone="disabled" style={{ flex: 1 }}>
+          <Ionicons name="film-outline" size={14} color={colors.textTertiary} />
+          <Text variant="caption" tone="tertiary" style={{ flex: 1 }}>
             Titles, art and ratings by TMDB. Hallyu is not endorsed or certified by TMDB.
           </Text>
         </View>
@@ -341,7 +527,6 @@ export default function Explore() {
   );
 }
 
-/** A live 24-hour stat from the community pulse. */
 function PulsePill({ icon, label, value, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: number; onPress: () => void }) {
   return (
     <Tap onPress={onPress} style={styles.pill} accessibilityRole="button" accessibilityLabel={`${label}: ${value}`}>
@@ -358,7 +543,6 @@ function PulsePill({ icon, label, value, onPress }: { icon: keyof typeof Ionicon
 
 const formatCount = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
 
-/** A rail bound to a live list: skeleton while loading, hidden when empty, quiet retry on failure. */
 function LiveRail({
   eyebrow,
   title,
@@ -418,7 +602,6 @@ function LiveRail({
   );
 }
 
-/** Genre tile backed by the genre's current most popular title. */
 function GenreTile({ genre, onPress }: { genre: string; onPress: () => void }) {
   const top = useDramas((s) => catalog.byGenre(genre, 1, s), [genre]);
   const lead = top.data?.[0];
@@ -446,11 +629,22 @@ const styles = StyleSheet.create({
     marginBottom: space.section,
     justifyContent: 'flex-end',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.08)',
   },
-  heroScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,10,10,0.42)' },
+  heroScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,10,10,0.44)' },
   heroBody: { padding: space.x4, gap: 4 },
   signal: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.accent },
+  leaderMiniCard: {
+    width: 214,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.x3,
+    backgroundColor: colors.surface1,
+    borderRadius: radius.md,
+    padding: space.x3,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
   section: { marginBottom: space.section },
   pulseRow: { flexDirection: 'row', gap: space.gutter, paddingHorizontal: space.margin },
   pill: {

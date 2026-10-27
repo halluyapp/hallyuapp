@@ -1,15 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Pressable, Share, StyleSheet, View } from 'react-native';
+import { Animated, Pressable, ScrollView, Share, StyleSheet, TextInput, View } from 'react-native';
 import { CreateSheet } from '../../../../components/create/CreateSheet';
 import { episodeState } from '../../../../components/drama/EpisodeCard';
 import { ReminderCard } from '../../../../components/drama/Reminder';
 import { LivePulse, LiveReactions } from '../../../../components/feed/LiveReactions';
 import { PostCard } from '../../../../components/feed/PostCard';
 import { FeedAutoplay } from '../../../../components/media/FeedViewport';
-import { ReactionMeter, ReactionRow } from '../../../../components/feed/Reactions';
+import { ReactionGlyph, ReactionMeter, ReactionRow } from '../../../../components/feed/Reactions';
 import { ShortsRail } from '../../../../components/feed/ShortCard';
+import { Avatar } from '../../../../components/ui/Avatar';
 import { Button } from '../../../../components/ui/Button';
 import { Chip, ChipRow } from '../../../../components/ui/Chip';
 import { IconButton } from '../../../../components/ui/IconButton';
@@ -21,11 +22,17 @@ import { Text } from '../../../../components/ui/Text';
 import { useToast } from '../../../../components/ui/Toast';
 import { TopBar } from '../../../../components/ui/TopBar';
 import { colors, fonts, radius, space } from '../../../../constants/theme';
-import { countdown, dayLabel, runtimeLabel, shortDate, timeOfDay } from '../../../../lib/format';
+import { connectLiveEpisodeRoom, type LiveRoomConnection, type LiveRoomViewer } from '../../../../lib/api/features';
+import { fetchDramasByUuids } from '../../../../lib/api/feed';
+import { localDateKey, logWatch } from '../../../../lib/api/tracker';
+import { isUuid } from '../../../../lib/api/social';
 import { catalog } from '../../../../lib/catalog';
+import { adoptDramas } from '../../../../lib/catalogSync';
+import { countdown, dayLabel, runtimeLabel, shortDate, timeOfDay } from '../../../../lib/format';
 import { haptic, useApp, useLayout, useLoad, useReduceMotion, useRequireMember } from '../../../../lib/hooks';
+import { emptyReactions, Episode, Post, ReactionKind, REACTIONS } from '../../../../lib/model';
+import { uid } from '../../../../lib/store';
 import { heroInterpolations, useScrollY, withAlpha } from '../../../../lib/motion';
-import { emptyReactions, Episode, Post } from '../../../../lib/model';
 import { getEpisode, isPostVeiled, postsForEpisode } from '../../../../lib/selectors';
 import { hasWatched } from '../../../../lib/spoiler';
 
@@ -87,7 +94,7 @@ export default function EpisodeRoom() {
   const { dramaId, season: seasonParam, number: numberParam } = useLocalSearchParams<{ dramaId: string; season: string; number: string }>();
   const season = Number(seasonParam) || 1;
   const number = Number(numberParam) || 1;
-  const { state, dispatch, getDrama, watch } = useApp();
+  const { state, dispatch, getDrama, watch, me } = useApp();
   const require = useRequireMember();
   const { width } = useLayout();
   const padding = useListPadding(false);
@@ -95,9 +102,59 @@ export default function EpisodeRoom() {
   const [safe, setSafe] = useState(false);
   const [create, setCreate] = useState(false);
   const [gateDismissed, setGateDismissed] = useState(false);
+  const [viewers, setViewers] = useState<LiveRoomViewer[]>([]);
+  const [burst, setBurst] = useState<{ seq: number; kind: ReactionKind } | null>(null);
+  const [sceneStamp, setSceneStamp] = useState<string | null>(null);
+  const [roomNote, setRoomNote] = useState('');
+  const roomRef = useRef<LiveRoomConnection | null>(null);
+  const burstSeq = useRef(0);
   const { scrollY, onScroll } = useScrollY();
 
+  useEffect(() => {
+    if (!dramaId) return;
+    const room = connectLiveEpisodeRoom(
+      `${dramaId}-s${season}e${number}`,
+      {
+        id: me.id,
+        handle: me.handle,
+        displayName: me.displayName,
+        avatarUrl: me.avatarUrl,
+      },
+      {
+        onViewersChange: (list) => setViewers(list),
+        onReactionBurst: (evt) => {
+          setBurst({ seq: ++burstSeq.current, kind: evt.kind });
+        },
+      },
+    );
+    roomRef.current = room;
+    return () => {
+      room.leave();
+      roomRef.current = null;
+    };
+  }, [dramaId, season, number, me.id, me.handle, me.displayName, me.avatarUrl]);
+
   const drama = getDrama(dramaId);
+  const [resolvingUuid, setResolvingUuid] = useState(false);
+
+  useEffect(() => {
+    if (drama || !dramaId || !isUuid(dramaId)) return;
+    let alive = true;
+    setResolvingUuid(true);
+    fetchDramasByUuids([dramaId])
+      .then(({ dramas }) => {
+        if (!alive || !dramas[0]) return;
+        const [adopted] = adoptDramas(dramas);
+        const target = adopted ?? dramas[0];
+        router.replace(`/episode/${target.id}/${season}/${number}`);
+      })
+      .finally(() => {
+        if (alive) setResolvingUuid(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [drama, dramaId, season, number, router]);
   const hasSeasonEpisodes = useMemo(
     () => !!drama?.episodes.some((e) => e.season === season),
     [drama?.episodes, season],
@@ -166,12 +223,20 @@ export default function EpisodeRoom() {
   if (!drama || !episode) {
     return (
       <Screen header={<TopBar mode="stack" title="Episode" />}>
-        <ErrorState
-          kind="notFound"
-          title="Episode not found"
-          body="This episode isn’t in the schedule yet, or the link is wrong."
-          onRetry={() => (drama ? router.replace(`/drama/${drama.id}`) : router.back())}
-        />
+        {resolvingUuid ? (
+          <View style={{ padding: space.x8, alignItems: 'center' }}>
+            <Text variant="bodySmall" tone="secondary">
+              Opening watch room…
+            </Text>
+          </View>
+        ) : (
+          <ErrorState
+            kind="notFound"
+            title="Episode not found"
+            body="This episode isn’t in the schedule yet, or the link is wrong."
+            onRetry={() => (drama ? router.replace(`/drama/${drama.id}`) : router.back())}
+          />
+        )}
       </Screen>
     );
   }
@@ -199,6 +264,20 @@ export default function EpisodeRoom() {
     require('mark episodes watched', () => {
       haptic.success();
       dispatch({ type: 'progress', dramaId: drama.id, season, episode: number, total });
+      // Also write a dated diary entry. Retry-safe: the client key dedupes repeat taps.
+      if (isUuid(drama.id)) {
+        logWatch({
+          titleId: drama.id,
+          watchedOn: localDateKey(),
+          season,
+          episode: number,
+          source: 'mark_watched',
+          clientKey: `mark-${drama.id}-s${season}e${number}-${localDateKey()}`,
+        }).catch(() => {
+          // Progress is saved locally; the diary write failed. Say so instead of failing silently.
+          toast.show({ message: 'Saved your progress, but the diary entry did not save. Try again later.', tone: 'danger' });
+        });
+      }
       toast.show({ message: number >= total ? `${drama.title} completed 🎉` : `Episode ${number} marked watched`, tone: 'success', icon: 'checkmark-circle' });
     });
 
@@ -210,18 +289,51 @@ export default function EpisodeRoom() {
 
   const heroH = Math.min(300, Math.round((width * 9) / 16));
   const hero = heroInterpolations(scrollY, heroH, heroH - 20);
-  const here = st === 'live' ? posts.length * 9 + 3 : 0;
+  const here = Math.max(viewers.length, st === 'live' ? 1 : 0);
+
+  const sendLiveBurst = (kind: ReactionKind) => {
+    haptic.light();
+    setBurst({ seq: ++burstSeq.current, kind });
+    roomRef.current?.sendReaction(kind);
+  };
+
+  const publishSceneReaction = () => {
+    const clean = roomNote.trim();
+    if (!clean) return;
+    require('post a scene reaction', () => {
+      haptic.success();
+      const body = sceneStamp ? `[${sceneStamp}] ${clean}` : clean;
+      const created: Post = {
+        id: uid(''),
+        authorId: me.id,
+        type: 'reaction',
+        body,
+        spoiler: 'episode',
+        hashtags: [],
+        mentions: [],
+        context: { dramaId: drama.id, season, episode: number },
+        createdAt: new Date().toISOString(),
+        reactions: emptyReactions(),
+        commentCount: 0,
+        saveCount: 0,
+        shareCount: 0,
+      };
+      dispatch({ type: 'addPost', post: created });
+      setRoomNote('');
+      setSceneStamp(null);
+      toast.show({ message: 'Posted to Episode Watch Room', tone: 'success', icon: 'checkmark-circle' });
+    });
+  };
 
   const header = (
     <View>
       <View pointerEvents="none" style={[styles.wash, { height: heroH + 180, backgroundColor: withAlpha(drama.tone, 0.5) }]} />
       <Animated.View style={{ height: heroH, overflow: 'hidden', opacity: hero.heroFade, transform: [{ translateY: hero.parallax }, { scale: hero.stretch }] }}>
-        <Backdrop uri={episode.stillUrl ?? drama.backdropUrl ?? drama.posterUrl ?? drama.posterLocal} fallbackColor={drama.tone} width="100%" height={heroH} label={`Episode ${number} still`}>
-          <View style={styles.scrim} />
+        <Backdrop uri={episode.stillUrl ?? drama.backdropUrl ?? drama.posterUrl ?? drama.posterLocal} fallbackColor={drama.tone} width="100%" height={heroH} cinemaGradient accentGlow={drama.tone} label={`Episode ${number} still`}>
           <View pointerEvents="none" style={StyleSheet.absoluteFill} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
             <Text style={styles.numeral}>{String(number).padStart(2, '0')}</Text>
           </View>
-          <LiveReactions counts={meter} active={st === 'live'} style={{ right: 0, bottom: 0 }} />
+          <LiveReactions counts={meter} active={st === 'live' || viewers.length > 0} burst={burst} style={{ right: 0, bottom: 0 }} />
           <View style={styles.heroText}>
             <Pressable onPress={() => router.push(`/drama/${drama.id}`)} accessibilityRole="link" style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
               <Poster drama={drama} width={28} rounded={4} />
@@ -235,10 +347,10 @@ export default function EpisodeRoom() {
               {episode.title ? ` — ${episode.title}` : ''}
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {st === 'live' ? <LivePulse size={6} style={{ marginLeft: -6 }} /> : null}
-              <Text variant="caption" style={{ color: st === 'live' ? colors.onMedia : colors.textSecondary }}>
-                {st === 'live'
-                  ? `Live · ${here} in the room`
+              {here > 0 ? <LivePulse size={6} style={{ marginLeft: -6 }} /> : null}
+              <Text variant="caption" style={{ color: here > 0 ? colors.onMedia : colors.textSecondary }}>
+                {here > 0
+                  ? `${here} ${here === 1 ? 'viewer' : 'viewers'} live in room`
                   : st === 'upcoming' && episode.airDate
                     ? `Airs ${dayLabel(episode.airDate)} · ${timeOfDay(episode.airDate)} · ${countdown(episode.airDate)}`
                     : [episode.airDate ? shortDate(episode.airDate) : 'TBA', runtimeLabel(episode.runtime)].filter(Boolean).join(' · ')}
@@ -249,6 +361,95 @@ export default function EpisodeRoom() {
           </View>
         </Backdrop>
       </Animated.View>
+
+      {/* Live Watch Room Presence + Real-Time Floating Burst Strip + Scene Timestamp Composer */}
+      <View
+        style={{
+          marginHorizontal: space.margin,
+          marginTop: space.x3,
+          padding: space.x3,
+          borderRadius: radius.md,
+          backgroundColor: colors.surface1,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: colors.borderStrong,
+          gap: space.x2 + 2,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <LivePulse size={6} />
+            <Text variant="overline" tone="accent">
+              LIVE WATCH ROOM {viewers.length > 0 ? `· ${viewers.length} HERE NOW` : ''}
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: -6 }}>
+            {viewers.slice(0, 5).map((v) => (
+              <Avatar key={v.userId} uri={v.avatarUrl} name={v.displayName} size="xs" />
+            ))}
+          </View>
+        </View>
+
+        {/* 1-Tap Broadcast Reaction Bursts */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          {REACTIONS.map((r) => (
+            <Pressable
+              key={r.kind}
+              onPress={() => sendLiveBurst(r.kind)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 5,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                borderRadius: radius.full,
+                backgroundColor: colors.surface2,
+                borderWidth: StyleSheet.hairlineWidth,
+                borderColor: colors.borderSubtle,
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Send live ${r.label} reaction`}
+            >
+              <ReactionGlyph kind={r.kind} size={15} active />
+              <Text variant="caption">{r.label}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        {/* Scene Timestamp Quick Note */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+          {['05:00', '18:30', '34:00', '48:15', 'Ending'].map((ts) => (
+            <Chip
+              key={ts}
+              label={`⏱ ${ts}`}
+              size="sm"
+              selected={sceneStamp === ts}
+              onPress={() => {
+                haptic.select();
+                setSceneStamp(sceneStamp === ts ? null : ts);
+              }}
+            />
+          ))}
+        </ScrollView>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+          <TextInput
+            value={roomNote}
+            onChangeText={setRoomNote}
+            placeholder={sceneStamp ? `React to scene [${sceneStamp}]…` : `Drop a live reaction to Ep ${number}…`}
+            placeholderTextColor={colors.textTertiary}
+            style={{
+              flex: 1,
+              height: 38,
+              paddingHorizontal: 12,
+              borderRadius: radius.full,
+              backgroundColor: colors.surface2,
+              color: colors.textPrimary,
+              fontSize: 13.5,
+            }}
+          />
+          <Button label="Drop" size="sm" disabled={!roomNote.trim()} onPress={publishSceneReaction} />
+        </View>
+      </View>
 
       <View style={styles.nav}>
         <Button

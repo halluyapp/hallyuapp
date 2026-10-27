@@ -4,6 +4,11 @@
 -- not exist, and the counts on `profiles` / `titles` / `people` / `collections` cannot drift into
 -- pointing at nothing.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create table if not exists public.follows (
   follower_id uuid        not null references public.profiles (id) on delete cascade,
   target_id   uuid        not null references public.profiles (id) on delete cascade,
@@ -203,3 +208,6 @@ create policy mutes_owner_all on public.mutes
 grant select on public.follows, public.title_follows, public.person_follows, public.collection_follows to authenticated;
 grant insert, delete on public.follows, public.title_follows, public.person_follows, public.collection_follows to authenticated;
 grant select, insert, delete on public.blocks, public.mutes to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

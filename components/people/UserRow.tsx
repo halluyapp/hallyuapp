@@ -10,6 +10,7 @@ import { FollowButton } from '../drama/FollowButton';
 import { Avatar } from '../ui/Avatar';
 import { Tap } from '../ui/Tap';
 import { Text } from '../ui/Text';
+import { VerificationSeal } from '../recognition/VerificationSeal';
 
 interface UserRowProps {
   user: User;
@@ -30,7 +31,7 @@ function UserRowBase({ user, reason, style, showFollow = true, right }: UserRowP
           <Text variant="titleSmall" numberOfLines={1}>
             {user.displayName}
           </Text>
-          {user.verified ? <Ionicons name="checkmark-circle" size={14} color={colors.accentText} /> : null}
+          <VerificationSeal tier={user.verificationTier} verified={user.verified} size={15} />
           {user.isPrivate ? <Ionicons name="lock-closed" size={12} color={colors.textTertiary} /> : null}
         </View>
         <Text variant="caption" tone="secondary" numberOfLines={1}>
@@ -49,9 +50,12 @@ export function UserCard({ user, reason }: { user: User; reason?: string }) {
     <View style={styles.card}>
       <Tap onPress={() => router.push(`/user/${user.handle}`)} accessibilityRole="button" accessibilityLabel={user.displayName} style={{ alignItems: 'center' }}>
         <Avatar uri={user.avatarUrl} name={user.displayName} size="lg" />
-        <Text variant="titleSmall" numberOfLines={1} style={{ marginTop: space.x2 }}>
-          {user.displayName}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: space.x2 }}>
+          <Text variant="titleSmall" numberOfLines={1}>
+            {user.displayName}
+          </Text>
+          <VerificationSeal tier={user.verificationTier} verified={user.verified} size={14} />
+        </View>
         <Text variant="caption" tone="tertiary" numberOfLines={2} align="center">
           {reason ?? `@${user.handle}`}
         </Text>

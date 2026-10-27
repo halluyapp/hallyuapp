@@ -11,7 +11,7 @@ import { Stack, useRootNavigationState, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState as RNAppState } from 'react-native';
+import { AppState as RNAppState, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '../components/ui/ErrorBoundary';
@@ -20,13 +20,23 @@ import { ToastProvider, toast } from '../components/ui/Toast';
 import { colors } from '../constants/theme';
 import { reportError } from '../lib/analytics';
 import { installBackendAnalyticsSink } from '../lib/api/analyticsSink';
-import { registerDevicePushToken } from '../lib/api/pushToken';
+import { registerCatalogLookup } from '../lib/api/social';
+import { installPushTokenRotationListener, registerDevicePushToken } from '../lib/api/pushToken';
 import { AuthProvider, useAuth } from '../lib/auth';
 import { markBoot } from '../lib/boot';
-import { installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders } from '../lib/reminders';
+import { ensureAndroidNotificationChannels, installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders, syncLivePulseBanner } from '../lib/reminders';
 import { setDownloadScope } from '../lib/media';
-import { freshMemberState, getState, GUEST_ID, guestState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
-import { adoptBackendState, getSyncFailures, subscribeSyncFailures, type SyncFailure } from '../lib/sync';
+import { freshMemberState, getState, GUEST_ID, guestState, sanitizePersistedState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
+import {
+  adoptBackendState,
+  adoptLocal,
+  adoptNotifications,
+  adoptPublicState,
+  getSyncFailures,
+  subscribeBackendRealtime,
+  subscribeSyncFailures,
+  type SyncFailure,
+} from '../lib/sync';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -63,6 +73,26 @@ export default function RootLayout() {
   // a no-op in device-local builds (the in-memory buffer behaves exactly as before).
   useEffect(() => {
     installBackendAnalyticsSink();
+    registerCatalogLookup(
+      (id) => getState().importedDramas.find((d) => d.id === id),
+      (id) => getState().importedActors.find((a) => a.id === id),
+    );
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      const basePath = (process.env.EXPO_PUBLIC_BASE_PATH ?? '').trim().replace(/\/$/, '');
+      const swUrl = `${basePath}/sw.js`;
+      navigator.serviceWorker
+        .register(swUrl, { scope: `${basePath}/`, updateViaCache: 'none' })
+        .then((reg) => {
+          void reg.update().catch(() => {});
+          const onVis = () => {
+            if (document.visibilityState === 'visible') {
+              void reg.update().catch(() => {});
+            }
+          };
+          document.addEventListener('visibilitychange', onVis);
+        })
+        .catch(() => {});
+    }
   }, []);
 
   // Hide the native splash as soon as fonts settle OR the gate times out — whichever comes first.
@@ -117,6 +147,21 @@ export default function RootLayout() {
                 <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(onboarding)" options={{ animation: 'fade' }} />
                 <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+                <Stack.Screen name="messages/index" />
+                <Stack.Screen name="messages/[handle]" />
+                <Stack.Screen name="communities" />
+                <Stack.Screen name="community/[id]" />
+                <Stack.Screen name="events" />
+                <Stack.Screen name="watch-party/[eventId]" />
+                <Stack.Screen name="notifications" />
+                <Stack.Screen name="diary" />
+                <Stack.Screen name="tracker" />
+                <Stack.Screen name="shelf" />
+                <Stack.Screen name="import" />
+                <Stack.Screen name="admin" />
+                <Stack.Screen name="settings/moderation" />
+                <Stack.Screen name="settings/bug-report" />
+                <Stack.Screen name="settings/updates" />
                 <Stack.Screen
                   name="create/[type]"
                   options={{
@@ -190,7 +235,7 @@ function AccountSync() {
     if (!state.hydrated || !state.profile.id || state.profile.id === GUEST_ID) return;
     const id = state.profile.id;
     const t = setTimeout(() => {
-      AsyncStorage.setItem(`hallyu.account.v4.${id}`, JSON.stringify(state)).catch(() => {});
+      AsyncStorage.setItem(`hallyu.account.v4.${id}`, JSON.stringify({ ...state, backendSyncedUserId: null })).catch(() => {});
     }, 200);
     return () => clearTimeout(t);
   }, [state]);
@@ -209,12 +254,21 @@ function AccountSync() {
       if ((auth.status === 'guest' || auth.status === 'signedOut') && state.profile.id !== GUEST_ID) {
         const prevId = state.profile.id;
         if (prevId) {
-          AsyncStorage.setItem(`hallyu.account.v4.${prevId}`, JSON.stringify(getState())).catch(() => {});
+          AsyncStorage.setItem(`hallyu.account.v4.${prevId}`, JSON.stringify({ ...getState(), backendSyncedUserId: null })).catch(() => {});
         }
         const device = { reduceMotion: state.prefs.reduceMotion, trueBlack: state.prefs.trueBlack };
         setDownloadScope(null);
         reset(guestState());
-        dispatch({ type: 'prefs', patch: device });
+        adoptLocal({ type: 'prefs', patch: device });
+      }
+      if (auth.status === 'guest' || auth.status === 'signedOut') {
+        void adoptPublicState({
+          getState,
+          apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+          addPosts: (posts) => {
+            for (const post of posts) adoptLocal({ type: 'addPost', post });
+          },
+        });
       }
       return;
     }
@@ -245,9 +299,9 @@ function AccountSync() {
           let restored = false;
           if (rawSnap) {
             try {
-              const parsed = JSON.parse(rawSnap);
+              const parsed = sanitizePersistedState(JSON.parse(rawSnap));
               if (parsed && parsed.profile?.id === u.id) {
-                reset({ ...parsed, hydrated: true });
+                reset({ ...(freshMemberState(parsed.profile)), ...parsed, hydrated: true, backendSyncedUserId: null });
                 restored = true;
               }
             } catch {
@@ -269,25 +323,29 @@ function AccountSync() {
               }),
             );
           }
-          dispatch({ type: 'prefs', patch: device });
+          adoptLocal({ type: 'prefs', patch: device });
         }
         if (stale()) return;
         applied.current = u.id; // mark COMPLETE once the local snapshot is in
         // Server-side push registration so episode alerts can reach this device (local reminders
         // stay in addition — §6.4 of the connection contract). Silent no-op on any failure.
         void registerDevicePushToken();
-        // Adopt the member's real backend state (profile, prefs, follows, saves, watchlist, the
-        // latest feed page, the notification inbox) into the cache. No-op without a session.
-        void adoptBackendState({
+        // Adopt the member's real backend state (profile, prefs, follows, saves, watchlist, own posts,
+        // communities, the latest feed page, the notification inbox) into the cache.
+        await adoptBackendState({
           getState,
           apply: (patch) => {
-            if (!stale()) dispatch({ type: 'hydrate', state: patch });
+            if (!stale()) adoptLocal({ type: 'hydrate', state: patch });
           },
           addPosts: (posts) => {
             if (stale()) return;
-            for (const post of posts) dispatch({ type: 'addPost', post });
+            for (const post of posts) adoptLocal({ type: 'addPost', post });
           },
           isStale: stale,
+        }).finally(() => {
+          if (!stale() && getState().backendSyncedUserId !== u.id) {
+            adoptLocal({ type: 'hydrate', state: { backendSyncedUserId: u.id } });
+          }
         });
       } catch (e) {
         // Expected async failures: log diagnostics, keep the app usable.
@@ -297,6 +355,60 @@ function AccountSync() {
       }
     })();
   }, [auth.status, auth.user, state.hydrated, state.profile.id, reset, state.prefs.reduceMotion, state.prefs.trueBlack, dispatch]);
+
+  const [realtimeEpoch, setRealtimeEpoch] = React.useState(0);
+
+  useEffect(() => {
+    if (!state.hydrated) return;
+    return subscribeBackendRealtime(
+      {
+        getState,
+        apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+        addPosts: (posts) => {
+          for (const post of posts) adoptLocal({ type: 'addPost', post });
+        },
+      },
+      auth.status === 'signedIn' ? auth.user?.id : null,
+    );
+  }, [state.hydrated, auth.status, auth.user?.id, realtimeEpoch]);
+
+  useEffect(() => {
+    const detachRotation = auth.status === 'signedIn' && auth.user ? installPushTokenRotationListener() : () => {};
+    let backgroundedAt = 0;
+    const fg = RNAppState.addEventListener('change', (st) => {
+      if (st === 'background' || st === 'inactive') {
+        backgroundedAt = Date.now();
+        return;
+      }
+      if (st === 'active') {
+        const awayMs = backgroundedAt ? Date.now() - backgroundedAt : 0;
+        if (awayMs > 15_000) {
+          setRealtimeEpoch((n) => n + 1);
+        }
+        if (auth.status === 'signedIn' && auth.user) {
+          void registerDevicePushToken();
+          if (awayMs > 8_000) {
+            void adoptBackendState({
+              getState,
+              apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+              addPosts: (posts) => {
+                for (const post of posts) adoptLocal({ type: 'addPost', post });
+              },
+            });
+          } else {
+            void adoptNotifications({
+              getState,
+              apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+            });
+          }
+        }
+      }
+    });
+    return () => {
+      detachRotation();
+      fg.remove();
+    };
+  }, [auth.status, auth.user]);
 
   return null;
 }
@@ -335,30 +447,63 @@ function ReminderSync() {
   const router = useRouter();
   const navReady = useRootNavigationState()?.key != null;
   const navReadyRef = useRef(navReady);
+  const pendingUrlRef = useRef<string | undefined>(undefined);
+  const handledResponseIds = useRef(new Set<string>());
   navReadyRef.current = navReady;
+
+  useEffect(() => {
+    if (navReady && pendingUrlRef.current) {
+      const target = pendingUrlRef.current;
+      pendingUrlRef.current = undefined;
+      setTimeout(() => router.push(target as never), 250);
+    }
+  }, [navReady, router]);
+
   useEffect(() => {
     if (!hydrated || !remindersSupported) return;
     installNotificationHandler();
+    void ensureAndroidNotificationChannels();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = (delay = 1500) => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        // Local notification scheduling must never crash the app if the OS rejects it.
-        void syncEpisodeReminders(getState()).catch((e) => reportError('ReminderSync.schedule', e));
+        const cur = getState();
+        void syncEpisodeReminders(cur).catch((e) => reportError('ReminderSync.schedule', e));
+        void syncLivePulseBanner(cur).catch(() => {});
       }, delay);
     };
     schedule(2500);
     const unsub = useHallyu.subscribe((s, prev) => {
-      if (s.follows.dramas !== prev.follows.dramas || s.dramaNotify !== prev.dramaNotify || s.prefs.notifications !== prev.prefs.notifications || s.importedDramas !== prev.importedDramas) schedule();
+      if (
+        s.follows.dramas !== prev.follows.dramas ||
+        s.dramaNotify !== prev.dramaNotify ||
+        s.prefs.notifications !== prev.prefs.notifications ||
+        s.prefs.livePulseBanner !== prev.prefs.livePulseBanner ||
+        s.importedDramas !== prev.importedDramas ||
+        s.notifications.length !== prev.notifications.length
+      ) {
+        schedule(600);
+      }
     });
     const fg = RNAppState.addEventListener('change', (st) => st === 'active' && schedule(800));
-    const open = (url: string | undefined) => {
-      if (!navReadyRef.current || !url) return;
-      setTimeout(() => router.push(url as never), 400);
+    // A live tap with no route opens the in-app inbox, where the full notification text is kept.
+    // The last-response check on launch only follows a route, so an old tap never reopens the inbox.
+    const openResponse = (r: Notifications.NotificationResponse | null | undefined, fromTap = false) => {
+      if (!r) return;
+      const responseId = r.notification.request.identifier;
+      if (responseId && handledResponseIds.current.has(responseId)) return;
+      const url = reminderUrl(r) ?? (fromTap ? '/(tabs)/activity' : undefined);
+      if (!url) return;
+      if (responseId) handledResponseIds.current.add(responseId);
+      if (!navReadyRef.current) {
+        pendingUrlRef.current = url;
+        return;
+      }
+      setTimeout(() => router.push(url as never), 300);
     };
-    const tapped = Notifications.addNotificationResponseReceivedListener((r) => open(reminderUrl(r)));
+    const tapped = Notifications.addNotificationResponseReceivedListener((r) => openResponse(r, true));
     Notifications.getLastNotificationResponseAsync()
-      .then((r) => open(reminderUrl(r)))
+      .then(openResponse)
       .catch((e) => reportError('ReminderSync.lastResponse', e));
     return () => {
       clearTimeout(timer);

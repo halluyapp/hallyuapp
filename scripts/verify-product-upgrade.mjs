@@ -1,0 +1,228 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = process.cwd();
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+
+console.log('Verifying Phase 1, Phase 2 & Phase 3 consumer product upgrades...');
+
+// 1. Backend Migration 42 + Database Types Sync
+const mig = read('supabase/migrations/20260101124200_42_full_product_polls_dms_ratings_and_filters.sql');
+for (const token of [
+  'create table if not exists public.post_polls',
+  'create table if not exists public.post_poll_votes',
+  'create table if not exists public.title_ratings',
+  'create table if not exists public.direct_messages',
+  'add column if not exists banner_url',
+  'create or replace function public.create_post_poll',
+  'create or replace function public.vote_post_poll',
+  'create or replace function public.rate_title',
+  'create or replace function public.send_direct_message',
+  'create or replace function public.list_conversations',
+  'create or replace function public.list_direct_messages',
+  'create or replace function public.discover_catalog',
+]) {
+  assert(mig.includes(token), `Missing expected backend SQL surface: ${token}`);
+}
+
+const dbTypes = read('supabase/types/database.ts');
+for (const table of ['post_polls:', 'post_poll_votes:', 'title_ratings:', 'direct_messages:']) {
+  assert(dbTypes.includes(table), `Missing typed table in database.ts: ${table}`);
+}
+
+// 2. Phase 1 UI/UX surfaces
+assert(read('components/ui/Poster.tsx').includes('cinemaGradient'), 'Poster/Backdrop missing cinemaGradient');
+assert(read('components/ui/Skeleton.tsx').includes('LinearGradient'), 'Skeleton missing directional shimmer');
+assert(read('components/feed/PollBlock.tsx').includes('vote_post_poll') || read('components/feed/PollBlock.tsx').includes('votePoll'), 'PollBlock missing live vote wiring');
+assert(read('components/feed/PostCard.tsx').includes('ShareCardModal'), 'PostCard missing ShareCardModal');
+assert(read('components/home/UpNextRail.tsx').includes('+1 Ep'), 'UpNextRail missing one-tap +1 Ep action');
+assert(read('app/drama/[id].tsx').includes('rateTitleOnServer'), 'Drama hub missing 1-10 community rating sheet');
+
+// 3. Phase 2 UI/UX surfaces
+const profileSrc = read('components/profile/ProfileView.tsx');
+assert(profileSrc.includes('WATCH DNA'), 'ProfileView missing Watch DNA card');
+assert(profileSrc.includes('Top 4 All-Time'), 'ProfileView missing Top 4 showcase');
+assert(read('app/edit-profile.tsx').includes('bannerUrl'), 'EditProfile missing custom backdrop picker');
+assert(read('app/search.tsx').includes('MULTI-FILTER CATALOG BROWSER'), 'Search missing Multi-Filter Catalog Browser');
+assert(read('components/share/ShareCardModal.tsx').includes('sendDirectMessage'), 'ShareCardModal missing 1-tap Send-to-Friend');
+
+// 4. Phase 3 Real-Time Social & Video surfaces
+assert(read('app/messages/index.tsx').includes('fetchConversations'), 'Messages Inbox missing conversations loader');
+assert(read('app/messages/[handle].tsx').includes('subscribeDirectMessages'), 'DirectMessage thread missing realtime subscription');
+assert(read('app/episode/[dramaId]/[season]/[number].tsx').includes('connectLiveEpisodeRoom'), 'EpisodeRoom missing Live Watch Room realtime presence & bursts');
+const shortsSrc = read('app/shorts.tsx');
+assert(shortsSrc.includes('Scrub video timeline'), 'Shorts missing scrubbable progress bar');
+assert(shortsSrc.includes('Comments ·'), 'Shorts missing in-player slide-up comments drawer');
+
+// 5. Core Stability, Backend-to-UI Parity & Cinematic Onboarding surfaces (Migration 43)
+const mig43 = read('supabase/migrations/20260101124300_43_media_rls_follow_requests_and_staff_queues.sql');
+for (const token of [
+  'media_read_attached_or_avatar_public',
+  'create table if not exists public.follow_requests',
+  'create or replace function public.list_follow_requests',
+  'create or replace function public.respond_follow_request',
+  'create or replace function public.my_video_access_status',
+  'create or replace function public.get_staff_overview',
+  'create or replace function public.staff_grant_video_by_handle',
+  'create or replace function public.create_community_room',
+  'create or replace function public.get_community_detail',
+]) {
+  assert(mig43.includes(token), `Missing Migration 43 SQL surface: ${token}`);
+}
+assert(dbTypes.includes('follow_requests:'), 'Missing follow_requests table in database.ts');
+
+assert(
+  read('lib/api/media.ts').includes('else wanted.push(path);'),
+  'lib/api/media.ts must re-sign expired signed URLs instead of dropping them',
+);
+assert(
+  read('lib/sync.ts').includes("table: 'post_media'"),
+  'lib/sync.ts must subscribe to post_media INSERT events',
+);
+assert(
+  read('components/ui/Sheet.tsx').includes("Keyboard.addListener('keyboardDidShow'"),
+  'Sheet must track Android keyboard height inside statusBarTranslucent Modal',
+);
+assert(
+  read('components/video/VideoAccessSheet.tsx').includes('requestVideoCreatorAccess'),
+  'VideoAccessSheet must wire request_video_access RPC',
+);
+assert(
+  read('app/settings/moderation.tsx').includes('fetchStaffOverview'),
+  'Admin & Creator Studio must wire get_staff_overview RPC',
+);
+assert(
+  read('app/communities.tsx').includes('createCommunityRoom'),
+  'Communities directory must wire create_community_room RPC',
+);
+assert(
+  read('app/community/[id].tsx').includes('fetchCommunityDetail'),
+  'Community room screen must wire get_community_detail RPC',
+);
+assert(
+  read('app/(tabs)/activity.tsx').includes('fetchFollowRequests'),
+  'Activity tab must wire incoming follow requests queue',
+);
+assert(
+  read('app/(auth)/welcome.tsx').includes('Every episode night.'),
+  'Welcome screen missing Midnight Premiere hero',
+);
+assert(
+  read('app/(onboarding)/dramas.tsx').includes('PanResponder.create'),
+  'Onboarding dramas screen missing 3D Poster Swipe Deck',
+);
+assert(
+  read('app/(onboarding)/notifications.tsx').includes('HALLYU PREMIERE PASS'),
+  'Onboarding finale missing Hallyu Premiere Pass card',
+);
+
+// 6. Whole-App Media Pipeline, Cross-Device Persistence & Production Crash Guards (Migration 44)
+const mig44 = read('supabase/migrations/20260101124400_44_media_posts_watchlist_and_bootstrap_sync.sql');
+for (const token of [
+  'drop constraint if exists posts_body_length_sane',
+  'create policy posts_update_own',
+  'create or replace function public.upsert_watchlist_item',
+  'create or replace function public.ensure_client_title',
+  'create or replace function public.ensure_client_person',
+  'create or replace function public.get_bootstrap',
+  "'my_posts'",
+]) {
+  assert(mig44.includes(token), `Missing Migration 44 SQL surface: ${token}`);
+}
+
+const mediaSrc = read('lib/api/media.ts');
+assert(mediaSrc.includes('row.signedUrl ?? row.signedURL'), 'lib/api/media.ts must read row.signedUrl (v2 SDK camelCase)');
+assert(mediaSrc.includes('normalizeMediaUrl'), 'lib/api/media.ts must normalize signed URLs to full HTTPS URLs');
+assert(mediaSrc.includes('prepareLocalImage'), 'lib/api/media.ts must normalize images via expo-image-manipulator');
+assert(mediaSrc.includes('refreshSignedUrl'), 'lib/api/media.ts must expose refreshSignedUrl for self-healing media');
+
+const clientSrc = read('lib/api/client.ts');
+assert(clientSrc.includes('export async function ensureBackendSessionToken'), 'lib/api/client.ts must expose ensureBackendSessionToken');
+assert(clientSrc.includes('export function normalizeMediaUrl'), 'lib/api/client.ts must expose normalizeMediaUrl');
+
+assert(read('lib/api/social.ts').includes("rpc('ensure_client_title'"), 'lib/api/social.ts must materialise TMDB titles on demand');
+assert(read('lib/api/social.ts').includes("rpc('ensure_client_person'"), 'lib/api/social.ts must materialise TMDB people on demand');
+assert(read('lib/sync.ts').includes('backendSyncedUserId: boot.profile.id'), 'lib/sync.ts must stamp backendSyncedUserId on bootstrap');
+assert(read('lib/sync.ts').includes('hydrateServerPosts(boot.my_posts ?? [])'), 'lib/sync.ts must hydrate boot.my_posts across devices');
+assert(read('app/index.tsx').includes('state.backendSyncedUserId === auth.user?.id'), 'app/index.tsx must wait for bootstrap before onboarding redirect');
+assert(read('components/profile/ProfileView.tsx').includes('RefreshControl'), 'ProfileView must support pull-to-refresh');
+assert(read('components/ui/CoachMarks.tsx').includes('steps[step] ?? steps[0]'), 'CoachMarks must guard out-of-bounds step indices');
+
+// 7. Profile/Thread RPC Envelope Unwrapping, Self-Healing Store & ErrorBoundary Fix (Migration 45)
+const mig45 = read('supabase/migrations/20260101124500_45_profile_thread_fields.sql');
+for (const token of [
+  'create or replace function public.get_profile_by_handle',
+  'create or replace function public.get_post_thread',
+  'create or replace function public.get_community_pulse',
+  "'banner_url'",
+  "'role'",
+]) {
+  assert(mig45.includes(token), `Missing Migration 45 SQL surface: ${token}`);
+}
+
+const feedSrc = read('lib/api/feed.ts');
+assert(feedSrc.includes('wrapped.post ?? (entry as ServerPost)'), 'fetchProfileByHandle must unwrap { post, media, title } RPC bundles');
+assert(feedSrc.includes('wrapped.comment ?? (entry as ServerComment)'), 'fetchPostThread must unwrap { comment, author } RPC bundles');
+
+const storeSrc = read('lib/store.tsx');
+assert(
+  storeSrc.includes("typeof p.id === 'string' && p.id.length > 0 && typeof p.authorId === 'string'"),
+  'sanitizePersistedState must purge malformed post entries from AsyncStorage',
+);
+
+const richTextSrc = read('components/feed/RichText.tsx');
+assert(richTextSrc.includes("typeof text === 'string' ? text : ''"), 'RichText must guard against non-string text values');
+
+const errorBoundarySrc = read('components/ui/ErrorBoundary.tsx');
+assert(
+  errorBoundarySrc.includes('${e.name}: ${e.message}\\n${(e.stack ?? \'\').slice(0, 1200)}') &&
+    !errorBoundarySrc.includes('\\( {e.message}'),
+  'ErrorBoundary must properly interpolate e.message and e.stack without escaped template syntax',
+);
+
+// Preserve E2E emulator test selectors in scripts/ci/auth-flow-check.mjs
+assert(read('app/(auth)/welcome.tsx').includes('I already have an account'), 'Welcome screen must preserve E2E sign-in label');
+assert(read('app/(onboarding)/fandoms.tsx').includes('Pick at least one'), 'Onboarding fandoms screen must preserve E2E button label');
+assert(read('app/(onboarding)/fandoms.tsx').includes('Continue with'), 'Onboarding fandoms screen must preserve E2E continue label');
+
+// 8. Production Launch Platform (Migration 46 + All 7 Commercial Pillars)
+const mig46 = read('supabase/migrations/20260101124600_46_production_launch_platform.sql');
+for (const token of [
+  'create table if not exists public.hallyu_events',
+  'create table if not exists public.hallyu_event_rsvps',
+  'create table if not exists public.support_tickets',
+  'create or replace function public.list_hallyu_events',
+  'create or replace function public.toggle_event_rsvp',
+  'create or replace function public.create_hallyu_event',
+  'create or replace function public.submit_support_ticket',
+  'create or replace function public.send_ceo_broadcast',
+  'create or replace function public.change_my_handle',
+  'create or replace function public.is_non_scripted_noise',
+  'create or replace function public.catalog_relevance_score',
+]) {
+  assert(mig46.includes(token), `Missing Migration 46 SQL surface: ${token}`);
+}
+for (const table of ['hallyu_events:', 'hallyu_event_rsvps:', 'support_tickets:']) {
+  assert(dbTypes.includes(table), `Missing Migration 46 typed table in database.ts: ${table}`);
+}
+
+const homeSrc = read('app/(tabs)/index.tsx');
+assert(!homeSrc.includes('Your next obsession'), 'Home feed must remain social-first without Your next obsession deck');
+assert(homeSrc.includes('WebAppInstallBanner'), 'Home feed must surface WebAppInstallBanner on web browsers');
+
+const welcomeSrc = read('app/(auth)/welcome.tsx');
+assert(welcomeSrc.includes('INSIDE HALLYU · APP SCREENSHOTS PREVIEW'), 'Web Landing page must render interactive App Screenshots Showcase');
+assert(welcomeSrc.includes('Install on iPhone / iPad'), 'Web Landing page must offer 2-tap iPhone Home-Screen installer');
+
+assert(read('app/events.tsx').includes('toggleEventRsvp'), 'Live Events Hub must wire toggleEventRsvp');
+assert(read('app/settings/bug-report.tsx').includes('submitSupportTicket'), 'Bug Report screen must wire submitSupportTicket');
+assert(read('app/settings/updates.tsx').includes('downloadAndInstallApk'), 'App Updates screen must wire Play-Store-free updater');
+assert(read('app/settings/moderation.tsx').includes('sendCeoBroadcast'), 'Admin Studio must wire CEO Broadcast Megaphone');
+assert(read('lib/links.ts').includes('fixhallyu@gmail.com'), 'Official support email fixhallyu@gmail.com must be configured');
+assert(read('lib/links.ts').includes('jgdevv10@gmail.com'), 'Official admin email jgdevv10@gmail.com must be configured');
+assert(fs.existsSync(path.join(root, 'public/manifest.json')), 'Missing PWA manifest.json');
+assert(fs.existsSync(path.join(root, 'public/sw.js')), 'Missing Web Push service worker sw.js');
+assert(fs.existsSync(path.join(root, 'public/.well-known/assetlinks.json')), 'Missing Android Digital Asset Links assetlinks.json');
+
+console.log('OVERALL STATUS: PASS (All Phases 1–8 Production Launch Platform verified)');

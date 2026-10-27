@@ -2,6 +2,11 @@
 -- Extensions, shared trigger helpers and the timestamp trigger every mutable table reuses.
 -- This migration is safe on a fresh Supabase project and idempotent.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create extension if not exists pgcrypto with schema extensions;
 create extension if not exists citext with schema extensions;
 create extension if not exists pg_trgm with schema extensions;
@@ -48,3 +53,6 @@ $$;
 
 revoke all on function public.is_moderator() from public;
 grant execute on function public.is_moderator() to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

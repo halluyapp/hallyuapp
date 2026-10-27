@@ -3,12 +3,15 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { makePoster } from '../../lib/media';
 import { attachAsset, discardAssets, MediaPipelineError, uploadAsset, uploadPoster, verifyPostMedia } from '../../lib/api/media';
+import type { UploadProgress } from '../../lib/api/media';
 import { fetchPosts } from '../../lib/api/feed';
-import { insertPost } from '../../lib/api/social';
+import { cleanupUnpublishedPost, insertPost, isUuid, updatePost } from '../../lib/api/social';
+import { supabase } from '../../lib/api/client';
+import { runAtomicPostPublishPipeline } from '../../lib/publishPipeline';
 import { adoptLocal, worldOf } from '../../lib/sync';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CREATE_TYPES } from '../../components/create/CreateSheet';
 import { ActorPickerSheet, DramaPickerSheet, EpisodePickerSheet, SpoilerSheet } from '../../components/create/pickers';
@@ -22,13 +25,16 @@ import { Chip, ChipRow } from '../../components/ui/Chip';
 import { Dialog } from '../../components/ui/Dialog';
 import { Poster } from '../../components/ui/Poster';
 import { Screen } from '../../components/ui/Screen';
+import { ProgressBar } from '../../components/ui/Section';
 import { InlineNotice } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
+import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
+import { fetchVideoAccessStatus, type VideoAccessStatus } from '../../lib/api/features';
 import { colors, fonts, radius, space } from '../../constants/theme';
 import { useAuth } from '../../lib/auth';
-import { extractHashtags, extractMentions, uid } from '../../lib/format';
+import { extractHashtags, extractMentions, fileSize, uid } from '../../lib/format';
 import { haptic, useApp } from '../../lib/hooks';
 import { DiscussionKind, Draft, LIMITS, Post, PostType, REACTIONS, ReactionKind, SpoilerLevel } from '../../lib/model';
 import { allActors, newPost } from '../../lib/store';
@@ -37,6 +43,68 @@ import { SPOILER_LABEL, suggestSpoilerLevel } from '../../lib/spoiler';
 import { track } from '../../lib/analytics';
 
 const KINDS: DiscussionKind[] = ['general', 'theory', 'ending', 'character', 'scene', 'question'];
+
+type PublishStage = {
+  step: 'upload' | 'create' | 'attach' | 'verify';
+  detail: string;
+  /** Present only while the transport is reporting bytes; absent means the step has no byte report. */
+  sent?: number;
+  total?: number;
+};
+
+/**
+ * What the composer shows while a post is being published.
+ *
+ * A publish is not one wait: the bytes go up first, then the post row is created, then each file is
+ * attached and re-read to prove the server has it. Each of those is a line the member can see, and
+ * the bar under it is a real fraction of a real file — never a timer pretending to be progress. Once
+ * every file is uploaded the bar gives way to the count of finished files, because the attach and
+ * verify steps have no bytes to report and a bar that keeps filling through them would be a lie.
+ */
+function PublishProgress({ stage }: { stage: PublishStage }) {
+  const pct = stage.sent != null && stage.total ? Math.min(100, Math.round((stage.sent / stage.total) * 100)) : null;
+  const headline = stage.step === 'upload' ? 'Uploading' : stage.step === 'create' ? 'Publishing' : stage.step === 'attach' ? 'Attaching' : 'Confirming';
+  const line =
+    pct != null
+      ? `${fileSize(stage.sent!)} of ${fileSize(stage.total!)} · ${pct}%`
+      : stage.step === 'upload'
+        ? 'Sending to the server…'
+        : stage.step === 'create'
+          ? 'Saving your post…'
+          : stage.step === 'attach'
+            ? 'Linking the files to your post…'
+            : 'Making sure the server has everything…';
+  return (
+    <View
+      style={styles.publish}
+      accessibilityRole="progressbar"
+      accessibilityLabel={`${headline} ${stage.detail}, ${line}`}
+      accessibilityValue={pct != null ? { min: 0, max: 100, now: pct } : undefined}
+      accessibilityLiveRegion="polite"
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+        {pct != null ? (
+          <Ionicons name="cloud-upload-outline" size={16} color={colors.accentText} />
+        ) : (
+          <ActivityIndicator size="small" color={colors.accentText} />
+        )}
+        <Text variant="label" numberOfLines={1} style={{ flexShrink: 1 }}>
+          {headline} · {stage.detail}
+        </Text>
+        <View style={{ flex: 1 }} />
+        <Text variant="caption" tone="secondary">
+          {line}
+        </Text>
+      </View>
+      {/* Bytes we can count get a bar; steps that report nothing get the spinner above and no bar,
+          because a bar that moves without bytes behind it is a decoration pretending to be data. */}
+      {pct != null ? <ProgressBar value={pct} max={100} height={4} /> : null}
+      <Text variant="caption" tone="tertiary">
+        Keep this screen open. If it fails, your draft is kept and you can retry.
+      </Text>
+    </View>
+  );
+}
 
 /**
  * The adaptive composer. One screen, six shapes. Context (drama / episode / actor) arrives via params
@@ -48,7 +116,7 @@ export default function Composer() {
   const toast = useToast();
   const auth = useAuth();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ type: PostType; dramaId?: string; season?: string; episode?: string; actorId?: string; draftId?: string; tag?: string; editId?: string }>();
+  const params = useLocalSearchParams<{ type: PostType; dramaId?: string; season?: string; episode?: string; actorId?: string; communityId?: string; draftId?: string; tag?: string; editId?: string; poll?: string }>();
   const { state, dispatch, me, getDrama, getPost, watch } = useApp();
   const type: PostType = (CREATE_TYPES.some((t) => t.type === params.type) ? params.type : 'post') as PostType;
   const meta = CREATE_TYPES.find((t) => t.type === type)!;
@@ -60,6 +128,9 @@ export default function Composer() {
   const [kind, setKind] = useState<DiscussionKind>(draft?.kind ?? editing?.kind ?? 'general');
   const [rating, setRating] = useState<number | undefined>(draft?.rating ?? editing?.rating);
   const [verdict, setVerdict] = useState(draft?.verdict ?? editing?.verdict ?? '');
+  const [pollOpen, setPollOpen] = useState<boolean>(Boolean(params.poll === '1' || editing?.poll));
+  const [pollQuestion, setPollQuestion] = useState<string>(editing?.poll?.question ?? '');
+  const [pollOptions, setPollOptions] = useState<string[]>(editing?.poll?.options ?? ['', '']);
   const [dramaId, setDramaId] = useState<string | undefined>(draft?.context.dramaId ?? editing?.context.dramaId ?? params.dramaId);
   const [secondaryId, setSecondaryId] = useState<string | undefined>(draft?.context.secondaryDramaId ?? editing?.context.secondaryDramaId);
   const [ep, setEp] = useState<{ season: number; episode?: number } | undefined>(
@@ -86,8 +157,42 @@ export default function Composer() {
   const [leaveDialog, setLeaveDialog] = useState(false);
   const [guidelines, setGuidelines] = useState(!state.prefs.guidelinesAccepted);
   const [posting, setPosting] = useState(false);
+  const [videoAccessOpen, setVideoAccessOpen] = useState(false);
+  const [videoAccess, setVideoAccess] = useState<VideoAccessStatus | null>(null);
+
+  const isStaff = me.role === 'admin' || me.role === 'moderator';
+
+  useEffect(() => {
+    if (auth.status !== 'signedIn') return;
+    if (isStaff) {
+      setVideoAccess({ allowed: true, role: me.role ?? 'admin', status: 'approved', monthlyBudget: 0, usedThisMonth: 0 });
+      setVideoAccessOpen(false);
+      return;
+    }
+    let alive = true;
+    void fetchVideoAccessStatus()
+      .then((s) => {
+        if (!alive) return;
+        setVideoAccess(s);
+        if (type === 'short' && !s.allowed && !editing) {
+          setVideoAccessOpen(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [auth.status, type, editing, isStaff, me.role]);
+  /**
+   * What the publish is doing right now. A spinner on the Post button was the whole story before:
+   * a 45MB clip took minutes and the screen looked frozen. Every entry here is a step that really
+   * happens — bytes that really left the device, a post the server really created — and `sent` is
+   * only present when the transport reported it, so the bar never invents precision.
+   */
+  const [stage, setStage] = useState<{ step: 'upload' | 'create' | 'attach' | 'verify'; detail: string; sent?: number; total?: number } | null>(null);
   const bodyRef = useRef<TextInput>(null);
   const draftId = useRef(draft?.id ?? uid('d'));
+  const pendingPostIdRef = useRef<string>(draft?.id && isUuid(draft.id) ? draft.id : uid(''));
 
   const drama = getDrama(dramaId);
   const secondary = getDrama(secondaryId);
@@ -116,12 +221,14 @@ export default function Composer() {
 
   const problems: string[] = [];
   if (needsDrama && !drama) problems.push(`${meta.label}s need a drama.`);
+  const validPollOptions = pollOptions.map((o) => o.trim()).filter(Boolean);
+  if (pollOpen && validPollOptions.length < 2) problems.push('Add at least 2 poll options.');
   if (type === 'discussion' && title.trim().length < 3) problems.push('Give the discussion a title.');
   if (type === 'review' && !rating) problems.push('Pick a rating.');
   if (type === 'review' && !verdict.trim()) problems.push('Write a one-line verdict.');
   if (type === 'recommendation' && !secondary) problems.push('Add the drama you’re comparing it to.');
   if (type === 'short' && !video) problems.push('Add a video.');
-  if (type !== 'review' && type !== 'short' && !body.trim()) problems.push('Write something.');
+  if (type !== 'review' && type !== 'short' && !body.trim() && !images.length && !video && !(pollOpen && pollQuestion.trim())) problems.push('Write something.');
   if (body.length > bodyLimit) problems.push(`Body is ${body.length - bodyLimit} over the limit.`);
   if (spoiler !== 'none' && !drama) problems.push('Spoiler levels need a drama attached.');
   const canPost = problems.length === 0 && !posting;
@@ -163,6 +270,20 @@ export default function Composer() {
   }, [navigation, dirty, posting, editing]);
 
   const goBack = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)'));
+  /**
+   * Where a successful publish leaves the member.
+   *
+   * It used to be `goBack()`, which dropped them on Home — where a member's own post is ranked down
+   * by design (×0.6) and, being seconds old, has no engagement to lift it, so it lands near the
+   * bottom of the feed they are looking at. From the member's side the post they just wrote had
+   * vanished. The composer now opens the post itself, and `posting` stays set so the unsaved-changes
+   * guard on the way out stays disarmed, exactly as `leave()` does it.
+   */
+  const landOnPost = (postId: string, message: string) => {
+    toast.show({ message, icon: 'checkmark-circle', tone: 'success' });
+    setPosting(true);
+    setTimeout(() => router.replace(`/post/${postId}`), 30);
+  };
   const leave = (save: boolean) => {
     if (save) {
       saveDraft();
@@ -188,6 +309,17 @@ export default function Composer() {
     }
   };
   const pickVideo = async () => {
+    if (auth.status !== 'signedIn') {
+      return router.push({ pathname: '/(auth)/gate', params: { reason: 'publish videos & Shorts' } });
+    }
+    if (!isStaff) {
+      const access = videoAccess ?? (await fetchVideoAccessStatus().catch(() => null));
+      if (access) setVideoAccess(access);
+      if (!access?.allowed) {
+        setVideoAccessOpen(true);
+        return;
+      }
+    }
     if (!(await videoUploadsAvailable()))
       return toast.show({ message: 'Video uploads aren’t available right now — the backend has no media bucket.', tone: 'danger' });
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -216,13 +348,31 @@ export default function Composer() {
     const mentions = extractMentions(body)
       .map((h) => Object.values(state.users).find((u) => u.handle.toLowerCase() === h.toLowerCase())?.id)
       .filter(Boolean) as string[];
-    const context = { dramaId, season: ep?.season, episode: ep?.episode, actorIds: actorIds.length ? actorIds : undefined, secondaryDramaId: secondaryId };
+    const context = {
+      dramaId,
+      season: ep?.season,
+      episode: ep?.episode,
+      actorIds: actorIds.length ? actorIds : undefined,
+      secondaryDramaId: secondaryId,
+      communityId: params.communityId,
+    };
+    const builtPoll =
+      pollOpen && validPollOptions.length >= 2
+        ? {
+            question: pollQuestion.trim() || body.trim().slice(0, 140) || 'Vote below',
+            options: validPollOptions.slice(0, 4),
+            counts: validPollOptions.slice(0, 4).map(() => 0),
+            totalVotes: 0,
+            myVote: null,
+          }
+        : undefined;
     const common = {
-      body: body.trim(),
+      body: (body.trim() || pollQuestion.trim()).trim(),
       title: type === 'discussion' ? title.trim() : undefined,
       kind: type === 'discussion' ? kind : undefined,
       rating: type === 'review' ? rating : undefined,
       verdict: type === 'review' ? verdict.trim() : undefined,
+      poll: builtPoll,
       spoiler,
       context,
       hashtags,
@@ -231,13 +381,39 @@ export default function Composer() {
       video: video ? { url: video.uri, duration: video.duration, poster: video.poster, width: video.width, height: video.height } : undefined,
     };
     if (editing) {
-      dispatch({ type: 'editPost', id: editing.id, patch: { ...common, editedAt: new Date().toISOString() } });
+      const editPatch: Partial<Post> = {
+        ...common,
+        editedAt: new Date().toISOString(),
+      };
+      if (supabase && isUuid(editing.id)) {
+        void (async () => {
+          setPosting(true);
+          try {
+            await updatePost(editing.id, editPatch, worldOf(state, context.dramaId));
+            adoptLocal({ type: 'editPost', id: editing.id, patch: editPatch });
+            haptic.success();
+            toast.show({ message: 'Post updated', icon: 'checkmark-circle', tone: 'success' });
+            goBack();
+          } catch (e) {
+            setPosting(false);
+            toast.show({
+              message: `Could not update post — ${(e as Error)?.message ?? 'please try again'}`,
+              tone: 'danger',
+            });
+          }
+        })();
+        return;
+      }
+      dispatch({ type: 'editPost', id: editing.id, patch: editPatch });
       haptic.success();
       toast.show({ message: 'Post updated', icon: 'checkmark-circle', tone: 'success' });
       goBack();
       return;
     }
     const post = newPost(me.id, { type, ...common });
+    if (pendingPostIdRef.current) {
+      post.id = pendingPostIdRef.current;
+    }
     if (type === 'reaction') post.reactions = { ...post.reactions, [reactionKind]: 1 };
     track('post.publish', { type, spoiler, hasDrama: !!dramaId, images: images.length, video: !!video });
 
@@ -252,100 +428,112 @@ export default function Composer() {
     dispatch({ type: 'addPost', post });
     if (draft) dispatch({ type: 'deleteDraft', id: draft.id });
     haptic.success();
-    toast.show({
-      message: type === 'review' ? 'Review published' : 'Posted',
-      icon: 'checkmark-circle',
-      tone: 'success',
-      actionLabel: 'View',
-      onAction: () => router.push(`/post/${post.id}`),
-    });
-    goBack();
+    landOnPost(post.id, type === 'review' ? 'Review published' : 'Posted');
   };
 
   /**
-   * The media pipeline, in the order the backend requires it.
+   * Atomic / safely recoverable media pipeline:
+   *   upload bytes → create post row → attach each upload → verify `post_media` → read back post
    *
-   *   reserve path → send bytes → create the server post → attach each upload → read post_media back
-   *
-   * The last step is what makes "posted" honest: `complete_media_upload` returning a media id is
-   * not proof on its own, so the composer re-reads `post_media` and refuses to claim success
-   * unless the server really holds a row for every file it sent. Any failure throws, and this
-   * function's catch turns that into "not posted, here's why, retry" with the draft intact — the
-   * member never keeps a "Posted" toast for media the backend does not have.
+   * If any step fails AFTER `insertPost` succeeds, BOTH the incomplete `posts` row AND all objects
+   * uploaded during this attempt are immediately cleaned up — leaving zero media-less orphan posts
+   * on the server and preserving `pendingPostIdRef` + local draft so retrying never duplicates.
    */
   const publishWithMedia = async (post: Post) => {
-    const uploaded: string[] = [];
     try {
-      const assets: { uploadId: string; posterPath?: string; width?: number | null; height?: number | null; durationMs?: number | null }[] = [];
+      const onProgress = (detail: string) => (p: UploadProgress) =>
+        setStage({ step: 'upload', detail, sent: p.sent, total: p.total });
 
-      for (const [i, uri] of images.entries()) {
-        const asset = await uploadAsset({ userId: me.id, uri, kind: 'image', unique: `${post.id}-${i}` });
-        uploaded.push(asset.storagePath);
-        assets.push({ uploadId: asset.uploadId });
-      }
+      const serverPost = await runAtomicPostPublishPipeline(
+        {
+          post,
+          userId: me.id,
+          world: worldOf(state, post.context.dramaId),
+          poll: post.poll,
+          imageUris: images,
+          videoInput: video
+            ? {
+                url: video.uri,
+                poster: video.poster,
+                durationSec: video.duration,
+              }
+            : null,
+          onPhase: (phase) => {
+            if (phase === 'insert') setStage({ step: 'create', detail: 'Creating your post' });
+            else if (phase === 'attach') {
+              const totalFiles = images.length + (video ? 1 : 0);
+              setStage({
+                step: 'attach',
+                detail: totalFiles > 1 ? `Attaching ${totalFiles} files` : 'Attaching your file',
+              });
+            } else if (phase === 'verify') {
+              setStage({ step: 'verify', detail: 'Confirming with the server' });
+            }
+          },
+        },
+        {
+          uploadImage: async (uidParam, postId, uri, i) => {
+            const detail = images.length > 1 ? `Image ${i + 1} of ${images.length}` : 'Your image';
+            setStage({ step: 'upload', detail });
+            const asset = await uploadAsset({
+              userId: uidParam,
+              uri,
+              kind: 'image',
+              unique: `${postId}-${i}`,
+              onProgress: onProgress(detail),
+            });
+            return {
+              uploadId: asset.uploadId,
+              storagePath: asset.storagePath,
+              width: asset.width ?? 1080,
+              height: asset.height ?? 1350,
+            };
+          },
+          uploadVideo: async (uidParam, postId, uri, durationMs) => {
+            setStage({ step: 'upload', detail: 'Your video' });
+            const asset = await uploadAsset({
+              userId: uidParam,
+              uri,
+              kind: 'video',
+              unique: postId,
+              onProgress: onProgress('Your video'),
+            });
+            return {
+              uploadId: asset.uploadId,
+              storagePath: asset.storagePath,
+              width: video?.width ?? null,
+              height: video?.height ?? null,
+              durationMs,
+            };
+          },
+          uploadPoster: async (uidParam, postId, posterUri) => {
+            setStage({ step: 'upload', detail: 'Your video’s cover frame' });
+            return uploadPoster({ userId: uidParam, posterUri, unique: postId });
+          },
+          insertPost: (p, uidParam, w) => insertPost(p, uidParam, w),
+          attachAsset: (opts) => attachAsset(opts),
+          verifyPostMedia: (postId, expected) => verifyPostMedia(postId, expected),
+          fetchPosts: (ids) => fetchPosts(ids),
+          cleanupUnpublishedPost: (postId) => cleanupUnpublishedPost(postId),
+          discardAssets: (paths) => discardAssets(paths),
+        },
+      );
 
-      if (video) {
-        // The poster is its own object; `complete_media_upload` records its path on the video row.
-        const posterPath = video.poster ? await uploadPoster({ userId: me.id, posterUri: video.poster, unique: post.id }) : undefined;
-        if (posterPath) uploaded.push(posterPath);
-        const asset = await uploadAsset({ userId: me.id, uri: video.uri, kind: 'video', unique: post.id });
-        asset.posterPath = posterPath;
-        uploaded.push(asset.storagePath);
-        assets.push({
-          uploadId: asset.uploadId,
-          posterPath,
-          width: video.width ?? null,
-          height: video.height ?? null,
-          durationMs: Math.round(video.duration * 1000),
-        });
-      }
-
-      // The post row must exist before media can be attached to it. The client id IS the server
-      // id (social.insertPost inserts it explicitly), so the local post and the server post are
-      // the same row — which is what lets the media be attached before anything is cached.
-      await insertPost(post, me.id, worldOf(state, post.context.dramaId));
-
-      let position = 0;
-      for (const asset of assets) {
-        await attachAsset({
-          uploadId: asset.uploadId,
-          postId: post.id,
-          position: position++,
-          width: asset.width,
-          height: asset.height,
-          durationMs: asset.durationMs,
-          posterPath: asset.posterPath ?? null,
-        });
-      }
-
-      await verifyPostMedia(post.id, uploaded);
-
-      // Adopt what the server actually stored (including signed media URLs) rather than the local
-      // device URIs, so the cache and the backend agree on what this post contains.
-      const [serverPost] = await fetchPosts([post.id]);
-      if (!serverPost) throw new MediaPipelineError('verify', 'The post could not be read back after publishing, so it is not confirmed saved.');
       adoptLocal({ type: 'addPost', post: serverPost });
-
       track('post.publish.media', { images: images.length, video: !!video });
       if (draft) dispatch({ type: 'deleteDraft', id: draft.id });
       haptic.success();
-      toast.show({
-        message: video ? (type === 'short' ? 'Short posted' : 'Posted with your video') : 'Posted',
-        icon: 'checkmark-circle',
-        tone: 'success',
-        actionLabel: 'View',
-        onAction: () => router.push(`/post/${post.id}`),
-      });
-      goBack();
+      setStage(null);
+      landOnPost(post.id, video ? (type === 'short' ? 'Short posted' : 'Posted with your video') : 'Posted');
     } catch (e) {
-      // The bytes are not referenced by a post the member can see; take them out of the bucket so
-      // an abandoned upload does not sit there until retention collects it.
-      await discardAssets(uploaded);
-      // Keep everything the member wrote, and let them try again from the same screen.
       saveDraft();
       setPosting(false);
+      setStage(null);
       const why = e instanceof MediaPipelineError ? e.message : (e as Error)?.message || 'unknown error';
-      track('post.publish.failed', { step: e instanceof MediaPipelineError ? e.step : 'unknown' });
+      track('post.publish.failed', {
+        step: e instanceof MediaPipelineError ? e.step : 'insert_or_verify',
+        reason: why.slice(0, 180),
+      });
       toast.show({
         message: `Not posted — ${why}. Your draft was kept; you can retry.`,
         tone: 'danger',
@@ -413,7 +601,7 @@ export default function Composer() {
           <Text variant="label">{ep?.episode ? `${drama.seasons.length > 1 ? `S${ep.season} ` : ''}Ep ${ep.episode}` : ep ? `Season ${ep.season}` : 'Episode'}</Text>
         </Pressable>
       ) : null}
-      {type !== 'reaction' ? (
+      {!editing && type !== 'reaction' ? (
         <Pressable
           onPress={() => setSheet('actors')}
           style={[styles.attach, actorIds.length ? styles.attachOn : null]}
@@ -493,7 +681,7 @@ export default function Composer() {
           ) : null}
 
           <View style={styles.authorRow}>
-            <Avatar uri={me.avatarUrl} name={me.displayName} size="md" />
+            <Avatar uri={me.avatarUrl} avatarPath={me.avatarPath} name={me.displayName} size="md" />
             <View>
               <Text variant="label">{me.displayName}</Text>
               <Text variant="caption" tone="secondary">
@@ -541,6 +729,7 @@ export default function Composer() {
                 ))}
               </ChipRow>
               <TextInput
+                editable={!posting}
                 value={title}
                 onChangeText={(t) => setTitle(t.slice(0, LIMITS.discussionTitle))}
                 placeholder={kind === 'question' ? 'Ask the fandom…' : kind === 'theory' ? 'Your theory in one line' : 'Title'}
@@ -603,6 +792,7 @@ export default function Composer() {
               </View>
               <View>
                 <TextInput
+                  editable={!posting}
                   value={verdict}
                   onChangeText={(t) => setVerdict(t.slice(0, LIMITS.reviewVerdict))}
                   placeholder="One-line verdict (shows on the card)"
@@ -678,6 +868,7 @@ export default function Composer() {
 
           <View style={{ paddingHorizontal: space.margin }}>
             <TextInput
+              editable={!posting}
               ref={bodyRef}
               value={body}
               onChangeText={(t) => setBody(t)}
@@ -729,6 +920,69 @@ export default function Composer() {
               </View>
             ) : null}
           </View>
+
+          {pollOpen && (type === 'post' || type === 'discussion') ? (
+            <View style={{ paddingHorizontal: space.margin, marginTop: space.x3 }}>
+              <View style={{ padding: space.x3, borderRadius: radius.md, backgroundColor: colors.surface1, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong, gap: space.x2 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="stats-chart" size={14} color={colors.accent} />
+                    <Text variant="overline" tone="accent">
+                      INTERACTIVE POLL
+                    </Text>
+                  </View>
+                  <Pressable onPress={() => setPollOpen(false)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Remove poll">
+                    <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+                  </Pressable>
+                </View>
+                <TextInput
+                  editable={!posting}
+                  value={pollQuestion}
+                  onChangeText={(t) => setPollQuestion(t.slice(0, 140))}
+                  placeholder="Ask a question (e.g. Who stole Episode 10?)"
+                  placeholderTextColor={colors.textTertiary}
+                  style={{ color: colors.textPrimary, fontSize: 15, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle }}
+                />
+                {pollOptions.map((opt, idx) => (
+                  <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+                    <TextInput
+                      editable={!posting}
+                      value={opt}
+                      onChangeText={(t) =>
+                        setPollOptions((prev) => prev.map((item, i) => (i === idx ? t.slice(0, 80) : item)))
+                      }
+                      placeholder={`Choice ${idx + 1}${idx < 2 ? ' (required)' : ' (optional)'}`}
+                      placeholderTextColor={colors.textTertiary}
+                      style={{ flex: 1, color: colors.textPrimary, fontSize: 14, paddingHorizontal: space.x3, paddingVertical: 9, borderRadius: radius.sm, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle }}
+                    />
+                    {pollOptions.length > 2 ? (
+                      <Pressable
+                        onPress={() => setPollOptions((prev) => prev.filter((_, i) => i !== idx))}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove choice ${idx + 1}`}
+                      >
+                        <Ionicons name="remove-circle-outline" size={18} color={colors.textTertiary} />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                ))}
+                {pollOptions.length < 4 ? (
+                  <Pressable
+                    onPress={() => setPollOptions((prev) => [...prev, ''])}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 4 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add poll option"
+                  >
+                    <Ionicons name="add-circle-outline" size={16} color={colors.accent} />
+                    <Text variant="label" tone="accent">
+                      Add choice ({pollOptions.length}/4)
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
 
           {images.length ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.margin, gap: space.x2, marginTop: space.x2 }}>
@@ -808,10 +1062,16 @@ export default function Composer() {
           ) : null}
         </ScrollView>
 
+        {posting && stage ? <PublishProgress stage={stage} /> : null}
+
         <View style={[styles.toolbar, { paddingBottom: Math.max(insets.bottom, space.x2) }]}>
-          {attachRow}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x1 }}>
-            {type !== 'short' && type !== 'reaction' ? (
+          {/* Nothing in the toolbar can change the post while it is being published: the post row and
+              the file list are already fixed, so an edit here would be dropped without saying so. */}
+          <View pointerEvents={posting ? 'none' : 'auto'} style={posting ? styles.inert : undefined}>
+            {attachRow}
+          </View>
+          <View pointerEvents={posting ? 'none' : 'auto'} style={[posting ? styles.inert : undefined, { flexDirection: 'row', alignItems: 'center', gap: space.x1 }]}>
+            {!editing && type !== 'short' && type !== 'reaction' ? (
               <Pressable
                 onPress={pickImages}
                 disabled={images.length >= LIMITS.images}
@@ -822,10 +1082,28 @@ export default function Composer() {
                 <Ionicons name="image-outline" size={22} color={images.length >= LIMITS.images ? colors.textDisabled : colors.textPrimary} />
               </Pressable>
             ) : null}
-            {type === 'post' || type === 'discussion' ? (
+            {!editing && (type === 'post' || type === 'discussion') ? (
               <Pressable onPress={pickVideo} style={styles.tool} accessibilityRole="button" accessibilityLabel={video ? 'Replace video' : 'Add a video'}>
                 <Ionicons name={video ? 'videocam' : 'videocam-outline'} size={22} color={video ? colors.accentText : colors.textPrimary} />
               </Pressable>
+            ) : null}
+            {!editing && (type === 'post' || type === 'discussion') ? (
+              <Pressable
+                onPress={() => {
+                  haptic.select();
+                  setPollOpen((v) => !v);
+                }}
+                style={styles.tool}
+                accessibilityRole="button"
+                accessibilityLabel={pollOpen ? 'Remove poll' : 'Add interactive poll'}
+              >
+                <Ionicons name={pollOpen ? 'stats-chart' : 'stats-chart-outline'} size={21} color={pollOpen ? colors.accent : colors.textPrimary} />
+              </Pressable>
+            ) : null}
+            {editing ? (
+              <Text variant="caption" tone="tertiary" style={{ paddingHorizontal: space.x2 }}>
+                Media &amp; polls stay fixed once published
+              </Text>
             ) : null}
             <Pressable onPress={() => setBody((b) => `${b}${b.endsWith(' ') || !b ? '' : ' '}#`)} style={styles.tool} accessibilityRole="button" accessibilityLabel="Add hashtag">
               <Text variant="titleSmall">#</Text>
@@ -876,6 +1154,12 @@ export default function Composer() {
       ) : null}
       <ActorPickerSheet visible={sheet === 'actors'} onClose={() => setSheet(null)} selected={actorIds} onChange={setActorIds} dramaId={dramaId} />
       <SpoilerSheet visible={sheet === 'spoiler'} onClose={() => setSheet(null)} value={spoiler} onChange={setSpoiler} drama={drama} episode={ep?.episode} />
+      <VideoAccessSheet
+        visible={videoAccessOpen}
+        onClose={() => setVideoAccessOpen(false)}
+        initialStatus={videoAccess}
+        onStatusChange={setVideoAccess}
+      />
       <Dialog
         visible={leaveDialog}
         title="Keep this as a draft?"
@@ -892,6 +1176,18 @@ export default function Composer() {
 }
 
 const styles = StyleSheet.create({
+  inert: { opacity: 0.5 },
+  publish: {
+    gap: space.x2,
+    marginHorizontal: space.margin,
+    marginBottom: space.x2,
+    paddingHorizontal: space.x3,
+    paddingVertical: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
   guidelines: { margin: space.margin, marginBottom: 0, padding: space.x4, backgroundColor: colors.surface1, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.borderSubtle },
   hint: {
     flexDirection: 'row',

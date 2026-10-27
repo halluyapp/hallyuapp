@@ -12,6 +12,11 @@
 -- anon key cannot read a member's private shelf image. The two public prefixes are readable by
 -- anyone because they are exactly what a feed card renders.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'media',
@@ -95,3 +100,6 @@ create policy media_read_public_prefix on storage.objects
   using (bucket_id = 'media' and (name like 'avatars/%' or name like 'catalog/%'));
 
 grant usage on schema storage to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

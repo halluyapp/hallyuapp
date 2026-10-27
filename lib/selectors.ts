@@ -9,6 +9,17 @@ const ageHours = (iso: string) => (now().getTime() - new Date(iso).getTime()) / 
 /** Hot ranking: engagement decays with age. */
 const hot = (p: Post) => score(p) / Math.pow(ageHours(p.createdAt) + 2, 1.4);
 
+/**
+ * How long a member's own post is lifted in their own For You feed.
+ *
+ * The down-weight below exists so the feed is about other people, and it stays. But `hot()` is
+ * engagement over age, and a post seconds old has no engagement at all — so the two rules together
+ * put the post a member has *just* written at the bottom of the feed they land on, which reads as
+ * "my post disappeared". For a quarter of an hour it gets a bump that decays to nothing instead.
+ */
+const OWN_POST_GRACE_HOURS = 0.25;
+const OWN_POST_LIFT = 20;
+
 export function getUser(s: AppState, id: string): User | undefined {
   if (id === s.profile.id) return s.profile;
   return s.users[id];
@@ -60,7 +71,7 @@ export function visiblePosts(s: AppState, posts: Post[] = s.posts): Post[] {
       !s.blockedUsers.includes(p.authorId) &&
       !s.mutedUsers.includes(p.authorId) &&
       !(p.context.dramaId && s.mutedDramas.includes(p.context.dramaId)) &&
-      !mutedWords.some((w) => `${p.title ?? ''} ${p.body}`.toLowerCase().includes(w)),
+      !mutedWords.some((w) => `${p.title ?? ''} ${p.body ?? ''}`.toLowerCase().includes(w)),
   );
 }
 
@@ -110,7 +121,11 @@ function localForYou(s: AppState): Ranked[] {
       let reason: string | undefined;
       const d = getDrama(s, post.context.dramaId);
       const wl = post.context.dramaId ? s.watchlist[post.context.dramaId] : undefined;
-      if (post.authorId === s.profile.id) w *= 0.6;
+      if (post.authorId === s.profile.id) {
+        const ownAge = ageHours(post.createdAt);
+        if (ownAge <= OWN_POST_GRACE_HOURS) w += OWN_POST_LIFT * (1 - ownAge / OWN_POST_GRACE_HOURS);
+        else w *= 0.6;
+      }
       if (post.context.dramaId && s.follows.dramas.includes(post.context.dramaId)) {
         w *= 1.8;
         reason = `Because you follow ${d?.title}`;
@@ -175,7 +190,7 @@ export function postsForActor(s: AppState, actorId: string): Post[] {
   return visiblePosts(s)
     .filter(
       (p) =>
-        p.context.actorIds?.includes(actorId) || (p.context.dramaId && actor?.knownFor.includes(p.context.dramaId) && p.body.toLowerCase().includes((actor?.name ?? '').toLowerCase().split(' ')[0]!)),
+        p.context.actorIds?.includes(actorId) || (p.context.dramaId && actor?.knownFor.includes(p.context.dramaId) && (p.body ?? '').toLowerCase().includes((actor?.name ?? '').toLowerCase().split(' ')[0]!)),
     )
     .sort((a, b) => hot(b) - hot(a));
 }

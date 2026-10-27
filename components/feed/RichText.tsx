@@ -16,7 +16,8 @@ const TOKEN = /(#[\p{L}\p{N}_]+|@[a-zA-Z0-9_.]+|https?:\/\/\S+)/gu;
 /** Body text with tappable #hashtags (→ search), @mentions (→ profile) and links (→ browser). */
 export function RichText({ text, variant = 'body', tone, numberOfLines }: RichTextProps) {
   const router = useRouter();
-  const parts = useMemo(() => text.split(TOKEN), [text]);
+  const safeText = typeof text === 'string' ? text : '';
+  const parts = useMemo(() => safeText.split(TOKEN), [safeText]);
   return (
     <Text variant={variant} tone={tone} numberOfLines={numberOfLines}>
       {parts.map((part, i) => {

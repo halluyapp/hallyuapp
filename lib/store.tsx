@@ -2,10 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect } from 'react';
 import { create } from 'zustand';
 import { useStoreWithEqualityFn } from 'zustand/traditional';
+import { normalizeMediaUrl } from './api/client';
 import { markBoot } from './boot';
 import { mirrorAction, setApplyDispatcher } from './sync';
 import { uid } from './format';
-import { Actor, Collection, Comment, Draft, Drama, FandomId, Notification, NotificationGroup, Post, ReactionCounts, ReactionKind, SpoilerProtection, User, WatchStatus, WatchlistItem } from './model';
+import { Actor, Collection, Comment, Community, Draft, Drama, FandomId, Notification, NotificationGroup, Post, ReactionCounts, ReactionKind, SpoilerProtection, User, WatchStatus, WatchlistItem } from './model';
 
 const STORAGE_KEY = 'hallyu.state.v4';
 
@@ -20,7 +21,9 @@ export interface Prefs {
   personalization: boolean;
   reduceMotion: boolean;
   notifications: { episodes: boolean; social: boolean; highlights: boolean; system: boolean; quietHours: boolean };
-  language: 'en' | 'ko';
+  /** Opt-in silent live status banner in Android notification shade & lock screen. */
+  livePulseBanner: boolean;
+  language: 'en' | 'ko' | 'ja' | 'zh' | 'fr';
   guidelinesAccepted: boolean;
   dataSaver: boolean;
   /** Version of the Terms/Guidelines the member accepted (Play UGC policy); 0 = not yet. */
@@ -29,6 +32,8 @@ export interface Prefs {
 
 export interface AppState {
   hydrated: boolean;
+  /** User UUID whose `get_bootstrap()` state has been adopted in this session (runtime-only). */
+  backendSyncedUserId: string | null;
   onboarding: { done: boolean; step: number; intent?: Intent; genres: string[]; /** the worlds the member picked — empty means ALL, which is the default */ fandoms: FandomId[] };
   prefs: Prefs;
   profile: User;
@@ -42,6 +47,8 @@ export interface AppState {
   posts: Post[];
   comments: Comment[];
   collections: Collection[];
+  communities: Community[];
+  joinedCommunities: string[];
   notifications: Notification[];
   /** Public profile cards seen in feeds/threads (id → User). */
   users: Record<string, User>;
@@ -64,10 +71,11 @@ const defaultPrefs: Prefs = {
   autoplay: 'wifi',
   oneTapReactions: true,
   mutedWords: [],
-  trueBlack: false,
+  trueBlack: true,
   personalization: true,
   reduceMotion: false,
   notifications: { episodes: true, social: true, highlights: true, system: true, quietHours: false },
+  livePulseBanner: false,
   guidelinesAccepted: false,
   dataSaver: false,
   language: 'en',
@@ -78,6 +86,7 @@ const defaultPrefs: Prefs = {
 export function initialState(): AppState {
   return {
     hydrated: false,
+    backendSyncedUserId: null,
     onboarding: { done: false, step: 0, genres: [], fandoms: [] },
     prefs: defaultPrefs,
     profile: emptyProfile(),
@@ -90,6 +99,8 @@ export function initialState(): AppState {
     posts: [],
     comments: [],
     collections: [],
+    communities: [],
+    joinedCommunities: [],
     notifications: [],
     users: {},
     drafts: [],
@@ -163,6 +174,9 @@ export type Action =
   | { type: 'report'; id: string; targetType?: 'post' | 'comment' | 'user' | 'drama' | 'collection'; reason?: string; detail?: string }
   | { type: 'recentSearch'; q?: string; clear?: boolean }
   | { type: 'import'; dramas?: Drama[]; actors?: Actor[] }
+  | { type: 'votePoll'; postId: string; optionIndex: number; serverPoll?: Post['poll'] }
+  | { type: 'rateDrama'; dramaId: string; rating: number }
+  | { type: 'joinCommunity'; id: string; on?: boolean }
   | { type: 'seenActivity' };
 
 function toggle(list: string[], id: string, on?: boolean): string[] {
@@ -196,10 +210,53 @@ function reducer(s: AppState, a: Action): AppState {
       return { ...s, onboarding: { ...s.onboarding, ...a.patch } };
     case 'prefs':
       return { ...s, prefs: { ...s.prefs, ...a.patch } };
-    case 'profile':
-      return { ...s, profile: { ...s.profile, ...a.patch } };
-    case 'follow':
-      return { ...s, follows: { ...s.follows, [a.kind]: toggle(s.follows[a.kind], a.id, a.on) } };
+    case 'profile': {
+      const normalizedPatch: Partial<User> = { ...a.patch };
+      if ('bio' in a.patch) {
+        const cleanBio = typeof a.patch.bio === 'string' ? a.patch.bio.trim() : '';
+        normalizedPatch.bio = cleanBio.length > 0 ? cleanBio : undefined;
+      }
+      const nextProfile: User = { ...s.profile, ...normalizedPatch };
+      return {
+        ...s,
+        profile: nextProfile,
+        users: {
+          ...s.users,
+          [nextProfile.id]: { ...s.users[nextProfile.id], ...nextProfile },
+        },
+      };
+    }
+    case 'follow': {
+      const prevList = s.follows[a.kind];
+      const nextList = toggle(prevList, a.id, a.on);
+      if (nextList === prevList) return s;
+      if (a.kind !== 'users') {
+        return { ...s, follows: { ...s.follows, [a.kind]: nextList } };
+      }
+      const delta = nextList.length > prevList.length ? 1 : -1;
+      const nextMe: User = {
+        ...s.profile,
+        following: Math.max(0, s.profile.following + delta),
+      };
+      const nextUsers: Record<string, User> = {
+        ...s.users,
+        [nextMe.id]: { ...s.users[nextMe.id], ...nextMe },
+      };
+      if (s.users[a.id]) {
+        nextUsers[a.id] = {
+          ...s.users[a.id]!,
+          followers: Math.max(0, s.users[a.id]!.followers + delta),
+        };
+      }
+      return {
+        ...s,
+        profile: nextMe,
+        users: nextUsers,
+        follows: { ...s.follows, users: nextList },
+      };
+    }
+    case 'joinCommunity':
+      return { ...s, joinedCommunities: toggle(s.joinedCommunities ?? [], a.id, a.on) };
     case 'dramaNotify':
       return { ...s, dramaNotify: { ...s.dramaNotify, [a.id]: a.on } };
     case 'watch': {
@@ -277,20 +334,51 @@ function reducer(s: AppState, a: Action): AppState {
     case 'seen':
       return s.seen[a.id] ? s : { ...s, seen: { ...s.seen, [a.id]: new Date().toISOString() } };
     case 'addPost': {
-      // upsert by id so re-dispatching the same local post merges instead of duplicating
-      const exists = s.posts.some((p) => p.id === a.post.id);
-      return { ...s, posts: exists ? s.posts.map((p) => (p.id === a.post.id ? { ...p, ...a.post } : p)) : [a.post, ...s.posts] };
+      if (!a.post || typeof a.post.id !== 'string' || !a.post.id) return s;
+      const incoming: Post = {
+        ...a.post,
+        body: typeof a.post.body === 'string' ? a.post.body : '',
+        hashtags: Array.isArray(a.post.hashtags) ? a.post.hashtags : [],
+        mentions: Array.isArray(a.post.mentions) ? a.post.mentions : [],
+      };
+      // upsert by id so re-dispatching the same local post merges instead of duplicating,
+      // while preserving existing hydrated media/poll fields if a partial update arrives first.
+      const exists = s.posts.some((p) => p.id === incoming.id);
+      return {
+        ...s,
+        posts: exists
+          ? s.posts.map((p) =>
+              p.id === incoming.id
+                ? {
+                    ...p,
+                    ...incoming,
+                    images: incoming.images && incoming.images.length > 0 ? incoming.images : p.images,
+                    imagePaths: incoming.imagePaths && incoming.imagePaths.length > 0 ? incoming.imagePaths : p.imagePaths,
+                    video: incoming.video ?? p.video,
+                    poll: incoming.poll ?? p.poll,
+                  }
+                : p,
+            )
+          : [incoming, ...s.posts],
+      };
     }
     case 'editPost':
       return { ...s, posts: s.posts.map((p) => (p.id === a.id ? { ...p, ...a.patch, editedAt: new Date().toISOString() } : p)) };
     case 'deletePost':
       return { ...s, posts: s.posts.map((p) => (p.id === a.id ? { ...p, state: 'deleted' } : p)) };
     case 'addComment': {
-      const exists = s.comments.some((c) => c.id === a.comment.id);
+      if (!a.comment || typeof a.comment.id !== 'string' || !a.comment.id) return s;
+      const incomingComment: Comment = {
+        ...a.comment,
+        body: typeof a.comment.body === 'string' ? a.comment.body : '',
+      };
+      const exists = s.comments.some((c) => c.id === incomingComment.id);
       return {
         ...s,
-        comments: exists ? s.comments.map((c) => (c.id === a.comment.id ? { ...c, ...a.comment } : c)) : [...s.comments, a.comment],
-        posts: exists ? s.posts : s.posts.map((p) => (p.id === a.comment.postId ? { ...p, commentCount: p.commentCount + 1 } : p)),
+        comments: exists
+          ? s.comments.map((c) => (c.id === incomingComment.id ? { ...c, ...incomingComment } : c))
+          : [...s.comments, incomingComment],
+        posts: exists ? s.posts : s.posts.map((p) => (p.id === incomingComment.postId ? { ...p, commentCount: p.commentCount + 1 } : p)),
       };
     }
     case 'deleteComment': {
@@ -481,6 +569,38 @@ function reducer(s: AppState, a: Action): AppState {
       }
       return { ...s, importedDramas: dramas, importedActors: actors };
     }
+    case 'votePoll': {
+      const idx = s.posts.findIndex((p) => p.id === a.postId);
+      if (idx < 0) return s;
+      const target = s.posts[idx]!;
+      if (!target.poll) return s;
+      const nextPoll =
+        a.serverPoll ??
+        (() => {
+          const prevVote = target.poll.myVote;
+          const counts = target.poll.options.map((_, i) => {
+            let n = target.poll!.counts[i] ?? 0;
+            if (prevVote === i) n = Math.max(0, n - 1);
+            if (a.optionIndex === i) n += 1;
+            return n;
+          });
+          return {
+            ...target.poll,
+            counts,
+            totalVotes: counts.reduce((sum, n) => sum + n, 0),
+            myVote: a.optionIndex,
+          };
+        })();
+      const posts = [...s.posts];
+      posts[idx] = { ...target, poll: nextPoll };
+      return { ...s, posts };
+    }
+    case 'rateDrama': {
+      const importedDramas = s.importedDramas.map((d) =>
+        d.id === a.dramaId ? { ...d, rating: Math.round(a.rating * 10) / 10 } : d,
+      );
+      return { ...s, importedDramas };
+    }
     case 'seenActivity':
       return { ...s, lastSeenActivity: new Date().toISOString() };
     default:
@@ -520,6 +640,8 @@ const PERSISTED_KEYS: (keyof AppState)[] = [
   'posts',
   'comments',
   'collections',
+  'communities',
+  'joinedCommunities',
   'notifications',
   'users',
   'drafts',
@@ -543,11 +665,66 @@ function serialise(s: AppState): string {
   return JSON.stringify(out);
 }
 
+export function sanitizePersistedState(data: Partial<AppState> | null | undefined): Partial<AppState> | null {
+  if (!data || typeof data !== 'object') return null;
+  const cleaned: Partial<AppState> = { ...data, backendSyncedUserId: null };
+  if (cleaned.profile?.avatarUrl) {
+    cleaned.profile = { ...cleaned.profile, avatarUrl: normalizeMediaUrl(cleaned.profile.avatarUrl) };
+  }
+  if (cleaned.users && typeof cleaned.users === 'object') {
+    const users: Record<string, User> = {};
+    for (const [id, u] of Object.entries(cleaned.users)) {
+      if (!u) continue;
+      users[id] = u.avatarUrl ? { ...u, avatarUrl: normalizeMediaUrl(u.avatarUrl) } : u;
+    }
+    cleaned.users = users;
+  }
+  if (Array.isArray(cleaned.posts)) {
+    cleaned.posts = cleaned.posts
+      .filter((p): p is Post => Boolean(p && typeof p.id === 'string' && p.id.length > 0 && typeof p.authorId === 'string'))
+      .map((p) => ({
+        ...p,
+        body: typeof p.body === 'string' ? p.body : '',
+        createdAt: typeof p.createdAt === 'string' && p.createdAt ? p.createdAt : new Date().toISOString(),
+        spoiler: p.spoiler ?? 'none',
+        hashtags: Array.isArray(p.hashtags) ? p.hashtags : [],
+        mentions: Array.isArray(p.mentions) ? p.mentions : [],
+        context: p.context && typeof p.context === 'object' ? p.context : {},
+        reactions:
+          p.reactions && typeof p.reactions === 'object'
+            ? p.reactions
+            : { loved: 0, cried: 0, screamed: 0, swooned: 0, laughed: 0, furious: 0 },
+        images: p.images?.map((img) => (typeof img === 'string' ? normalizeMediaUrl(img) ?? img : img)),
+        video: p.video
+          ? {
+              ...p.video,
+              url: normalizeMediaUrl(p.video.url) ?? p.video.url,
+              poster: typeof p.video.poster === 'string' ? normalizeMediaUrl(p.video.poster) ?? p.video.poster : p.video.poster,
+            }
+          : undefined,
+      }));
+  }
+  if (Array.isArray(cleaned.comments)) {
+    cleaned.comments = cleaned.comments
+      .filter((c): c is Comment => Boolean(c && typeof c.id === 'string' && c.id.length > 0 && typeof c.postId === 'string'))
+      .map((c) => ({
+        ...c,
+        body: typeof c.body === 'string' ? c.body : '',
+        createdAt: typeof c.createdAt === 'string' && c.createdAt ? c.createdAt : new Date().toISOString(),
+        spoiler: c.spoiler ?? 'none',
+        reactions:
+          c.reactions && typeof c.reactions === 'object'
+            ? c.reactions
+            : { loved: 0, cried: 0, screamed: 0, swooned: 0, laughed: 0, furious: 0 },
+      }));
+  }
+  return cleaned;
+}
+
 function deserialise(raw: string): Partial<AppState> | null {
   try {
     const data = JSON.parse(raw) as Partial<AppState>;
-    if (!data || typeof data !== 'object') return null;
-    return data;
+    return sanitizePersistedState(data);
   } catch {
     return null;
   }
@@ -664,4 +841,4 @@ export function newPost(authorId: string, partial: Partial<Post> & Pick<Post, 't
   };
 }
 
-export { initialState as emptyInitialState };
+export { initialState as emptyInitialState, uid };

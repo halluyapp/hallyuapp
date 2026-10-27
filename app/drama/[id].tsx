@@ -1,7 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Animated, FlatList, Linking, Pressable, Share, StyleSheet, View } from 'react-native';
+import { Animated, FlatList, Linking, Pressable, StyleSheet, View } from 'react-native';
+import { ShareCardModal } from '../../components/share/ShareCardModal';
+import { fetchTitleRatingSummary, rateTitleOnServer } from '../../lib/api/features';
+import { crossCheckRuntimes } from '../../lib/api/megan';
+import { fetchDramasByUuids } from '../../lib/api/feed';
+import { isUuid } from '../../lib/api/social';
+import { setActiveComposerContext } from '../../lib/tabEvents';
+import { officialWatchLink } from '../../lib/whereToWatch';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AddToCollectionSheet } from '../../components/collections/AddToCollectionSheet';
 import { CollectionCard } from '../../components/collections/CollectionCard';
@@ -77,7 +85,31 @@ export default function DramaHub() {
   const [menu, setMenu] = useState(false);
   const [collect, setCollect] = useState(false);
   const [create, setCreate] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [synopsisOpen, setSynopsisOpen] = useState(false);
+  const [myScore, setMyScore] = useState<number | null>(null);
+  const [ratingCount, setRatingCount] = useState<number>(0);
+
+  useEffect(() => {
+    if (!drama?.id) return;
+    setActiveComposerContext({ dramaId: drama.id, season });
+    let alive = true;
+    fetchTitleRatingSummary(drama.id, state.profile.id)
+      .then((res) => {
+        if (!alive) return;
+        setMyScore(res.myScore);
+        setRatingCount(res.ratingCount);
+        if (res.communityRating && res.communityRating !== drama.rating) {
+          dispatch({ type: 'rateDrama', dramaId: drama.id, rating: res.communityRating });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      setActiveComposerContext(undefined);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drama?.id, state.profile.id]);
   const { scrollY, onScroll } = useScrollY();
   const arrivePoster = useArrive(0);
   const arriveTitle = useArrive(60);
@@ -87,6 +119,18 @@ export default function DramaHub() {
 
   // Thin (search-imported) or un-hydrated records get enriched from the catalog provider.
   const parsedTmdb = !drama && params.id ? /^tmdb-(?:(movie)-)?(\d+)$/.exec(params.id) : null;
+  useEffect(() => {
+    if (drama || !params.id || !isUuid(params.id)) return;
+    let alive = true;
+    void fetchDramasByUuids([params.id]).then(({ dramas }) => {
+      if (!alive || !dramas[0]) return;
+      const [adopted] = adoptDramas(dramas);
+      router.replace(`/drama/${(adopted ?? dramas[0]).id}`);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [drama, params.id, router]);
   const thin =
     (!!drama?.provider && (!drama.posterUrl || !drama.backdropUrl || !drama.trailerUrl || drama.cast.length < 4 || (!film && drama.episodes.length === 0))) ||
     !!parsedTmdb;
@@ -129,6 +173,11 @@ export default function DramaHub() {
   );
 
   const posts = useMemo(() => (drama ? postsForDrama(state, drama.id, sort) : []), [state, drama, sort]);
+  /** First unveiled member/Hallyu video for this title. Plays only content hosted on Hallyu. */
+  const hallyuPlayable = useMemo(
+    () => posts.find((p) => !!p.video && p.spoiler === 'none' && !postVeiled(state, p)) ?? null,
+    [posts, state],
+  );
   const typed = useMemo(() => (filter === 'all' ? posts.filter((p) => p.type !== 'short') : posts.filter((p) => p.type === filter)), [posts, filter]);
   // "Safe for me" hides what would be veiled for this viewer, so a mid-series read isn't a wall of veils.
   const veiledCount = useMemo(() => typed.filter((p) => p.spoiler !== 'none' || postVeiled(state, p)).length, [state, typed]);
@@ -152,6 +201,33 @@ export default function DramaHub() {
   }, [state, drama, liveRecs.data]);
   const inCollections = useMemo(() => (drama ? collectionsContaining(state, drama.id) : []), [state, drama]);
   const publicCols = useMemo(() => (drama ? state.collections.filter((c) => c.visibility === 'public' && c.items.some((i) => i.dramaId === drama.id)).slice(0, 6) : []), [state.collections, drama]);
+
+  // Runtime cross-check against a second metadata source (Megan, via the server). Informational only.
+  const crossRows = useMemo(
+    () =>
+      drama && !film
+        ? drama.episodes.filter((e) => e.season === season && e.runtime).map((e) => ({ episode: e.number, runtime: e.runtime as number }))
+        : [],
+    [drama, film, season],
+  );
+  const providerId = drama?.provider?.id;
+  const [runtimeNote, setRuntimeNote] = useState<string | null>(null);
+  useEffect(() => {
+    setRuntimeNote(null);
+    if (!providerId || crossRows.length < 2) return;
+    let cancelled = false;
+    crossCheckRuntimes(providerId, season, crossRows).then((r) => {
+      if (cancelled || !r.ok) return;
+      setRuntimeNote(
+        r.value.agrees
+          ? `Runtimes match a second source for ${r.value.compared} episodes.`
+          : `Runtimes differ from a second source for ${r.value.mismatches.length} of ${r.value.compared} episodes.`,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerId, season, crossRows]);
 
   if (!drama) {
     return (
@@ -183,10 +259,18 @@ export default function DramaHub() {
   const next = drama.episodes.filter((e) => episodeState(e) !== 'aired').sort((a, b) => (a.airDate ?? '').localeCompare(b.airDate ?? ''))[0];
   const liveEp = drama.episodes.find((e) => episodeState(e) === 'live');
   const talking = posts.filter((p) => new Date(p.createdAt) > new Date(Date.now() - 7 * 86_400_000)).length;
-  const openTrailer = () => {
+  const openTrailer = async () => {
     if (!drama.trailerUrl) return;
     haptic.light();
-    Linking.openURL(drama.trailerUrl).catch(() => toast.show({ message: 'Could not open trailer' }));
+    try {
+      await WebBrowser.openBrowserAsync(drama.trailerUrl, {
+        toolbarColor: '#000000',
+        controlsColor: colors.accent,
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
+      });
+    } catch {
+      Linking.openURL(drama.trailerUrl).catch(() => toast.show({ message: 'Could not open trailer' }));
+    }
   };
   const stillH = 96;
   const stills: {
@@ -223,10 +307,34 @@ export default function DramaHub() {
   ];
   const heroH = Math.min(sizes.heroMax, Math.round((leftW * 9) / 16));
   const total = drama.seasons.find((s) => s.number === (item?.season ?? 1))?.episodeCount ?? drama.episodeCount;
-  const share = () =>
-    Share.share({
-      message: `${drama.title} on Hallyu — https://hallyu.app/d/${drama.id}`,
+  const share = () => {
+    haptic.light();
+    setShareOpen(true);
+  };
+  const submitQuickRating = async (score: number) => {
+    require('rate titles', async () => {
+      haptic.success();
+      setMyScore(score);
+      dispatch({ type: 'rateDrama', dramaId: drama.id, rating: score });
+      try {
+        const res = await rateTitleOnServer(drama.id, score);
+        if (res) {
+          setMyScore(res.myScore);
+          setRatingCount(res.ratingCount);
+          if (res.communityRating) {
+            dispatch({ type: 'rateDrama', dramaId: drama.id, rating: res.communityRating });
+          }
+        }
+        toast.show({
+          message: `Rated ${drama.title} ★ ${score}/10`,
+          icon: 'star',
+          tone: 'success',
+        });
+      } catch {
+        toast.show({ message: 'Saved locally — sign in to sync community score' });
+      }
     });
+  };
   const hero = heroInterpolations(scrollY, heroH, heroH + 8);
   const editorial = drama.title.length <= 22;
 
@@ -253,9 +361,15 @@ export default function DramaHub() {
           transform: [{ translateY: hero.parallax }, { scale: hero.stretch }, { scale: heroSettle }],
         }}
       >
-        <Backdrop uri={drama.backdropUrl ?? drama.posterUrl ?? drama.posterLocal} fallbackColor={drama.tone} width="100%" height={heroH} label={`${drama.title} backdrop`}>
-          <View style={styles.heroScrim} />
-        </Backdrop>
+        <Backdrop
+          uri={drama.backdropUrl ?? drama.posterUrl ?? drama.posterLocal}
+          fallbackColor={drama.tone}
+          width="100%"
+          height={heroH}
+          cinemaGradient
+          accentGlow={withAlpha(drama.tone, 0.72)}
+          label={`${drama.title} backdrop`}
+        />
       </Animated.View>
       <View style={styles.headRow}>
         <Animated.View style={arrivePoster}>
@@ -296,6 +410,7 @@ export default function DramaHub() {
         <FollowButton kind="dramas" id={drama.id} name={drama.title} style={{ flex: 1 }} />
         <WatchStatusButton drama={drama} style={{ flex: 1.4 }} />
         {drama.trailerUrl ? <IconButton icon="play-circle-outline" label="Watch trailer" filled onPress={openTrailer} /> : null}
+        {hallyuPlayable ? <IconButton icon="play" label="Play on Hallyu" filled onPress={() => router.push(`/post/${hallyuPlayable.id}`)} /> : null}
         <IconButton icon="albums-outline" label="Add to collection" filled onPress={() => require('save to a collection', () => setCollect(true))} />
         {following ? (
           <IconButton
@@ -395,48 +510,163 @@ export default function DramaHub() {
                 </Text>
               </Pressable>
             ) : null}
-            {drama.streamingOn?.map((providerName) => (
-              <View key={providerName} style={styles.streamPill}>
-                <Ionicons name="tv-outline" size={12} color={colors.textSecondary} />
-                <Text variant="caption" tone="secondary">
-                  {providerName}
-                </Text>
-              </View>
-            ))}
+            {drama.streamingOn?.map((providerName) => {
+              const low = providerName.toLowerCase();
+              const official = officialWatchLink(providerName, drama.title);
+              const brandDot = low.includes('netflix')
+                ? '#E50914'
+                : low.includes('crunchyroll')
+                  ? '#F47521'
+                  : low.includes('viki')
+                    ? '#1C9BF0'
+                    : low.includes('disney')
+                      ? '#2563EB'
+                      : low.includes('iqiyi')
+                        ? '#10B981'
+                        : low.includes('prime')
+                          ? '#00A8E1'
+                          : colors.textSecondary;
+              const pillBody = (
+                  <>
+                    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: brandDot }} />
+                    <Text variant="caption" style={{ color: colors.textPrimary }}>
+                      {providerName}
+                    </Text>
+                    {official ? <Ionicons name="open-outline" size={12} color={colors.textSecondary} /> : null}
+                  </>
+                );
+                if (!official) {
+                  return (
+                    <View key={providerName} style={[styles.streamPill, { borderColor: `${brandDot}55` }]}>
+                      {pillBody}
+                    </View>
+                  );
+                }
+                return (
+                  <Pressable
+                    key={providerName}
+                    onPress={() => Linking.openURL(official.url).catch(() => toast.show({ message: `Could not open ${official.label}` }))}
+                    accessibilityRole="link"
+                    accessibilityHint={official.hint}
+                    accessibilityLabel={`Open ${official.label} to watch ${drama.title}`}
+                    style={[styles.streamPill, { borderColor: `${brandDot}55` }]}
+                  >
+                    {pillBody}
+                  </Pressable>
+                );
+            })}
           </View>
         ) : null}
-      </View>
-      {item?.status === 'watching' ? (
-        <Pressable onPress={() => setTab('episodes')} style={styles.progressCard} accessibilityRole="button" accessibilityLabel={`Your progress: episode ${item.currentEpisode} of ${total}. Opens episodes`}>
-          <View style={{ flex: 1 }}>
-            <Text variant="titleSmall">Your progress</Text>
+
+        {/* Instant 1–10 Community Score Strip */}
+        <View style={styles.quickRateCard}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="star" size={14} color={colors.warm} />
+              <Text variant="label">
+                {myScore ? `Your score: ${myScore.toFixed(1)}/10` : 'Rate this title'}
+              </Text>
+            </View>
             <Text variant="caption" tone="secondary">
-              Episode {item.currentEpisode} of {total}
-              {multi ? ` · Season ${item.season}` : ''}
-              {item.currentEpisode < total ? ` · ${total - item.currentEpisode} to go` : ' · All caught up'}
+              {drama.rating ? `Community ★ ${drama.rating.toFixed(1)}` : 'Be the first to score'}
+              {ratingCount > 0 ? ` (${ratingCount})` : ''}
             </Text>
-            <ProgressBar value={item.currentEpisode} max={total} style={{ marginTop: space.x2 }} />
           </View>
-          {item.currentEpisode < total ? (
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: space.x2 }}>
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => {
+              const active = myScore != null && Math.round(myScore) >= n;
+              return (
+                <Pressable
+                  key={n}
+                  onPress={() => void submitQuickRating(n)}
+                  hitSlop={4}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Rate ${n} out of 10`}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 14,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: active ? colors.warmSoft : colors.surface2,
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: active ? colors.warm : colors.borderSubtle,
+                  }}
+                >
+                  <Text variant="caption" style={{ color: active ? colors.warm : colors.textSecondary, fontWeight: '700' }}>
+                    {n}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </View>
+      {!film ? (
+        <View style={styles.progressCard}>
+          <Pressable
+            onPress={() => setTab('episodes')}
+            style={{ flex: 1 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Your progress: episode ${item?.currentEpisode ?? 0} of ${total}. Opens episodes`}
+          >
+            <Text variant="titleSmall">
+              {item ? 'Your episode progress' : 'Track episode progress'}
+            </Text>
+            <Text variant="caption" tone="secondary">
+              Ep {item?.currentEpisode ?? 0} of {total || '?'}
+              {multi ? ` · Season ${item?.season ?? season}` : ''}
+              {item && item.currentEpisode >= total && total > 0 ? ' · Completed 🎉' : ''}
+            </Text>
+            <ProgressBar value={item?.currentEpisode ?? 0} max={Math.max(1, total)} style={{ marginTop: space.x2 }} />
+          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+            {(item?.currentEpisode ?? 0) > 0 ? (
+              <IconButton
+                icon="remove"
+                label="Previous episode"
+                size={18}
+                filled
+                onPress={() =>
+                  require('track progress', () => {
+                    haptic.light();
+                    dispatch({
+                      type: 'progress',
+                      dramaId: drama.id,
+                      season: item?.season ?? season,
+                      episode: Math.max(0, (item?.currentEpisode ?? 1) - 1),
+                      total: Math.max(1, total),
+                    });
+                  })
+                }
+              />
+            ) : null}
             <Button
-              label={`Mark Ep ${item.currentEpisode + 1}`}
+              label={`+1 Ep`}
               size="sm"
-              variant="secondary"
-              onPress={() => {
-                dispatch({
-                  type: 'progress',
-                  dramaId: drama.id,
-                  season: item.season,
-                  episode: item.currentEpisode + 1,
-                  total,
-                });
-                toast.show({
-                  message: `Episode ${item.currentEpisode + 1} marked watched`,
-                });
-              }}
+              onPress={() =>
+                require('track progress', () => {
+                  const nextEp = Math.min(Math.max(1, total), (item?.currentEpisode ?? 0) + 1);
+                  haptic.success();
+                  dispatch({
+                    type: 'progress',
+                    dramaId: drama.id,
+                    season: item?.season ?? season,
+                    episode: nextEp,
+                    total: Math.max(1, total),
+                  });
+                  toast.show({
+                    message: `Watched Ep ${nextEp} · Enter Live Watch Room?`,
+                    icon: 'checkmark-circle',
+                    tone: 'success',
+                    actionLabel: 'Room',
+                    onAction: () => router.push(`/episode/${drama.id}/${item?.season ?? season}/${nextEp}`),
+                  });
+                })
+              }
             />
-          ) : null}
-        </Pressable>
+          </View>
+        </View>
       ) : null}
       {drama.cast.length ? (
         <View style={{ paddingTop: space.x5, paddingBottom: space.x2 }}>
@@ -637,6 +867,7 @@ export default function DramaHub() {
           <View style={styles.sortRow}>
             <Text variant="caption" tone="secondary">
               {eps.length ? `${eps.length} episodes${item ? ` · ${item.season === season ? item.currentEpisode : 0} watched` : ''}` : enrich.loading ? 'Loading episodes…' : 'Episode list not available yet'}
+              {runtimeNote ? `\n${runtimeNote}` : ''}
             </Text>
             {item && eps.length ? (
               <Button
@@ -881,6 +1112,7 @@ export default function DramaHub() {
           episode: item?.currentEpisode || undefined,
         }}
       />
+      <ShareCardModal visible={shareOpen} onClose={() => setShareOpen(false)} drama={drama} />
     </Screen>
   );
 }
@@ -888,6 +1120,14 @@ export default function DramaHub() {
 const styles = StyleSheet.create({
   panes: { flex: 1, flexDirection: 'row' },
   paneRule: { width: StyleSheet.hairlineWidth, backgroundColor: colors.borderSubtle },
+  quickRateCard: {
+    marginTop: space.x4,
+    padding: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+  },
   tabsBar: {
     backgroundColor: colors.canvas,
     paddingTop: space.x4,

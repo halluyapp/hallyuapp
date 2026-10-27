@@ -77,9 +77,10 @@ export function CoachMarks({ id, steps, when = true, delay = 900, bottomOffset =
     }
     haptic.select();
     const go = () => {
-      setStep((s) => s + 1);
-      const s = steps[step + 1]!;
-      AccessibilityInfo.announceForAccessibility?.(`Tip: ${s.title}. ${s.body}`);
+      const nextIdx = Math.min(step + 1, Math.max(0, steps.length - 1));
+      setStep(nextIdx);
+      const nextStep = steps[nextIdx];
+      if (nextStep) AccessibilityInfo.announceForAccessibility?.(`Tip: ${nextStep.title}. ${nextStep.body}`);
       Animated.timing(swap, { toValue: 1, duration: reduce ? motion.short : motion.medium, easing: Easing.bezier(0.05, 0.7, 0.1, 1), useNativeDriver: true }).start();
     };
     if (reduce) go();
@@ -87,7 +88,8 @@ export function CoachMarks({ id, steps, when = true, delay = 900, bottomOffset =
   };
 
   if (!mounted || !eligible) return null;
-  const s = steps[step]!;
+  const s = steps[step] ?? steps[0];
+  if (!s) return null;
   const last = step === steps.length - 1;
 
   return (

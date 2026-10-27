@@ -15,6 +15,11 @@
 -- Job bookkeeping
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create table if not exists public.job_runs (
   id            uuid primary key default gen_random_uuid(),
   job           text        not null,
@@ -73,9 +78,10 @@ begin
   select * into existing from public.job_runs where job = p_job and run_key = p_run_key;
 
   if found then
-    -- A finished run is never re-run under the same key. A failed or stuck run may be retried, and
-    -- the retry is counted rather than hidden.
-    if existing.status = 'succeeded' or existing.status = 'skipped' then
+    -- A finished or currently running job is never claimed again under the same key. Only a failed
+    -- run (including stale runs reclaimed by job_release_stale()) may be retried, and the retry is
+    -- counted rather than hidden.
+    if existing.status in ('succeeded', 'skipped', 'running') then
       return query select existing.id, false, existing.attempt;
       return;
     end if;
@@ -445,3 +451,6 @@ grant execute on function public.run_scheduled_jobs(text[]) to service_role;
 -- schedule('hallyu-push-dispatch', '41 * * * *', ...)   -- hourly push delivery
 -- schedule('hallyu-media-cleanup', '13 5 * * *', ...)   -- daily storage reconciliation
 -- schedule('hallyu-purge',         '17 4 * * *', ...)   -- daily retention (migration 22)
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

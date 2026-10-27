@@ -3,6 +3,11 @@
 -- blob, so the database can enforce each default. Onboarding state lives on `profiles` (see 03) and
 -- is merged through the complete_onboarding RPC.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.protection_level as enum ('strict', 'balanced', 'off');
 create type public.autoplay_mode as enum ('always', 'wifi', 'never');
 
@@ -98,3 +103,6 @@ create policy title_alerts_owner_all on public.title_alerts
 
 grant select, insert, update, delete on public.user_preferences to authenticated;
 grant select, insert, delete on public.title_alerts to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

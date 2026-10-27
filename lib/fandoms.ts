@@ -128,26 +128,90 @@ export function fandomLine(ids: FandomId[]): string {
 // Format inference
 // -----------------------------------------------------------------------------------------------
 
+const CHINESE_LANGUAGES = new Set(['zh', 'cn', 'yue', 'nan', 'bo', 'wuu']);
+const CHINESE_COUNTRIES = new Set(['CN', 'TW', 'HK']);
+const WESTERN_COUNTRIES = new Set(['US', 'GB', 'CA', 'AU', 'NZ', 'IE']);
+
 /**
- * Which world a title belongs to. Language decides (Korean → K-Drama, Chinese → C-Drama, Japanese →
- * Anime, everything else → Hollywood); `genres` is accepted so callers can pass what they have.
- *
- * Japanese live-action sits in the Anime world: Hallyu ships four worlds, and fans of anime watch
- * J-dramas in the same sitting — it is the honest home for it rather than a fifth label nobody
- * asked for. Western animation (Pixar, adult cartoons) lands in Hollywood for the same reason.
+ * Authoritative world classification across all four Hallyu worlds.
+ * Returns `null` when a title does not genuinely belong to any supported world:
+ * - Japanese live-action productions (`ja` / `JP` without `Animation` genre) are rejected from `anime`
+ *   and never dumped into `hollywood` unless co-produced in English / Western territories.
+ * - Non-Western international titles (Tamil, Hindi, Spanish, French, Turkish, etc.) are rejected
+ *   from `hollywood` rather than mislabelled as American/Western cinema.
+ */
+export function classifyWorldFormat(input: {
+  media: MediaType;
+  language?: string;
+  countries?: string[];
+  genres?: string[];
+}): Format | null {
+  const lang = (input.language ?? '').trim().toLowerCase();
+  const countries = (input.countries ?? []).map((c) => c.trim().toUpperCase()).filter(Boolean);
+  const genres = input.genres ?? [];
+  const hasCountry = (set: Set<string>) => countries.some((c) => set.has(c));
+  const isAnimated = genres.some((g) => g.toLowerCase() === 'animation');
+
+  if (lang === 'ko' || countries.includes('KR')) return 'kdrama';
+  if (CHINESE_LANGUAGES.has(lang) || hasCountry(CHINESE_COUNTRIES)) return 'cdrama';
+
+  if (lang === 'ja' || countries.includes('JP')) {
+    if (isAnimated) return 'anime';
+    if (lang === 'en' || hasCountry(WESTERN_COUNTRIES)) {
+      return input.media === 'movie' ? 'hollywood-movie' : 'hollywood-series';
+    }
+    return null;
+  }
+
+  if (lang === 'en' || hasCountry(WESTERN_COUNTRIES)) {
+    return input.media === 'movie' ? 'hollywood-movie' : 'hollywood-series';
+  }
+
+  if (isAnimated && !lang && countries.length === 0) return 'anime';
+  return null;
+}
+
+/** True when a Drama record genuinely belongs to one of Hallyu's four worlds. */
+export function isValidWorldDrama(d: Pick<Drama, 'mediaType' | 'format' | 'originalLanguage' | 'region' | 'genres'>): boolean {
+  const countries = d.region ? [d.region] : undefined;
+  if (d.originalLanguage || countries?.length) {
+    const inferred = classifyWorldFormat({
+      media: d.mediaType ?? 'tv',
+      language: d.originalLanguage,
+      countries,
+      genres: d.genres,
+    });
+    if (!inferred) return false;
+    if (d.format === 'anime' && !d.genres.some((g) => g.toLowerCase() === 'animation')) return false;
+    return true;
+  }
+  if (d.format === 'anime' && d.genres.length > 0 && !d.genres.some((g) => g.toLowerCase() === 'animation')) {
+    return false;
+  }
+  return Boolean(d.format);
+}
+
+/**
+ * Fallback world format for records already accepted into the catalog.
  */
 export function inferFormat(input: { media: MediaType; language?: string; countries?: string[]; genres?: string[] }): Format {
-  const lang = (input.language ?? '').toLowerCase();
-  const countries = input.countries ?? [];
-  if (lang === 'ko' || countries.includes('KR')) return 'kdrama';
-  if (lang === 'zh' || lang === 'cn' || lang === 'yue' || lang === 'nan' || countries.includes('CN')) return 'cdrama';
-  if (lang === 'ja' || countries.includes('JP')) return 'anime';
-  return input.media === 'movie' ? 'hollywood-movie' : 'hollywood-series';
+  return (
+    classifyWorldFormat(input) ??
+    (input.media === 'movie' ? 'hollywood-movie' : 'hollywood-series')
+  );
 }
 
 /** A record's world, including local records that predate the format field. */
 export function dramaFormat(d: Drama): Format {
-  return d.format ?? inferFormat({ media: d.mediaType ?? 'tv', language: d.originalLanguage, genres: d.genres });
+  if (d.format) return d.format;
+  return (
+    classifyWorldFormat({
+      media: d.mediaType ?? 'tv',
+      language: d.originalLanguage,
+      countries: d.region ? [d.region] : undefined,
+      genres: d.genres,
+    }) ?? (d.mediaType === 'movie' ? 'hollywood-movie' : 'hollywood-series')
+  );
 }
 
 export function formatFandom(format: Format): FandomId {

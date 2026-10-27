@@ -140,12 +140,12 @@ export default function ActorPage() {
     <View>
       {related.length ? (
         <View style={{ paddingVertical: space.x6 }}>
-          <SectionHeader eyebrow="Also followed by fans of" title={actor.name.split(' ')[0] ?? actor.name} />
+          <SectionHeader eyebrow="Also followed by fans of" title={(actor.name ?? '').split(' ')[0] || actor.name || 'Fans'} />
           <ActorRail actors={related} />
         </View>
       ) : null}
       {actor.provider ? (
-        <Text variant="caption" tone="disabled" style={{ paddingHorizontal: space.margin, paddingBottom: space.x4 }}>
+        <Text variant="caption" tone="tertiary" style={{ paddingHorizontal: space.margin, paddingBottom: space.x4 }}>
           Biography and credits via TMDB.
         </Text>
       ) : null}

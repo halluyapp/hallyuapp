@@ -103,6 +103,7 @@ if (missing.length === 0 && failures.length === 0) {
 
 console.log('');
 console.log('The project is running schema this repository no longer defines. Apply supabase/migrations');
-console.log('to the project (in filename order, with check_function_bodies = off for the session), then');
+console.log('to the project in filename order (each file disables function body validation for itself while');
+console.log('it runs), then run scripts/localdb/verify-function-bodies.mjs against the project, then');
 console.log('re-run this workflow — the live suite asserts the behaviour of the definitions in this branch.');
 process.exit(1);

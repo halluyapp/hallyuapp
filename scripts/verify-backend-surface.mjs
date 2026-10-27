@@ -765,7 +765,62 @@ for (const dir of REQUIRED_FUNCTIONS_DIRS) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 15. Summary
+// 15. Video publishing gate (requirement 16)
+// ---------------------------------------------------------------------------------------------
+
+// Video is the one media kind whose cost grows with success, so the backend has to be able to say
+// who may publish it, how much, and why. Each function below is the evidence for one of those.
+const VIDEO_FUNCTIONS = [
+  ['video_access', ['video_creators', 'revoked_at', 'account_status']],
+  ['video_bytes_used_this_month', ['media_uploads', "kind = 'video'", 'date_trunc']],
+  ['video_quota', ['budget', 'remaining', 'pending_request', 'resets_at']],
+  ['grant_video_access', ['is_moderator', 'video_creators', 'video_access_requests']],
+  ['revoke_video_access', ['is_moderator', 'revoked_at', 'revoke_reason']],
+  ['request_video_access', ['video_access_requests', 'pending']],
+  ['review_video_access_request', ['is_moderator', 'video_access_requests', 'decided_at']],
+  ['video_creator_roster', ['is_moderator', 'video_creators', 'video_bytes_used_this_month']],
+];
+
+for (const [name, needles] of VIDEO_FUNCTIONS) assertRealImplementation(name, needles);
+
+if (!/create table if not exists public\.video_creators/i.test(allSql)) {
+  fail('video_creators is missing — video publishing has no allowlist');
+}
+
+if (!/create unique index if not exists video_access_requests_one_pending/i.test(allSql)) {
+  fail('video_access_requests has no one-pending-per-member index — the queue can be flooded');
+}
+
+// Both layers of the gate: the announce step refuses before the bytes move, and the attachment rule
+// holds even for a client that never calls the RPC.
+const announce = functionSql('begin_media_upload');
+if (!/video_access\s*\(/i.test(announce)) {
+  fail('begin_media_upload does not check video_access — any member could announce a video');
+}
+if (!/video_quota\s*\(/i.test(announce)) {
+  fail('begin_media_upload does not check the monthly video budget');
+}
+
+// The policy is re-created by migration 39, so the *last* definition is the one in force.
+const postMediaPolicies = [...allSql.matchAll(/create policy post_media_insert_own[\s\S]*?;/gi)];
+const postMediaPolicy = postMediaPolicies.at(-1)?.[0] ?? '';
+if (!postMediaPolicy) {
+  fail('post_media_insert_own does not exist — post media has no insert rule');
+} else if (!/video_access\s*\(/i.test(postMediaPolicy)) {
+  fail('post_media_insert_own does not gate video rows — a client could attach video without access');
+}
+
+if (!/alter table public\.video_creators enable row level security/i.test(allSql)) {
+  fail('video_creators has no row level security');
+}
+if (!/alter table public\.video_access_requests enable row level security/i.test(allSql)) {
+  fail('video_access_requests has no row level security');
+}
+
+ok('video publishing is gated in three places: the allowlist, the monthly budget and the attachment rule');
+
+// ---------------------------------------------------------------------------------------------
+// 16. Summary
 // ---------------------------------------------------------------------------------------------
 
 console.log('HALLYU BACKEND SURFACE');

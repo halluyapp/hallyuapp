@@ -1,9 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { ResizeMode, Video } from 'expo-av';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Pressable, Share, StatusBar, StyleSheet, useWindowDimensions, View, ViewToken } from 'react-native';
+import { Animated, FlatList, Pressable, StatusBar, StyleSheet, TextInput, useWindowDimensions, View, ViewToken } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ShareCardModal } from '../components/share/ShareCardModal';
+import { VideoAccessSheet } from '../components/video/VideoAccessSheet';
+import { normalizeMediaUrl } from '../lib/api/client';
+import { fetchVideoAccessStatus, type VideoAccessStatus } from '../lib/api/features';
+import { refreshSignedUrl } from '../lib/api/media';
+import { commentsFor } from '../lib/selectors';
 import { ReactionButton } from '../components/feed/Reactions';
 import { RichText } from '../components/feed/RichText';
 import { Avatar } from '../components/ui/Avatar';
@@ -17,7 +24,8 @@ import { useToast } from '../components/ui/Toast';
 import { colors, radius, space } from '../constants/theme';
 import { compact } from '../lib/format';
 import { haptic, useApp, useReduceMotion, useRequireMember } from '../lib/hooks';
-import { Post } from '../lib/model';
+import { emptyReactions, Post } from '../lib/model';
+import { uid } from '../lib/store';
 import { shorts as selectShorts } from '../lib/selectors';
 import { veilCopy } from '../lib/spoiler';
 
@@ -30,7 +38,9 @@ export default function Shorts() {
   const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
   const params = useLocalSearchParams<{ id?: string; dramaId?: string }>();
-  const { state } = useApp();
+  const { state, me } = useApp();
+  const require = useRequireMember();
+  const isStaff = me.role === 'admin' || me.role === 'moderator';
   const reduce = useReduceMotion(state.prefs.reduceMotion);
   const all = useMemo(() => selectShorts(state), [state]);
   const list = useMemo(() => {
@@ -42,6 +52,8 @@ export default function Shorts() {
   const [active, setActive] = useState(0);
   const [muted, setMuted] = useState(false);
   const [paused, setPaused] = useState(reduce || state.prefs.autoplay === 'never');
+  const [accessSheet, setAccessSheet] = useState(false);
+  const [accessStatus, setAccessStatus] = useState<VideoAccessStatus | null>(null);
   const itemH = height;
 
   const onViewable = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
@@ -59,7 +71,33 @@ export default function Shorts() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.canvas, paddingTop: insets.top }}>
         <IconButton icon="close" label="Close" onPress={closeShorts} style={{ margin: space.x2 }} />
-        <EmptyState icon="videocam-outline" title="No shorts here yet" body={params.dramaId ? 'Nobody has cut a short for this drama. Yours could be the first.' : 'Shorts from people and dramas you follow will show up here.'} actionLabel="Make a short" onAction={() => router.replace({ pathname: '/create/[type]', params: { type: 'short', ...(params.dramaId ? { dramaId: params.dramaId } : {}) } })} />
+        <EmptyState
+          icon="videocam-outline"
+          title="No shorts here yet"
+          body={params.dramaId ? 'Nobody has cut a short for this drama. Yours could be the first.' : 'Shorts from people and dramas you follow will show up here.'}
+          actionLabel="Make a short"
+          onAction={() =>
+            require('post a Short', async () => {
+              if (isStaff) {
+                router.replace({ pathname: '/create/[type]', params: { type: 'short', ...(params.dramaId ? { dramaId: params.dramaId } : {}) } });
+                return;
+              }
+              const access = await fetchVideoAccessStatus().catch(() => null);
+              if (access?.allowed) {
+                router.replace({ pathname: '/create/[type]', params: { type: 'short', ...(params.dramaId ? { dramaId: params.dramaId } : {}) } });
+              } else {
+                setAccessStatus(access);
+                setAccessSheet(true);
+              }
+            })
+          }
+        />
+        <VideoAccessSheet
+          visible={accessSheet}
+          onClose={() => setAccessSheet(false)}
+          initialStatus={accessStatus}
+          onStatusChange={setAccessStatus}
+        />
       </View>
     );
   }
@@ -87,8 +125,36 @@ export default function Shorts() {
         <Text variant="label" style={{ color: colors.onMedia }}>
           Shorts
         </Text>
-        <IconButton icon={muted ? 'volume-mute' : 'volume-high'} label={muted ? 'Unmute' : 'Mute'} onPress={() => setMuted((m) => !m)} tone="onMedia" />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <IconButton
+            icon="add-circle-outline"
+            label="Post a short"
+            tone="onMedia"
+            onPress={() =>
+              require('post a Short', async () => {
+                if (isStaff) {
+                  router.push('/create/short');
+                  return;
+                }
+                const access = await fetchVideoAccessStatus().catch(() => null);
+                if (access?.allowed) {
+                  router.push('/create/short');
+                } else {
+                  setAccessStatus(access);
+                  setAccessSheet(true);
+                }
+              })
+            }
+          />
+          <IconButton icon={muted ? 'volume-mute' : 'volume-high'} label={muted ? 'Unmute' : 'Mute'} onPress={() => setMuted((m) => !m)} tone="onMedia" />
+        </View>
       </View>
+      <VideoAccessSheet
+        visible={accessSheet}
+        onClose={() => setAccessSheet(false)}
+        initialStatus={accessStatus}
+        onStatusChange={setAccessStatus}
+      />
     </View>
   );
 }
@@ -97,20 +163,33 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
   const router = useRouter();
   const toast = useToast();
   const insets = useSafeAreaInsets();
-  const { getUser, getDrama, isPostVeiled, dispatch, isSaved, state, watch } = useApp();
+  const { getUser, getDrama, isPostVeiled, dispatch, isSaved, state, watch, me } = useApp();
   const require = useRequireMember();
   const author = getUser(post.authorId);
   const drama = getDrama(post.context.dramaId);
   const veiled = isPostVeiled(post);
   const [menu, setMenu] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [replyText, setReplyText] = useState('');
   const [failed, setFailed] = useState(false);
+  const [videoUri, setVideoUri] = useState<string | undefined>(() => normalizeMediaUrl(post.video?.url));
+  const [retried, setRetried] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [durationMs, setDurationMs] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const postComments = useMemo(() => commentsFor(state, post.id), [state, post.id]);
   const videoRef = useRef<Video>(null);
   const heart = useRef(new Animated.Value(0)).current;
   const lastTap = useRef(0);
   const playing = active && !paused && !veiled;
   const reduce = useReduceMotion(state.prefs.reduceMotion);
+
+  useEffect(() => {
+    setVideoUri(normalizeMediaUrl(post.video?.url));
+    setRetried(false);
+    setFailed(false);
+  }, [post.video?.url]);
 
   // Chrome (rail + caption) fades after 2.5s of watching; any touch brings it back. Caption rises in on arrival.
   const chrome = useRef(new Animated.Value(1)).current;
@@ -164,13 +243,49 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
 
   return (
     <View style={{ height, width, backgroundColor: drama?.tone ?? '#000' }}>
-      {!veiled && post.video && !failed ? (
-        <Video ref={videoRef} source={{ uri: post.video.url }} style={StyleSheet.absoluteFill} resizeMode={ResizeMode.COVER} shouldPlay={playing} isLooping isMuted={muted} onError={() => setFailed(true)} onPlaybackStatusUpdate={(s) => { if (s.isLoaded && s.durationMillis) setProgress(s.positionMillis / s.durationMillis); }} progressUpdateIntervalMillis={250} accessibilityLabel={`Video: ${post.body}`} />
+      {!veiled && post.video && videoUri && !failed ? (
+        <Video
+          ref={videoRef}
+          source={{ uri: videoUri }}
+          style={StyleSheet.absoluteFill}
+          resizeMode={ResizeMode.COVER}
+          shouldPlay={playing}
+          isLooping
+          isMuted={muted}
+          onError={() => {
+            if (!retried) {
+              setRetried(true);
+              void refreshSignedUrl(post.video?.storagePath ?? videoUri).then((fresh) => {
+                if (fresh) {
+                  setVideoUri(fresh);
+                  setFailed(false);
+                } else {
+                  setFailed(true);
+                }
+              });
+              return;
+            }
+            setFailed(true);
+          }}
+          onPlaybackStatusUpdate={(s) => {
+            if (s.isLoaded && s.durationMillis) {
+              setDurationMs(s.durationMillis);
+              setProgress(s.positionMillis / s.durationMillis);
+            }
+          }}
+          progressUpdateIntervalMillis={180}
+          accessibilityLabel={`Video: ${post.body}`}
+        />
       ) : drama ? (
         <Poster drama={drama} width={width} rounded={0} style={{ height, opacity: veiled ? 0.2 : 0.7 }} />
       ) : null}
       <Pressable style={StyleSheet.absoluteFill} onPress={doubleTap} accessibilityRole="button" accessibilityLabel={paused ? 'Play' : 'Pause'} accessibilityHint="Double tap to react" />
-      <View pointerEvents="none" style={styles.scrimBottom} />
+      <LinearGradient
+        pointerEvents="none"
+        colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.42)', 'rgba(0,0,0,0.88)']}
+        locations={[0, 0.52, 1]}
+        style={styles.scrimBottom}
+      />
 
       {paused && !veiled ? (
         <View pointerEvents="none" style={styles.center}>
@@ -208,22 +323,38 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
 
       <Animated.View style={[styles.rail, { bottom: bottomPad + 8, opacity: chrome }]} pointerEvents={chromeVisible ? 'auto' : 'none'}>
         <Pressable onPress={() => router.push(`/user/${author?.handle}`)} accessibilityRole="button" accessibilityLabel={`Open ${author?.displayName}`}>
-          <Avatar uri={author?.avatarUrl} name={author?.displayName ?? '?'} size={44} ring />
+          <Avatar uri={author?.avatarUrl} avatarPath={author?.avatarPath} name={author?.displayName ?? '?'} size={44} ring />
         </Pressable>
         <View style={styles.railItem}>
           <ReactionButton targetId={post.id} counts={post.reactions} />
         </View>
-        <Pressable onPress={() => router.push({ pathname: '/post/[id]', params: { id: post.id, focus: 'comment' } })} style={styles.railItem} accessibilityRole="button" accessibilityLabel={`${post.commentCount} comments`}>
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            setCommentsOpen(true);
+          }}
+          style={styles.railItem}
+          accessibilityRole="button"
+          accessibilityLabel={`${post.commentCount} comments`}
+        >
           <Ionicons name="chatbubble-outline" size={26} color={colors.onMedia} />
           <Text variant="caption" style={{ color: colors.onMedia }} numeric>
-            {compact(post.commentCount)}
+            {compact(Math.max(post.commentCount, postComments.length))}
           </Text>
         </Pressable>
         <Pressable onPress={() => require('save posts', () => { dispatch({ type: 'save', postId: post.id }); toast.show({ message: isSaved(post.id) ? 'Removed from saved' : 'Saved', aboveTabBar: false }); })} style={styles.railItem} accessibilityRole="button" accessibilityLabel={isSaved(post.id) ? 'Unsave' : 'Save'}>
           <Ionicons name={isSaved(post.id) ? 'bookmark' : 'bookmark-outline'} size={26} color={colors.onMedia} />
         </Pressable>
-        <Pressable onPress={() => Share.share({ message: `${post.body} — https://hallyu.app/s/${post.id}` })} style={styles.railItem} accessibilityRole="button" accessibilityLabel="Share">
-          <Ionicons name="arrow-redo-outline" size={26} color={colors.onMedia} />
+        <Pressable
+          onPress={() => {
+            haptic.light();
+            setShareOpen(true);
+          }}
+          style={styles.railItem}
+          accessibilityRole="button"
+          accessibilityLabel="Share card or send to friend"
+        >
+          <Ionicons name="paper-plane-outline" size={25} color={colors.onMedia} />
         </Pressable>
         <Pressable onPress={() => setMenu(true)} style={styles.railItem} accessibilityRole="button" accessibilityLabel="More">
           <Ionicons name="ellipsis-horizontal" size={26} color={colors.onMedia} />
@@ -258,9 +389,102 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
         </Text>
       </Animated.View>
 
-      <View style={[styles.progress, { bottom: insets.bottom }]}>
+      <Pressable
+        onPress={(e) => {
+          if (!durationMs) return;
+          const ratio = Math.max(0, Math.min(1, e.nativeEvent.locationX / Math.max(1, width)));
+          setProgress(ratio);
+          videoRef.current?.setPositionAsync(Math.round(ratio * durationMs)).catch(() => {});
+        }}
+        hitSlop={12}
+        style={[styles.progress, { bottom: insets.bottom }]}
+        accessibilityRole="adjustable"
+        accessibilityLabel="Scrub video timeline"
+      >
         <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
-      </View>
+      </Pressable>
+
+      {/* Slide-Up In-Player Live Comments Drawer */}
+      <Sheet visible={commentsOpen} onClose={() => setCommentsOpen(false)} title={`Comments · ${Math.max(post.commentCount, postComments.length)}`}>
+        <View style={{ paddingHorizontal: space.margin, paddingBottom: space.x3, gap: space.x3, maxHeight: 380 }}>
+          {postComments.length === 0 ? (
+            <Text variant="bodySmall" tone="secondary" style={{ paddingVertical: space.x4 }}>
+              No comments yet — be the first to react to this short.
+            </Text>
+          ) : (
+            <FlatList
+              data={postComments}
+              keyExtractor={(c) => c.id}
+              style={{ maxHeight: 260 }}
+              ItemSeparatorComponent={() => <View style={{ height: space.x3 }} />}
+              renderItem={({ item: c }) => {
+                const cu = getUser(c.authorId);
+                return (
+                  <View style={{ flexDirection: 'row', gap: space.x2 + 2 }}>
+                    <Avatar uri={cu?.avatarUrl} name={cu?.displayName ?? '?'} size="xs" />
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text variant="label">{cu?.displayName ?? 'Member'}</Text>
+                      <Text variant="bodySmall" tone="secondary">
+                        {c.body}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }}
+            />
+          )}
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2, paddingTop: space.x2, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderSubtle }}>
+            <TextInput
+              value={replyText}
+              onChangeText={setReplyText}
+              placeholder="Add a comment…"
+              placeholderTextColor={colors.textTertiary}
+              style={{
+                flex: 1,
+                height: 38,
+                paddingHorizontal: 12,
+                borderRadius: radius.full,
+                backgroundColor: colors.surface2,
+                color: colors.textPrimary,
+                fontSize: 14,
+              }}
+            />
+            <Button
+              label="Post"
+              size="sm"
+              disabled={!replyText.trim()}
+              onPress={() => {
+                const clean = replyText.trim();
+                if (!clean) return;
+                require('comment on shorts', () => {
+                  haptic.success();
+                  dispatch({
+                    type: 'addComment',
+                    comment: {
+                      id: uid(''),
+                      postId: post.id,
+                      authorId: me.id,
+                      body: clean,
+                      createdAt: new Date().toISOString(),
+                      spoiler: 'none',
+                      reactions: emptyReactions(),
+                    },
+                  });
+                  setReplyText('');
+                });
+              }}
+            />
+          </View>
+        </View>
+      </Sheet>
+
+      <ShareCardModal
+        visible={shareOpen}
+        onClose={() => setShareOpen(false)}
+        post={post}
+        drama={drama}
+      />
 
       <Sheet visible={menu} onClose={() => setMenu(false)} title="This short">
         <SheetRow icon="open-outline" label="Open as post" onPress={() => { setMenu(false); router.push(`/post/${post.id}`); }} />
@@ -274,7 +498,7 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
 
 const styles = StyleSheet.create({
   top: { position: 'absolute', left: 0, right: 0, height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space.x2 },
-  scrimBottom: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 260, backgroundColor: 'rgba(0,0,0,0.45)' },
+  scrimBottom: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 280 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   playBadge: { width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', paddingLeft: 4 },
   veil: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.x8, backgroundColor: 'rgba(10,10,10,0.7)' },

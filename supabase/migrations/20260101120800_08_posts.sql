@@ -3,6 +3,11 @@
 -- enter Postgres: `post_media` stores the object path inside the `media` storage bucket, and the
 -- denormalised counts are maintained by triggers so no client can inflate them.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.post_type as enum ('post', 'reaction', 'discussion', 'review', 'recommendation', 'short');
 create type public.discussion_kind as enum ('general', 'theory', 'ending', 'character', 'scene', 'question');
 create type public.spoiler_level as enum ('none', 'episode', 'season', 'ending');
@@ -238,3 +243,6 @@ grant select on public.posts to anon, authenticated;
 grant insert, update, delete on public.posts to authenticated;
 grant select on public.post_media to anon, authenticated;
 grant insert, delete on public.post_media to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

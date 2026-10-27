@@ -9,7 +9,7 @@
  */
 import { Platform } from 'react-native';
 import { TMDB_ACCESS_TOKEN, TMDB_API_KEY } from '../constants/keys';
-import { FANDOMS, Fandom, fandomById, formatFandomOf, inferFormat } from './fandoms';
+import { FANDOMS, Fandom, fandomById, formatFandomOf, inferFormat, isValidWorldDrama } from './fandoms';
 import { clearServerCatalogLists, serverProvider } from './api/serverCatalog';
 import { Actor, Drama, Episode, FandomId, MediaType } from './model';
 
@@ -61,6 +61,10 @@ export interface CatalogProvider {
   resolveActor(name: string, koreanName?: string, signal?: AbortSignal): Promise<Actor | null>;
 
   // ---- Editorial lists (Explore, onboarding, genre pages). Thin records, all four worlds. ----
+  /** Calculated #1 leader for each of the four Hallyu worlds (K-Drama, C-Drama, Anime, Hollywood). */
+  worldLeaders(signal?: AbortSignal): Promise<Drama[]>;
+  /** Airing schedule episodes across the next `days` days hydrated with parent series records. */
+  scheduleEpisodes(days?: number, signal?: AbortSignal): Promise<Drama[]>;
   /** Most-talked-about titles this week, interleaved so every world is represented. */
   trending(signal?: AbortSignal): Promise<Drama[]>;
   /** Popular titles across all worlds, paged. */
@@ -111,9 +115,8 @@ const MOVIE_GENRE_MAP: Record<number, string> = {
   37: 'Western',
 };
 
-/** The languages the four worlds are read from — anything else has no world in Hallyu (yet). */
-const WORLD_LANGUAGES = new Set(['en', 'ko', 'zh', 'cn', 'yue', 'nan', 'ja']);
-const hasWorld = (d: Drama): boolean => WORLD_LANGUAGES.has((d.originalLanguage ?? '').toLowerCase());
+/** Authoritative four-world check: rejects live-action Japanese titles from anime & foreign non-Western titles from Hollywood. */
+const hasWorld = (d: Drama): boolean => isValidWorldDrama(d);
 
 const GENRE_MAP: Record<number, string> = {
   10759: 'Action',
@@ -651,7 +654,10 @@ async function discoverWorld(f: Fandom, paramsFor: (media: MediaType) => Record<
     }),
   );
   const seen = new Set<string>();
-  return lists.flat().filter((d) => (seen.has(d.id) ? false : (seen.add(d.id), true)));
+  return lists
+    .flat()
+    .filter(hasWorld)
+    .filter((d) => (seen.has(d.id) ? false : (seen.add(d.id), true)));
 }
 
 /**
@@ -1026,6 +1032,27 @@ export const tmdbProvider: CatalogProvider = {
         markDegraded();
         return []; // offline: no mock rows
       }
+    });
+  },
+
+  worldLeaders(signal) {
+    return memo('world-leaders', TEN_MIN, async () => {
+      const lists = await Promise.all(
+        FANDOMS.map((f) => tmdbProvider.byFandom(f.id, 'trending', 1, signal).catch(() => [] as Drama[])),
+      );
+      return lists.map((items) => items[0]).filter((d): d is Drama => Boolean(d));
+    });
+  },
+
+  scheduleEpisodes(days = 7, signal) {
+    return memo(`schedule:${days}`, TEN_MIN, async () => {
+      const airing = await tmdbProvider.airingSoon(days, signal);
+      const hydrated = await Promise.all(
+        airing.slice(0, 12).map((d) =>
+          d.provider?.id ? tmdbProvider.getDrama(d.provider.id, d.mediaType ?? 'tv', signal).catch(() => d) : Promise.resolve(d),
+        ),
+      );
+      return hydrated.filter((d): d is Drama => Boolean(d));
     });
   },
 };

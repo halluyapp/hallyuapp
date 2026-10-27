@@ -1,0 +1,26 @@
+{
+  "name": "Hallyu — Your Dramas. Your People. Your World.",
+  "short_name": "Hallyu",
+  "description": "Social home, synchronized live Watch Parties, DMs, and spoiler-protected threads across K-Dramas, C-Dramas, Anime & Cinema.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "categories": ["entertainment", "social"],
+  "icons": [
+    {
+      "src": "./apple-touch-icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./apple-touch-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

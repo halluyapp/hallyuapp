@@ -15,6 +15,11 @@
 -- Shares
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.share_channel as enum ('link', 'inapp', 'system');
 
 create table if not exists public.post_shares (
@@ -271,3 +276,6 @@ create trigger titles_guard_counters
 
 -- Moderators may edit content but they do not get to invent counts either; the guard runs for them
 -- too, which is the point of putting it in the database rather than in a policy.
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

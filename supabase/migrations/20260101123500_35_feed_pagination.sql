@@ -22,6 +22,12 @@
 -- A cursor is opaque text so the client cannot construct one and reason about the query. Decoding
 -- failures return NULL rather than raising, which turns a corrupt cursor into "start from the top"
 -- instead of an error the app has to special-case.
+
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create or replace function public.decode_feed_cursor(p_cursor text)
 returns table (rank_key double precision, created_at timestamptz, id uuid)
 language plpgsql
@@ -29,6 +35,7 @@ immutable
 set search_path = public, pg_temp
 as $$
 declare
+  clean text;
   raw text;
   parts text[];
 begin
@@ -36,8 +43,16 @@ begin
     return;
   end if;
 
+  clean := rtrim(regexp_replace(p_cursor, '\s+', '', 'g'), '=');
+  if length(clean) = 0 or length(clean) % 4 = 1 then
+    return;
+  end if;
+
   begin
-    raw := convert_from(decode(rtrim(p_cursor, '='), 'base64'), 'UTF8');
+    raw := convert_from(
+      decode(rpad(clean, ((length(clean) + 3) / 4) * 4, '='), 'base64'),
+      'UTF8'
+    );
   exception when others then
     return;
   end;
@@ -55,6 +70,7 @@ begin
     return;
   end;
 
+  return next;
   return;
 end;
 $$;
@@ -73,12 +89,17 @@ immutable
 set search_path = public, pg_temp
 as $$
   select rtrim(
-    encode(
-      convert_to(
-        coalesce(p_rank_key, 0)::text || '|' || p_created_at::text || '|' || p_id::text,
-        'UTF8'
+    regexp_replace(
+      encode(
+        convert_to(
+          coalesce(p_rank_key, 0)::text || '|' || p_created_at::text || '|' || p_id::text,
+          'UTF8'
+        ),
+        'base64'
       ),
-      'base64'
+      '\s+',
+      '',
+      'g'
     ),
     '='
   )
@@ -184,16 +205,19 @@ begin
       case
         when p_scope = 'for_you' then
           -- Engagement, decayed so a week-old post cannot hold the top of a feed.
-          ((e.loved_count + e.cried_count + e.screamed_count + e.swooned_count + e.laughed_count + e.furious_count) * 2.0
-           + e.comment_count * 3.0
-           + e.save_count * 1.5
-           + e.share_count * 2.0)
-          / power(greatest(extract(epoch from (now() - e.created_at)) / 3600.0, 1.0) / 24.0 + 1.0, 0.55)
-          + case when actor is not null and exists (select 1 from public.follows f where f.follower_id = actor and f.target_id = e.author_id) then 12.0 else 0.0 end
-          + case when actor is not null and exists (select 1 from public.mutes mu where mu.user_id = actor and mu.muted_title_id = e.title_id) then -1000000.0 else 0.0 end
+          round((
+            ((e.loved_count + e.cried_count + e.screamed_count + e.swooned_count + e.laughed_count + e.furious_count) * 2.0
+             + e.comment_count * 3.0
+             + e.save_count * 1.5
+             + e.share_count * 2.0)
+            / power(greatest(extract(epoch from (now() - e.created_at)) / 3600.0, 1.0) / 24.0 + 1.0, 0.55)
+            + case when actor is not null and exists (select 1 from public.follows f where f.follower_id = actor and f.target_id = e.author_id) then 12.0 else 0.0 end
+            + case when actor is not null and exists (select 1 from public.mutes mu where mu.user_id = actor and mu.muted_title_id = e.title_id) then -1000000.0 else 0.0 end
+          )::numeric, 6)::double precision
         else
-          -- Time-ordered scopes use a key derived from created_at, so the same comparison works.
-          extract(epoch from e.created_at)::double precision
+          -- Time-ordered scopes compare (created_at, id) directly below so IEEE-754 text rounding
+          -- of epoch timestamps can never make a row compare strictly less than its own cursor.
+          0.0::double precision
       end as rank_key
     from eligible e
   )
@@ -201,9 +225,17 @@ begin
     into page
   from (
     select v.* from ranked v
-    -- The keyset: strictly "after" the last row the client saw, on a unique triple.
+    -- The keyset: strictly "after" the last row the client saw, on a unique key.
     where cursor_row.id is null
-       or (v.rank_key, v.created_at, v.id) < (cursor_row.rank_key, cursor_row.created_at, cursor_row.id)
+       or (
+         v.id <> cursor_row.id
+         and case
+           when p_scope = 'for_you' then
+             (v.rank_key, v.created_at, v.id) < (cursor_row.rank_key, cursor_row.created_at, cursor_row.id)
+           else
+             (v.created_at, v.id) < (cursor_row.created_at, cursor_row.id)
+         end
+       )
     order by v.rank_key desc, v.created_at desc, v.id desc
     limit limit_rows + 1
   ) windowed;
@@ -357,3 +389,6 @@ comment on function public.feed_page(text, text, uuid, integer, text, uuid) is
 
 comment on function public.decode_feed_cursor(text) is
   'Best-effort cursor decode: a malformed or foreign cursor returns no rows rather than raising, so a bad cursor restarts the feed instead of breaking the screen.';
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

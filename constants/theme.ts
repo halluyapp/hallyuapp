@@ -51,9 +51,16 @@ export const colors = {
   borderStrong: palette.ink450,
   textPrimary: palette.white,
   textSecondary: palette.gray500,
-  textTertiary: palette.gray600,
+  // 4.95:1 on the canvas and 4.52:1 on surface1 — the previous #48484A measured 2.30:1, which is
+  // below every legibility threshold there is. Tertiary still reads as the quietest text tier
+  // because secondary and primary are lighter still; it is now quiet *and* readable.
+  textTertiary: palette.ink400,
+  // For genuinely disabled controls only. It is deliberately dim (2.30:1) and must not be used for
+  // copy a member is meant to read — captions belong to `tertiary`.
   textDisabled: palette.gray600,
-  onAccent: palette.white,
+  // White, not the off-white canvas ink: on the crimson button #F5F5F7 measured 4.31:1, just under
+  // the 4.5 a normal-weight label needs, and pure white measures 4.70:1.
+  onAccent: '#FFFFFF',
   onMedia: palette.white,
   accent: palette.rose600,
   accentText: palette.rose600,

@@ -17,9 +17,12 @@ import { TextField } from '../../components/ui/TextField';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
+import { supabase } from '../../lib/api/client';
 import { compact, timeAgo } from '../../lib/format';
 import { useApp } from '../../lib/hooks';
 import { LIMITS } from '../../lib/model';
+import { getState } from '../../lib/store';
+import { adoptLocal, adoptPublicCollections } from '../../lib/sync';
 
 /** Collection detail — a shelf. Owner edits inline; visitors follow. Private shelves 404 politely. */
 export default function CollectionDetail() {
@@ -33,6 +36,14 @@ export default function CollectionDetail() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [noteFor, setNoteFor] = useState<string | null>(null);
   const [note, setNote] = useState('');
+
+  React.useEffect(() => {
+    if (!id || col || !supabase) return;
+    void adoptPublicCollections({
+      getState,
+      apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+    });
+  }, [id, col]);
   const isMine = col?.ownerId === me.id;
   const owner = col ? (isMine ? me : getUser(col.ownerId)) : undefined;
   const items = useMemo(() => (col ? col.items.map((i) => ({ item: i, drama: getDrama(i.dramaId) })).filter((x) => x.drama) : []), [col, getDrama]);

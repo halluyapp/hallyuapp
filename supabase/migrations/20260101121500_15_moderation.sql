@@ -2,6 +2,11 @@
 -- Reports are how a member asks for help; moderators act on them. The reporter can always see their
 -- own report, but never another member's, and the reporter id is not exposed to the person reported.
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.report_status as enum ('open', 'reviewing', 'resolved', 'dismissed');
 
 create table if not exists public.reports (
@@ -66,3 +71,6 @@ create policy reports_moderator_update on public.reports
   with check (public.is_moderator());
 
 grant select, insert, update on public.reports to authenticated;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

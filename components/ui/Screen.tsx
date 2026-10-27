@@ -3,7 +3,15 @@ import { KeyboardAvoidingView, Platform, ScrollView, ScrollViewProps, StyleProp,
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, sizes, space } from '../../constants/theme';
 import { useLayout } from '../../lib/hooks';
+import { useSlice } from '../../lib/store';
 import { OfflineBanner } from './States';
+
+export const CINEMA_CHARCOAL_CANVAS = '#111116';
+
+export function useCanvasColor(): string {
+  const trueBlack = useSlice((s) => s.prefs.trueBlack);
+  return trueBlack ? colors.canvas : CINEMA_CHARCOAL_CANVAS;
+}
 
 interface ScreenProps {
   children: React.ReactNode;
@@ -23,8 +31,9 @@ interface ScreenProps {
 
 /** Canvas container. Handles background + optional header slot + offline banner. */
 export function Screen({ children, style, header, offlineBanner = true, onStartShouldSetResponderCapture }: ScreenProps) {
+  const canvasColor = useCanvasColor();
   return (
-    <View style={[styles.root, style]} onStartShouldSetResponderCapture={onStartShouldSetResponderCapture}>
+    <View style={[styles.root, { backgroundColor: canvasColor }, style]} onStartShouldSetResponderCapture={onStartShouldSetResponderCapture}>
       {header}
       {offlineBanner ? <OfflineBanner /> : null}
       {children}

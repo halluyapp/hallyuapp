@@ -22,7 +22,11 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(function TextFiel
 ) {
   const [focused, setFocused] = useState(false);
   const [hidden, setHidden] = useState(!!password);
-  const border = error ? colors.danger : focused ? colors.borderStrong : colors.borderSubtle;
+  // A text field's boundary has to be visible before it is touched: at rest the old #1C1C1F border
+  // measured 1.13:1 against the surface it sits on, so the field had no edge at all until focus
+  // arrived. Rest is now borderStrong (3.13:1) and focus moves to the accent (4.08:1), which also
+  // gives keyboard navigation on web something to show.
+  const border = error ? colors.danger : focused ? colors.accent : colors.borderStrong;
   const len = value?.length ?? 0;
   const over = counter !== undefined && len > counter;
   return (

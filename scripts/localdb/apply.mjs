@@ -3,10 +3,12 @@
 // live Rork/Supabase project was provisioned (docs/RORK-CLOUD-CONNECTION-REPORT.md §3):
 //
 //   - Supabase-shaped roles plus auth.* / storage.* / extensions.* stubs are created first;
-//   - `check_function_bodies = off` for the runner session (migration 00 defines is_moderator(),
-//     a `language sql` function, before profiles exists — the same session note the connection
-//     report §3 recorded);
-//   - migrations then apply verbatim in strict filename order — no deferrals.
+//   - migrations then apply verbatim in strict filename order — no deferrals. Nothing is set on the
+//     runner session: each migration turns function body validation off for itself and back on at
+//     its end, because a body may reference objects that a later migration creates (migration 00
+//     defines is_moderator(), a `language sql` function, before profiles exists — the same session
+//     note the connection report §3 recorded). Every body is checked afterwards, against the
+//     finished schema, by scripts/localdb/verify-function-bodies.mjs, which this script runs last.
 //
 // Everything runs through the local `psql` as the OS user that invokes node (role must exist).
 // Usage:  node scripts/localdb/apply.mjs
@@ -14,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { verifyFunctionBodies } from './verify-function-bodies.mjs';
 
 const REPO = path.resolve(process.argv[2] ?? process.cwd());
 const MIGRATIONS = path.join(REPO, 'supabase', 'migrations');
@@ -28,7 +31,6 @@ mkdirSync(SCRATCH, { recursive: true });
 const psql = (args, opts = {}) =>
   execFileSync('psql', ['-X', '-v', 'ON_ERROR_STOP=1', ...args], {
     encoding: 'utf8',
-    env: { ...process.env, PGOPTIONS: '-c check_function_bodies=off' },
     cwd: SCRATCH,
     ...opts,
   });
@@ -169,5 +171,15 @@ try {
 // the migrations only ever grant it EXECUTE on functions. Added here as a supplement so the repo's
 // explicit anon/authenticated grants stay strictly what the harness verifies.
 run('grant all on all tables in schema public to service_role;', 'service_role table grants');
+
+// ── 5. check every function body against the schema that now exists ──────────────────────────
+// Each migration turned body validation off for itself (a file may define a function whose
+// dependencies arrive later), so this is where the bodies are actually resolved. Without it a body
+// could reference a table that never gets created, or misspell a column, and every run would pass.
+const bodies = verifyFunctionBodies({ repo: REPO, dbname: DB });
+if (bodies !== 0) {
+  console.error('\n✗ function bodies did not all validate — see the failures above');
+  process.exit(bodies);
+}
 
 console.log('\nAPPLY OK');

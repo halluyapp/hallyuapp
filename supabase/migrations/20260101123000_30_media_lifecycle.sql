@@ -20,6 +20,11 @@
 -- Upload intents
 -- ---------------------------------------------------------------------------------------------
 
+-- Function bodies in this file may reference objects that later migrations create, so validation
+-- is off while it runs and switched back on at the end. Every body is re-created and checked
+-- together, against the finished schema, by scripts/localdb/verify-function-bodies.mjs.
+set check_function_bodies = off;
+
 create type public.media_state as enum ('pending', 'attached', 'failed', 'orphaned');
 
 create table if not exists public.media_uploads (
@@ -159,6 +164,7 @@ declare
   actor uuid := auth.uid();
   u public.media_uploads%rowtype;
   media_id uuid;
+  stored_bytes bigint;
 begin
   if actor is null then
     raise exception 'authentication required' using errcode = 'insufficient_privilege';
@@ -171,6 +177,23 @@ begin
 
   if u.state = 'failed' then
     raise exception 'upload % already failed', p_upload_id using errcode = 'check_violation';
+  end if;
+
+  -- The size on the row so far is the caller's word for it: `begin_media_upload` takes it as an
+  -- argument, and the monthly video allowance is summed from `byte_size`. A client that under-reports
+  -- — by accident or not — would therefore pay for less than it stored. Storage knows how many bytes
+  -- it is actually holding, so once the object exists that number replaces the declared one. Existing
+  -- callers do not change: the row that the budget reads simply stops being a guess.
+  select (o.metadata ->> 'size')::bigint into stored_bytes
+    from storage.objects o
+   where o.bucket_id = 'media'
+     and o.name = u.storage_path;
+
+  if stored_bytes is not null and stored_bytes > 0 then
+    update public.media_uploads
+       set byte_size = stored_bytes
+     where id = p_upload_id;
+    u.byte_size := stored_bytes;
   end if;
 
   if p_post_id is not null then
@@ -558,3 +581,6 @@ $$;
 
 revoke all on function public.run_scheduled_jobs(text[]) from public, anon, authenticated;
 grant execute on function public.run_scheduled_jobs(text[]) to service_role;
+
+-- Leave the session as it was found: a file applied by hand must not change later behaviour.
+reset check_function_bodies;

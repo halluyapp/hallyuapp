@@ -58,6 +58,8 @@ export default function You() {
                   <Text variant="label">{drafts}</Text>
                 </Pressable>
               ) : null}
+              <IconButton icon="film-outline" label="Hallyu TV" onPress={() => router.push('/watch')} />
+              <IconButton icon="library-outline" label="Book shelf" onPress={() => router.push('/shelf')} />
               <IconButton icon="tv-outline" label="Watchlist" onPress={() => router.push('/watchlist')} />
               <IconButton icon="bookmark-outline" label="Saved posts" onPress={() => router.push('/saved')} />
               <IconButton icon="settings-outline" label="Settings" onPress={() => router.push('/settings')} />
