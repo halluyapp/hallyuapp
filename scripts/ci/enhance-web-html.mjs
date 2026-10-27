@@ -21,7 +21,7 @@ const assetPrefix = basePath || '';
 const ghOwner = (process.env.GITHUB_REPOSITORY_OWNER || 'halluyapp').trim().toLowerCase();
 const canonicalSiteUrl = basePath
   ? `https://${ghOwner}.github.io${basePath}`
-  : 'https://hallyuapp.github.io';
+  : 'https://halluyapp.github.io/hallyuapp';
 
 function readGitValue(cmd, fallback = 'unknown') {
   try {

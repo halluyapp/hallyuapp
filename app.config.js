@@ -62,10 +62,6 @@ module.exports = ({ config }) => {
               host: 'halluyapp.github.io',
               pathPrefix: '/hallyuapp',
             },
-            {
-              scheme: 'https',
-              host: 'hallyuapp.github.io',
-            },
           ],
           category: ['BROWSABLE', 'DEFAULT'],
         },

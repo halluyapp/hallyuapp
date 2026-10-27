@@ -170,7 +170,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     void (async () => {
       try {
-        const { data, error } = await supabase.auth.getSession();
+        // Bounded: on a browser where storage is blocked or slow, getSession() can wait forever and
+        // leave the whole app on the splash. A late session is still picked up by onAuthStateChange.
+        const { data, error } = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('session lookup timed out')), 4000)),
+        ]);
         if (error) throw error;
         const session: Session | null = data.session;
         setBackendAccessToken(session?.access_token ?? null);
@@ -191,7 +196,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       setBackendAccessToken(session?.access_token ?? null);
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
         if (session?.user) {
           setUser(mapSupabaseUser(session.user));
           setStatus('signedIn');

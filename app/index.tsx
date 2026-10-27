@@ -8,7 +8,7 @@ import { colors, motion } from '../constants/theme';
 import { lastCrash } from '../lib/crash';
 import { bootTrail, markBoot } from '../lib/boot';
 import { useAuth } from '../lib/auth';
-import { isBackendConfigured, probeBackend, type ConnectionStatus } from '../lib/api/client';
+import { getBackendHealth, isBackendConfigured, probeBackend, type ConnectionStatus } from '../lib/api/client';
 import { useNetwork } from '../lib/hooks';
 import { GUEST_ID, useStore } from '../lib/store';
 
@@ -34,8 +34,13 @@ import { GUEST_ID, useStore } from '../lib/store';
  * shown on screen, so a stalled release build reports exactly where it stopped.
  */
 const AUTO_BAILOUT_MS = 6000;
-/** The gate probe must settle inside the bailout window so it can never fight the failsafe. */
-const GATE_PROBE_MS = 5000;
+/**
+ * One gate probe attempt. Mobile cold starts can take several seconds for a healthy backend, so
+ * the bound is generous. A probe that comes back "unavailable" is retried once before the gate
+ * blocks; a timeout on a slow network must not look like a server that cannot be reached.
+ */
+const GATE_PROBE_MS = 10000;
+const GATE_RETRY_DELAY_MS = 1000;
 
 /** The one honest line the splash shows about the backend connection. */
 function gateLine(conn: ConnectionStatus | null): string {
@@ -118,11 +123,18 @@ export default function Index() {
     if (!coreReady || !isBackendConfigured()) return;
     let cancelled = false;
     markBoot('gate:probe');
-    void probeBackend(GATE_PROBE_MS, online).then((s) => {
+    const settle = async () => {
+      let s = await probeBackend(GATE_PROBE_MS, online);
+      if (s === 'unavailable' && !cancelled) {
+        markBoot('gate:unavailable-retry');
+        await new Promise((r) => setTimeout(r, GATE_RETRY_DELAY_MS));
+        if (!cancelled) s = await probeBackend(GATE_PROBE_MS, online);
+      }
       if (cancelled) return;
       setConn(s);
       markBoot(`gate:${s}`);
-    });
+    };
+    void settle();
     return () => {
       cancelled = true;
     };
@@ -250,6 +262,11 @@ export default function Index() {
           <Text variant="caption" tone="secondary" style={styles.blockedBody}>
             {gateDetail(conn)}
           </Text>
+          {getBackendHealth().message ? (
+            <Text variant="caption" tone="tertiary" style={styles.blockedBody} accessibilityLabel="Connection detail">
+              Technical detail: {getBackendHealth().message?.slice(0, 160)}
+            </Text>
+          ) : null}
           <Pressable onPress={retry} style={styles.retry} accessibilityRole="button" accessibilityLabel="Retry connection">
             <Text variant="label" tone="primary">
               Retry
