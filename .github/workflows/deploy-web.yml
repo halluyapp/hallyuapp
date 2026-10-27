@@ -386,3 +386,5 @@ jobs:
               process.exit(1);
             });
           '
+
+# Publishing: runs from arena/c5e9499c-grok-hallyu on push (see the publish conditions below).
