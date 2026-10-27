@@ -33,7 +33,8 @@
     "test:book-diary": "node --test scripts/test-book-diary.mjs",
     "test:realtime": "node --test scripts/test-realtime-teardown.mjs",
     "test:vibe": "node --test scripts/test-vibe-finder.mjs",
-    "test:watch": "node --test scripts/test-watch.mjs"
+    "test:watch": "node --test scripts/test-watch.mjs",
+    "test:watch-live": "node scripts/ci/watch-live-check.mjs"
   },
   "dependencies": {
     "@expo/cli": "^0.18.31",

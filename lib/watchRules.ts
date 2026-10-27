@@ -8,8 +8,13 @@ export const SKIP_MS = 10_000;
 export const DOUBLE_TAP_WINDOW_MS = 300;
 export const CONTROLS_AUTO_HIDE_MS = 3_500;
 export const SAVE_PROGRESS_EVERY_MS = 10_000;
-/** Lowest-data option we will pick automatically, and the default preference order. */
-export const AUTO_QUALITY_ORDER = ['480p', '360p'];
+/** A transfer with no forward progress for this long is reported as an error, never an endless spinner. */
+export const BUFFER_STALL_MS = 20_000;
+/**
+ * The one data-conscious quality rule, in step with `DEFAULT_QUALITIES` in lib/watchModel.ts:
+ * 360p first, else the lowest quality the title actually offers.
+ */
+export const DEFAULT_QUALITY_ORDER = ['360p'];
 
 /** Drops opaque Expo resume state from legacy persisted records; it may contain a signed URL. */
 export function withoutPersistedResumeData<T extends { resumeData?: unknown }>(entry: T): Omit<T, 'resumeData'> {
@@ -48,15 +53,15 @@ export function tapZone(x: number, width: number): 'left' | 'centre' | 'right' {
 }
 
 /**
- * Picks the quality to play. A requested quality is used only when the title offers it. Otherwise the
- * preferred one, then the data-conscious defaults (480p, 360p), then the best offered. Never invents a
- * quality that is not in `available`.
+ * Picks the quality to play. A requested quality is used only when the title offers it. Otherwise 360p,
+ * then the lowest quality offered. Never invents a quality that is not in `available`, and never picks
+ * a higher quality than the viewer asked for.
  */
 export function chooseQuality(available: string[], preferred?: string | null): string | null {
   if (available.length === 0) return null;
   if (preferred && available.includes(preferred)) return preferred;
-  for (const q of AUTO_QUALITY_ORDER) if (available.includes(q)) return q;
-  return available[0];
+  for (const q of DEFAULT_QUALITY_ORDER) if (available.includes(q)) return q;
+  return [...available].sort((a, b) => (qualityRank(a) ?? Number.MAX_SAFE_INTEGER) - (qualityRank(b) ?? Number.MAX_SAFE_INTEGER))[0];
 }
 
 /** Parses "1080p" → 1080. Unknown labels return null rather than a guessed number. */
@@ -258,4 +263,137 @@ export function repairTransfer<T extends { status: TransferStatus; error: string
     return { ...t, status: 'failed', error: 'This download was waiting in the queue when the app closed. Tap retry to start it.' };
   }
   return t;
+}
+
+/* ---------- Deterministic player states ---------- */
+
+/**
+ * The six states the player can be in, and exactly one is displayed:
+ *   loading      a stream link is being fetched, or the video has not reported a frame yet
+ *   buffering    the player is running but has no data to show yet (bounded by BUFFER_STALL_MS)
+ *   playing      frames are advancing
+ *   paused       ready, not advancing
+ *   error        something recoverable broke (a stall, a dropped link, a failed load) — retry applies
+ *   unavailable  there is nothing to play at all (no full-length stream, not signed in, not configured)
+ * `unavailable` is deliberately separate from `error`: it is never retried, because retrying cannot help.
+ */
+export type PlayerState = 'loading' | 'buffering' | 'playing' | 'paused' | 'error' | 'unavailable';
+
+/** Milliseconds without forward progress while buffering. Always 0 when the player is not buffering. */
+export function stalledForMs(nowMs: number, lastProgressAtMs: number, isBuffering: boolean): number {
+  if (!isBuffering || !Number.isFinite(nowMs) || !Number.isFinite(lastProgressAtMs)) return 0;
+  return Math.max(0, nowMs - lastProgressAtMs);
+}
+
+/** Resolves exactly one player state from what the player reported. No I/O, and no guessing. */
+export function playerState(input: {
+  hasSource: boolean;
+  loading: boolean;
+  unavailable: boolean;
+  failed: boolean;
+  isPlaying: boolean;
+  isBuffering: boolean;
+  /** Milliseconds without progress. A long stall is an error, never a silent spinner. */
+  stalledMs?: number | null;
+}): PlayerState {
+  if (input.unavailable) return 'unavailable';
+  if (input.failed) return 'error';
+  if (input.loading || !input.hasSource) return 'loading';
+  if (input.isBuffering) return (input.stalledMs ?? 0) >= BUFFER_STALL_MS ? 'error' : 'buffering';
+  return input.isPlaying ? 'playing' : 'paused';
+}
+
+/** True for the reasons retrying can never fix: the title has nothing playable for this viewer. */
+export function isUnavailableReason(reason: string | null | undefined): boolean {
+  return reason === 'no_full_stream' || reason === 'not_configured' || reason === 'signed_out';
+}
+
+/** The one line of copy per failure reason, so every Watch surface says the same thing. */
+export function watchErrorMessage(reason: string | null | undefined, quality?: string | null): string {
+  if (reason === 'no_full_stream') {
+    return quality ? `No full-length stream is available at ${quality} right now.` : 'No full-length stream is available for this title right now.';
+  }
+  if (reason === 'signed_out') return 'Sign in to watch Hallyu TV.';
+  if (reason === 'offline') return 'You are offline. Connect to stream, or play a downloaded copy.';
+  if (reason === 'not_configured') return 'Hallyu TV is not set up yet.';
+  if (reason === 'stalled') return 'Playback stalled and did not recover. Check your connection, then tap Try again.';
+  return 'This stream could not be loaded. Check your connection and try again.';
+}
+
+/* ---------- TTL cache (shared by the Watch client) ---------- */
+
+export interface TtlEntry<T> {
+  value: T;
+  until: number;
+}
+
+/**
+ * Stores a bounded, expiring cache entry. A non-positive TTL stores nothing, which is how a caller
+ * says "never remember this". Oldest entry is evicted once the map is full.
+ */
+export function ttlPut<T>(map: Map<string, TtlEntry<T>>, key: string, value: T, ttlMs: number, nowMs = Date.now(), maxEntries = 128): void {
+  if (!(ttlMs > 0)) {
+    map.delete(key);
+    return;
+  }
+  if (maxEntries > 0 && map.size >= maxEntries && !map.has(key)) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, { value, until: nowMs + ttlMs });
+}
+
+/** The cached value while it is inside its window, else null (and the expired entry is dropped). */
+export function ttlGet<T>(map: Map<string, TtlEntry<T>>, key: string, nowMs = Date.now()): T | null {
+  const hit = map.get(key);
+  if (!hit) return null;
+  if (hit.until <= nowMs) {
+    map.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+/* ---------- Download targets (Play and Download beside each other) ---------- */
+
+export interface DownloadTarget {
+  key: string;
+  quality: string | null;
+  /** Bytes of a finished file for this exact title/season/episode/quality, or null. */
+  savedBytes: number | null;
+  /** The state of a transfer for this exact title/quality, or null. */
+  transferStatus: TransferStatus | null;
+  /** A new transfer may be started for this quality right now. */
+  canStart: boolean;
+}
+
+/**
+ * One entry per quality the title offers. Qualities are independent: a saved or running 360p copy never
+ * blocks a 480p download, and the two files never share a key or a path.
+ */
+export function downloadTargets(input: {
+  subjectId: string;
+  season: number | null;
+  episode: number | null;
+  qualities: (string | null)[];
+  saved: { key: string; quality: string | null; bytes: number }[];
+  transfers: { key: string; quality: string | null; status: TransferStatus }[];
+}): DownloadTarget[] {
+  const seen = new Set<string>();
+  const out: DownloadTarget[] = [];
+  for (const quality of input.qualities) {
+    const key = qualityDownloadKey(input.subjectId, input.season, input.episode, quality);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const saved = input.saved.find((d) => d.key === key && d.quality === quality) ?? null;
+    const active = input.transfers.find((t) => t.key === key && t.quality === quality) ?? null;
+    out.push({
+      key,
+      quality,
+      savedBytes: saved ? saved.bytes : null,
+      transferStatus: active ? active.status : null,
+      canStart: !saved && (active === null || active.status === 'failed'),
+    });
+  }
+  return out;
 }

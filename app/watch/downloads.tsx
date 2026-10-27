@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { WatchNav } from '../../components/watch/WatchNav';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useCompletedDownloads, useTransfers } from '../../components/watch/useWatchDownloads';
 import { ScrollScreen, Screen } from '../../components/ui/Screen';
@@ -13,6 +13,7 @@ import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchDownloadUrl } from '../../lib/api/moviebox';
 import { cancelDownload, pauseDownload, removeDownload, resumeDownload, type DownloadEntry, type TransferEntry } from '../../lib/watchStore';
 import { formatBytes, progressFraction } from '../../lib/watchRules';
+import { subscribeWatchPerf, watchPerfSnapshot, type WatchPerfSpan } from '../../lib/watchPerf';
 
 const FAILURE_NOTE: Record<string, string> = {
   link_expired: 'The link expired. Tap retry to get a new one.',
@@ -36,6 +37,10 @@ export default function WatchDownloads() {
   const transfers = useTransfers();
   const completed = useCompletedDownloads();
   const [message, setMessage] = useState<string | null>(null);
+  const [timings, setTimings] = useState<WatchPerfSpan[]>(() => watchPerfSnapshot());
+  const [showTimings, setShowTimings] = useState(false);
+
+  useEffect(() => subscribeWatchPerf(() => setTimings(watchPerfSnapshot())), []);
 
   const downloading = transfers.filter((t) => t.status === 'downloading');
   const queued = transfers.filter((t) => t.status === 'queued');
@@ -158,6 +163,21 @@ export default function WatchDownloads() {
         {section('Queued', queued.map(row))}
         {section('Needs attention', needsAttention.map(row))}
         {section('Downloaded', completed.map(doneRow))}
+        {/* Real load times, read on the device they happened on. This is the evidence for the reported numbers. */}
+        <View style={{ gap: space.x2 }}>
+          <Pressable onPress={() => setShowTimings((v) => !v)} accessibilityRole="button" style={styles.btn}>
+            <Text variant="caption" tone="accent">{showTimings ? 'Hide load timings' : 'Show load timings'}</Text>
+          </Pressable>
+          {showTimings ? (
+            timings.length === 0 ? (
+              <Text variant="caption" tone="tertiary">No Watch timings recorded yet in this session. Open a title, then come back.</Text>
+            ) : (
+              timings.slice(0, 10).map((s) => (
+                <Text key={`${s.label}-${s.at}`} variant="caption" tone="tertiary">{`${s.label} · ${s.ms} ms`}</Text>
+              ))
+            )
+          ) : null}
+        </View>
       </ScrollScreen>
     </Screen>
   );

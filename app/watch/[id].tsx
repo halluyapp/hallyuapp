@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useTransfers } from '../../components/watch/useWatchDownloads';
 import { Chip, ChipRow } from '../../components/ui/Chip';
 import { ScrollScreen, Screen } from '../../components/ui/Screen';
@@ -20,13 +20,14 @@ import {
   type WatchDetail,
   type WatchDiagnostic,
   type WatchStream,
+  type WatchStreams,
 } from '../../lib/api/moviebox';
 import {
   cancelDownload,
   downloadsSupported,
-  findDownload,
   getPreferredQuality,
   getProgress,
+  listDownloads,
   pauseDownload,
   removeDownload,
   resumeDownload,
@@ -36,7 +37,8 @@ import {
   type DownloadEntry,
   type ProgressEntry,
 } from '../../lib/watchStore';
-import { formatBytes, progressFraction } from '../../lib/watchRules';
+import { downloadTargets, formatBytes, progressFraction } from '../../lib/watchRules';
+import { recordWatch } from '../../lib/watchPerf';
 
 type Playable = { streams: WatchStream[] } | null;
 
@@ -59,7 +61,9 @@ export default function WatchTitleScreen() {
   const [preferred, setPreferred] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<WatchDiagnostic[]>([]);
   const [showDebug, setShowDebug] = useState(false);
-  const [saved, setSaved] = useState<DownloadEntry | null>(null);
+  const [savedList, setSavedList] = useState<DownloadEntry[]>([]);
+  /** A movie-shaped stream lookup started in parallel with the detail request. */
+  const [movieProbe, setMovieProbe] = useState<WatchStreams | null>(null);
   const [resume, setResume] = useState<ProgressEntry | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const transfers = useTransfers();
@@ -68,6 +72,11 @@ export default function WatchTitleScreen() {
   const seasonValue = isSeries ? season : null;
   const episodeValue = isSeries ? episode : null;
   const key = episodeKey(subjectId, seasonValue, episodeValue);
+  // A long season is handed to a virtualised rail, so a 100-episode show renders only what is visible.
+  const episodeNumbers = React.useMemo(
+    () => Array.from({ length: Math.max(0, detail?.seasons.find((s) => s.se === season)?.maxEp ?? 0) }, (_, i) => i + 1),
+    [detail, season],
+  );
 
   useEffect(() => {
     void getPreferredQuality().then(setPreferred);
@@ -92,6 +101,22 @@ export default function WatchTitleScreen() {
     };
   }, [subjectId, detailPath, detailReload]);
 
+  // A movie has no season or episode, so its stream lookup does not depend on the detail response: it
+  // runs in parallel with it instead of waiting behind it. A series reuses the same in-flight request
+  // when its first episode matches, so this never adds an upstream call.
+  useEffect(() => {
+    let alive = true;
+    const startedAt = Date.now();
+    fetchWatchStreams(subjectId).then((r) => {
+      if (!alive) return;
+      recordWatch('title:probe', Date.now() - startedAt);
+      setMovieProbe(r.ok ? r.value : null);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [subjectId, streamReload]);
+
   // Decide once per episode whether a full-length stream exists. Movies are requested without season or episode.
   useEffect(() => {
     if (!detail) return;
@@ -99,6 +124,13 @@ export default function WatchTitleScreen() {
     let alive = true;
     setPlayable(undefined);
     setPlayError(null);
+    // A movie's lookup already ran in parallel with the detail request: use its answer directly.
+    if (!isSeries && movieProbe) {
+      setPlayable({ streams: movieProbe.streams });
+      return () => {
+        alive = false;
+      };
+    }
     fetchWatchStreams(subjectId, isSeries ? season ?? undefined : undefined, isSeries ? episode ?? undefined : undefined).then((r) => {
       if (!alive) return;
       if (!r.ok) {
@@ -113,13 +145,15 @@ export default function WatchTitleScreen() {
     return () => {
       alive = false;
     };
-  }, [detail, subjectId, isSeries, season, episode, streamReload]);
+  }, [detail, subjectId, isSeries, season, episode, streamReload, movieProbe]);
 
+  // Every saved quality of this episode is loaded, not just one: 360p and 480p are separate files and
+  // both stay playable offline.
   useEffect(() => {
     let alive = true;
-    Promise.all([findDownload(subjectId, seasonValue, episodeValue), getProgress(key)]).then(([d, p]) => {
+    Promise.all([listDownloads(), getProgress(key)]).then(([all, p]) => {
       if (!alive) return;
-      setSaved(d);
+      setSavedList(all.filter((d) => d.subjectId === subjectId && d.season === seasonValue && d.episode === episodeValue));
       setResume(p && p.positionMs > 5000 ? p : null);
     });
     return () => {
@@ -142,6 +176,20 @@ export default function WatchTitleScreen() {
   const watchable = playable ? pickStream(playable.streams, chosen) : undefined;
   const downloadable = watchable && isDownloadable(watchable) ? watchable : undefined;
   const active = transfers.filter((t) => t.subjectId === subjectId && t.season === seasonValue && t.episode === episodeValue);
+  // One target per offered quality. Room for a second copy is the whole point of the quality key.
+  const targets = playable
+    ? downloadTargets({
+        subjectId,
+        season: seasonValue,
+        episode: episodeValue,
+        qualities: qualities.length > 0 ? qualities : [watchable?.quality ?? null],
+        saved: savedList,
+        transfers: active,
+      })
+    : [];
+  const selectedTarget = targets.find((t) => t.quality === (watchable?.quality ?? null)) ?? null;
+  const selectedSaved = selectedTarget?.savedBytes != null;
+  const canDownloadSelected = !!downloadable && downloadsSupported() && !!selectedTarget && selectedTarget.canStart;
 
   const pickQuality = (q: string) => {
     setQuality(q);
@@ -220,11 +268,16 @@ export default function WatchTitleScreen() {
                   ))}
                 </ChipRow>
                 <Text variant="caption" tone="tertiary">Episode</Text>
-                <ChipRow>
-                  {Array.from({ length: detail.seasons.find((s) => s.se === season)?.maxEp ?? 0 }, (_, i) => i + 1).map((ep) => (
-                    <Chip key={ep} label={`${ep}`} selected={episode === ep} onPress={() => setEpisode(ep)} />
-                  ))}
-                </ChipRow>
+                <FlatList
+                  horizontal
+                  data={episodeNumbers}
+                  key={`season-${season ?? 0}`}
+                  keyExtractor={(n) => String(n)}
+                  renderItem={({ item }) => <Chip label={String(item)} selected={episode === item} onPress={() => setEpisode(item)} />}
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.rail}
+                  contentContainerStyle={styles.railContent}
+                />
               </>
             ) : null}
 
@@ -270,23 +323,64 @@ export default function WatchTitleScreen() {
             ) : null}
 
             {watchable ? (
-              <Pressable onPress={() => watch(watchable)} accessibilityRole="button" accessibilityLabel="Watch now" style={styles.primary}>
-                <Text variant="body" tone="onAccent">{resume ? 'Resume' : 'Watch now'}</Text>
-              </Pressable>
+              <View style={styles.actionRow}>
+                <Pressable onPress={() => watch(watchable)} accessibilityRole="button" accessibilityLabel="Play now" style={[styles.primary, styles.actionPrimary]}>
+                  <Text variant="body" tone="onAccent">{resume ? 'Resume' : 'Play'}</Text>
+                </Pressable>
+                {downloadsSupported() && downloadable ? (
+                  selectedSaved ? (
+                    <View style={[styles.secondary, styles.actionSecondary]} accessibilityRole="text" accessibilityLabel={`Saved at ${selectedTarget?.quality ?? 'this quality'}`}>
+                      <Text variant="caption" tone="secondary">Saved · {selectedTarget?.quality ?? 'MP4'}</Text>
+                    </View>
+                  ) : (
+                    <Pressable
+                      onPress={() => void download(downloadable)}
+                      disabled={!canDownloadSelected}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Download ${downloadable.quality ?? 'this quality'}`}
+                      style={[styles.secondary, styles.actionSecondary, !canDownloadSelected && styles.actionDisabled]}
+                    >
+                      <Text variant="body">
+                        {selectedTarget?.transferStatus === 'downloading' || selectedTarget?.transferStatus === 'queued'
+                          ? 'Downloading…'
+                          : `Download${downloadable.quality ? ` · ${downloadable.quality}` : ''}`}
+                      </Text>
+                    </Pressable>
+                  )
+                ) : null}
+              </View>
+            ) : null}
+            {downloadable?.sizeMb && !selectedSaved ? (
+              <Text variant="caption" tone="tertiary">
+                About {formatBytes(downloadable.sizeMb * 1024 * 1024)} from the source for this quality. Every quality is saved as its own file.
+              </Text>
             ) : null}
 
-            {saved ? (
+            {savedList.length > 0 ? (
               <View style={{ gap: space.x2 }}>
-                <Pressable onPress={() => router.push({ pathname: '/watch/play', params: { subjectId, title: ref().title, season: ref().season ?? '', episode: ref().episode ?? '', quality: saved.quality ?? '', local: saved.fileUri } })} accessibilityRole="button" style={styles.secondary}>
-                  <Text variant="body">Play offline · {formatBytes(saved.bytes)}{saved.quality ? ` · ${saved.quality}` : ''}</Text>
-                </Pressable>
-                <Pressable onPress={() => void removeDownload(saved).then(() => setSaved(null))} accessibilityRole="button" style={styles.ghost}>
-                  <Text variant="caption" tone="danger">Remove download</Text>
-                </Pressable>
+                {savedList.map((d) => (
+                  <View key={d.key} style={{ gap: space.x1 }}>
+                    <Pressable
+                      onPress={() => router.push({ pathname: '/watch/play', params: { subjectId, title: ref().title, season: ref().season ?? '', episode: ref().episode ?? '', quality: d.quality ?? '', local: d.fileUri } })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Play offline${d.quality ? ` at ${d.quality}` : ''}`}
+                      style={styles.secondary}
+                    >
+                      <Text variant="body">Play offline · {formatBytes(d.bytes)}{d.quality ? ` · ${d.quality}` : ''}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void removeDownload(d).then(() => setSavedList((list) => list.filter((x) => x.key !== d.key)))}
+                      accessibilityRole="button"
+                      style={styles.ghost}
+                    >
+                      <Text variant="caption" tone="danger">Remove download{d.quality ? ` (${d.quality})` : ''}</Text>
+                    </Pressable>
+                  </View>
+                ))}
               </View>
             ) : null}
 
-            {!saved && anyActive ? (
+            {anyActive ? (
               <View style={styles.transfer}>
                 <Text variant="caption" tone="secondary">
                   {anyActive.nativeWaiting ? 'Waiting for connection' : anyActive.status === 'downloading' ? 'Downloading' : anyActive.status === 'paused' ? 'Paused' : 'Download stopped'}
@@ -318,14 +412,6 @@ export default function WatchTitleScreen() {
               </View>
             ) : null}
 
-            {!saved && !anyActive && downloadable && downloadsSupported() ? (
-              <Pressable onPress={() => void download(downloadable)} accessibilityRole="button" style={styles.secondary}>
-                <Text variant="body">
-                  Download · {downloadable.quality ?? 'MP4'}
-                  {downloadable.sizeMb ? ` · about ${formatBytes(downloadable.sizeMb * 1024 * 1024)} from source` : ''}
-                </Text>
-              </Pressable>
-            ) : null}
             {sameQualityActive ? <Text variant="caption" tone="tertiary">This quality is already downloading. Open Downloads to manage it.</Text> : null}
             {message ? <InlineNotice tone="warning" text={message} /> : null}
             {!downloadsSupported() && watchable ? <Text variant="caption" tone="tertiary">Downloads are available in the Android and iOS apps.</Text> : null}
@@ -341,6 +427,12 @@ export default function WatchTitleScreen() {
 
 const styles = StyleSheet.create({
   hero: { width: '100%', aspectRatio: 16 / 9, borderRadius: radius.md, overflow: 'hidden', backgroundColor: colors.surface1 },
+  actionRow: { flexDirection: 'row', gap: space.x2 },
+  actionPrimary: { flex: 1 },
+  actionSecondary: { flex: 1, minHeight: 48 },
+  actionDisabled: { opacity: 0.55 },
+  rail: { flexGrow: 0 },
+  railContent: { gap: space.x2, paddingRight: space.x8 },
   primary: { height: 48, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accent },
   secondary: { minHeight: 44, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.x3, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle },
   ghost: { alignSelf: 'flex-start', paddingVertical: space.x1 },

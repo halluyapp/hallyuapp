@@ -8,6 +8,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ensureBackendSessionToken, supabase } from './client';
 import { normaliseDetail, normaliseDiagnostics, normaliseHome, normalisePlayback, normaliseSearch, normaliseStreams, type WatchDetail, type WatchPlayback, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
+import { ttlGet, ttlPut, type TtlEntry } from '../watchRules';
+import { beginWatch, endWatch } from '../watchPerf';
 
 export * from '../watchModel';
 
@@ -20,11 +22,17 @@ const SESSION_TIMEOUT_MS = 10_000;
 const HOME_CACHE_KEY = 'watch.home.cache.v1';
 const HOME_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DETAIL_TTL_MS = 10 * 60_000;
-const STREAM_TTL_MS = 60_000;
+/** Matches the server's own 10-minute metadata cache, so a repeat open inside it costs nothing. */
+const STREAM_TTL_MS = 10 * 60_000;
+/** A title with nothing playable is remembered briefly, so re-opening it does not re-ask upstream. */
+const STREAM_EMPTY_TTL_MS = 30_000;
+/** A stream metadata response, or the "nothing full-length here" answer, during its window. */
+type EmptyStream = { ok: false; reason: 'no_full_stream'; diagnostics?: ReturnType<typeof normaliseDiagnostics> };
 
 let homeMemory: { rows: WatchRow[]; savedAt: number } | null = null;
-const detailCache = new Map<string, { value: WatchDetail; until: number }>();
-const streamCache = new Map<string, { value: WatchStreams; until: number }>();
+const detailCache = new Map<string, TtlEntry<WatchDetail>>();
+const streamCache = new Map<string, TtlEntry<WatchStreams>>();
+const streamEmptyCache = new Map<string, TtlEntry<EmptyStream>>();
 const inFlight = new Map<string, Promise<WatchResult<Raw>>>();
 
 /** Returns the last successful Hallyu TV home snapshot for an immediate first paint. */
@@ -116,7 +124,9 @@ function call(body: Body): Promise<WatchResult<Raw>> {
 }
 
 export async function fetchWatchHome(): Promise<WatchResult<WatchRow[]>> {
+  beginWatch('watch:home');
   const r = await call({ action: 'home' });
+  endWatch('watch:home');
   if (!r.ok) return r;
   const rows = normaliseHome(r.value.data);
   if (rows.length > 0) void saveWatchHomeCache(rows);
@@ -129,31 +139,44 @@ export async function searchWatch(q: string, page = 1): Promise<WatchResult<Watc
 }
 
 export async function fetchWatchDetail(detailPath: string): Promise<WatchResult<WatchDetail>> {
-  const hit = detailCache.get(detailPath);
-  if (hit && hit.until > Date.now()) return { ok: true, value: hit.value };
-  detailCache.delete(detailPath);
+  const hit = ttlGet(detailCache, detailPath);
+  if (hit) return { ok: true, value: hit };
+  beginWatch('watch:detail');
   const r = await call({ action: 'detail', detailPath });
+  endWatch('watch:detail');
   if (!r.ok) return r;
   const detail = normaliseDetail(r.value.data);
   if (!detail) return { ok: false, reason: 'not_found' };
-  detailCache.set(detailPath, { value: detail, until: Date.now() + DETAIL_TTL_MS });
+  ttlPut(detailCache, detailPath, detail, DETAIL_TTL_MS);
   return { ok: true, value: detail };
 }
 
 /** Full-length stream metadata (quality list, availability). No URLs. */
 export async function fetchWatchStreams(subjectId: string, se?: number, ep?: number): Promise<WatchResult<WatchStreams>> {
   const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}`;
-  const hit = streamCache.get(cacheKey);
-  if (hit && hit.until > Date.now()) return { ok: true, value: hit.value };
-  streamCache.delete(cacheKey);
+  const hit = ttlGet(streamCache, cacheKey);
+  if (hit) return { ok: true, value: hit };
+  // A negative answer is cached too (briefly): a title whose first episode has no full-length stream is
+  // a normal outcome, and re-asking upstream for it on every open is a duplicate lookup.
+  const negative = ttlGet(streamEmptyCache, cacheKey);
+  if (negative) return negative;
   const body: Body = { action: 'stream', subjectId };
   if (se !== undefined) body.se = se;
   if (ep !== undefined) body.ep = ep;
+  beginWatch('watch:streams');
   const r = await call(body);
-  if (!r.ok) return r;
+  endWatch('watch:streams');
+  if (!r.ok) {
+    if (r.reason === 'no_full_stream') ttlPut(streamEmptyCache, cacheKey, r as EmptyStream, STREAM_EMPTY_TTL_MS);
+    return r;
+  }
   const value = normaliseStreams(r.value);
-  if (value.streams.length === 0) return { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics(r.value.diagnostics) };
-  streamCache.set(cacheKey, { value, until: Date.now() + STREAM_TTL_MS });
+  if (value.streams.length === 0) {
+    const empty: EmptyStream = { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics(r.value.diagnostics) };
+    ttlPut(streamEmptyCache, cacheKey, empty, STREAM_EMPTY_TTL_MS);
+    return empty;
+  }
+  ttlPut(streamCache, cacheKey, value, STREAM_TTL_MS);
   return { ok: true, value };
 }
 
@@ -165,15 +188,14 @@ export async function fetchWatchStreams(subjectId: string, se?: number, ep?: num
  * Playback links are cached per title, episode and quality until shortly before their token expires,
  * so reopening the same episode does not repeat the lookup. `fresh` skips the cache (used after a failure).
  */
-const playbackCache = new Map<string, { value: WatchPlayback; until: number }>();
+const playbackCache = new Map<string, TtlEntry<WatchPlayback>>();
 const PLAYBACK_CACHE_MARGIN_MS = 10 * 60 * 1000;
 
 export async function fetchWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null, fresh = false): Promise<WatchResult<WatchPlayback>> {
   const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}|${quality ?? ''}`;
   if (!fresh) {
-    const hit = playbackCache.get(cacheKey);
-    if (hit && hit.until > Date.now()) return { ok: true, value: hit.value };
-    playbackCache.delete(cacheKey);
+    const hit = ttlGet(playbackCache, cacheKey);
+    if (hit) return { ok: true, value: hit };
   }
   const body: Body = { action: 'playback', subjectId };
   if (se !== undefined) body.se = se;
@@ -181,12 +203,14 @@ export async function fetchWatchPlayback(subjectId: string, se: number | undefin
   if (quality) body.quality = quality;
   let last: WatchResult<WatchPlayback> = { ok: false, reason: 'failed' };
   for (let attempt = 0; attempt < 2; attempt++) {
+    beginWatch('watch:playback');
     const r = await call(body);
+    endWatch('watch:playback');
     if (r.ok) {
       const playback = normalisePlayback(r.value);
       if (!playback) return { ok: false, reason: 'no_full_stream' };
-      const until = playback.expiresAt ? playback.expiresAt - PLAYBACK_CACHE_MARGIN_MS : 0;
-      if (until > Date.now()) playbackCache.set(cacheKey, { value: playback, until });
+      const ttl = playback.expiresAt ? playback.expiresAt - PLAYBACK_CACHE_MARGIN_MS - Date.now() : 0;
+      if (ttl > 0) ttlPut(playbackCache, cacheKey, playback, ttl);
       return { ok: true, value: playback };
     }
     last = r;

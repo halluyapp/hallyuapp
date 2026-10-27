@@ -21,7 +21,7 @@ async function load(rel) {
   return import(pathToFileURL(file).href);
 }
 
-const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, normalisePlayback, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics, MIN_FULL_DOWNLOAD_BYTES } = await load('lib/watchModel.ts');
+const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, normalisePlayback, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics, DEFAULT_QUALITIES, MIN_FULL_DOWNLOAD_BYTES } = await load('lib/watchModel.ts');
 
 const subject = (id, title, extra = {}) => ({
   subjectId: id,
@@ -224,10 +224,10 @@ test('tap zones: left and right thirds skip, the centre toggles controls', () =>
   assert.equal(R.fractionAt(10, 0), 0);
 });
 
-test('quality: only offered qualities are chosen; preference, then 480p, 360p, then best', () => {
+test('quality: only offered qualities are chosen; preference, then 360p, then the lowest offered', () => {
   assert.equal(R.chooseQuality(['1080p', '720p', '480p'], '720p'), '720p');
   assert.equal(R.chooseQuality(['1080p', '720p', '480p'], '360p'), '480p');
-  assert.equal(R.chooseQuality(['1080p', '720p'], null), '1080p');
+  assert.equal(R.chooseQuality(['1080p', '720p'], null), '720p');
   assert.equal(R.chooseQuality(['360p', '1080p'], null), '360p');
   assert.equal(R.chooseQuality([], '480p'), null);
 });
@@ -388,5 +388,97 @@ test('the failure message states how far the transfer got', () => {
     assert.equal(rules.repairTransfer({ ...base, status: 'queued' }, { running: false, queued: false }).status, 'failed');
     assert.equal(rules.repairTransfer({ ...base, status: 'queued' }, { running: false, queued: true }).status, 'queued');
     assert.equal(rules.repairTransfer({ ...base, status: 'paused' }, { running: false, queued: false }).status, 'paused');
+  });
+}
+
+/* ---------- Deterministic player states, the stall watchdog, the TTL cache and download targets ---------- */
+{
+  const rules = await load('lib/watchRules.ts');
+
+  test('player: exactly one state is resolved, and the first decisive signal wins', () => {
+    const base = { hasSource: true, loading: false, unavailable: false, failed: false, isPlaying: false, isBuffering: false };
+    assert.equal(rules.playerState(base), 'paused');
+    assert.equal(rules.playerState({ ...base, isPlaying: true }), 'playing');
+    assert.equal(rules.playerState({ ...base, loading: true }), 'loading');
+    assert.equal(rules.playerState({ ...base, hasSource: false }), 'loading');
+    assert.equal(rules.playerState({ ...base, isBuffering: true }), 'buffering');
+    assert.equal(rules.playerState({ ...base, isPlaying: true, isBuffering: true }), 'buffering');
+    assert.equal(rules.playerState({ ...base, failed: true }), 'error');
+    assert.equal(rules.playerState({ ...base, unavailable: true }), 'unavailable');
+    // unavailable outranks error: it is never retried.
+    assert.equal(rules.playerState({ ...base, failed: true, unavailable: true }), 'unavailable');
+    // loading outranks buffering and playing.
+    assert.equal(rules.playerState({ ...base, loading: true, isBuffering: true, isPlaying: true }), 'loading');
+  });
+
+  test('player: a stall past the watchdog is an error, never an endless spinner', () => {
+    const base = { hasSource: true, loading: false, unavailable: false, failed: false, isPlaying: false, isBuffering: true };
+    assert.equal(rules.playerState({ ...base, stalledMs: 0 }), 'buffering');
+    assert.equal(rules.playerState({ ...base, stalledMs: rules.BUFFER_STALL_MS - 1 }), 'buffering');
+    assert.equal(rules.playerState({ ...base, stalledMs: rules.BUFFER_STALL_MS }), 'error');
+    assert.equal(rules.stalledForMs(10_000, 4_000, true), 6_000);
+    assert.equal(rules.stalledForMs(10_000, 4_000, false), 0);
+    assert.equal(rules.stalledForMs(1_000, 9_000, true), 0);
+  });
+
+  test('failures: only the unfixable reasons are unavailable, and each reason has one message', () => {
+    assert.equal(rules.isUnavailableReason('no_full_stream'), true);
+    assert.equal(rules.isUnavailableReason('not_configured'), true);
+    assert.equal(rules.isUnavailableReason('signed_out'), true);
+    assert.equal(rules.isUnavailableReason('offline'), false);
+    assert.equal(rules.isUnavailableReason('timeout'), false);
+    assert.equal(rules.isUnavailableReason(null), false);
+    assert.match(rules.watchErrorMessage('no_full_stream', '360p'), /at 360p/);
+    assert.match(rules.watchErrorMessage('offline'), /offline/i);
+    assert.match(rules.watchErrorMessage('stalled'), /stalled/i);
+    assert.match(rules.watchErrorMessage('anything-else'), /could not be loaded/);
+  });
+
+  test('quality default: one source of truth for 360p, shared with watchModel', () => {
+    assert.deepEqual(rules.DEFAULT_QUALITY_ORDER, ['360p']);
+    assert.deepEqual(rules.DEFAULT_QUALITY_ORDER, DEFAULT_QUALITIES);
+  });
+
+  test('cache: a fresh entry is reused, an expired one is not, and a non-positive TTL stores nothing', () => {
+    const map = new Map();
+    rules.ttlPut(map, 'k', 'v', 1_000, 1_000);
+    assert.equal(rules.ttlGet(map, 'k', 1_500), 'v');
+    assert.equal(rules.ttlGet(map, 'k', 2_000), null);
+    assert.equal(map.size, 0);
+    rules.ttlPut(map, 'never', 'v', 0, 1_000);
+    assert.equal(rules.ttlGet(map, 'never', 1_000), null);
+    assert.equal(map.size, 0);
+  });
+
+  test('cache: the map stays bounded', () => {
+    const map = new Map();
+    rules.ttlPut(map, 'a', 1, 1_000, 1_000, 2);
+    rules.ttlPut(map, 'b', 2, 1_000, 1_000, 2);
+    rules.ttlPut(map, 'c', 3, 1_000, 1_000, 2);
+    assert.equal(map.size, 2);
+    assert.equal(rules.ttlGet(map, 'a', 1_000), null);
+    assert.equal(rules.ttlGet(map, 'c', 1_000), 3);
+  });
+
+  test('downloads: two qualities of one episode are independent targets, each with its own file', () => {
+    const input = { subjectId: 's1', season: 1, episode: 2, qualities: ['1080p', '480p', '360p'], saved: [], transfers: [] };
+    const targets = rules.downloadTargets(input);
+    assert.deepEqual(targets.map((t) => t.quality), ['1080p', '480p', '360p']);
+    assert.deepEqual(targets.map((t) => t.canStart), [true, true, true]);
+    assert.equal(new Set(targets.map((t) => t.key)).size, 3);
+    // A finished 360p copy leaves 480p fully downloadable: two qualities never collide.
+    const saved360 = rules.qualityDownloadKey('s1', 1, 2, '360p');
+    const after = rules.downloadTargets({ ...input, saved: [{ key: saved360, quality: '360p', bytes: 90_000_000 }] });
+    assert.equal(after.find((t) => t.quality === '360p').savedBytes, 90_000_000);
+    assert.equal(after.find((t) => t.quality === '360p').canStart, false);
+    assert.equal(after.find((t) => t.quality === '480p').canStart, true);
+    // A running 480p transfer blocks only its own quality, and a failed one may be retried.
+    const running = rules.downloadTargets({ ...input, transfers: [{ key: rules.qualityDownloadKey('s1', 1, 2, '480p'), quality: '480p', status: 'downloading' }] });
+    assert.equal(running.find((t) => t.quality === '480p').canStart, false);
+    assert.equal(running.find((t) => t.quality === '1080p').canStart, true);
+    const failed = rules.downloadTargets({ ...input, transfers: [{ key: rules.qualityDownloadKey('s1', 1, 2, '480p'), quality: '480p', status: 'failed' }] });
+    assert.equal(failed.find((t) => t.quality === '480p').canStart, true);
+    // Duplicate quality labels never produce duplicate targets.
+    assert.equal(rules.downloadTargets({ ...input, qualities: ['480p', '480p'] }).length, 1);
   });
 }

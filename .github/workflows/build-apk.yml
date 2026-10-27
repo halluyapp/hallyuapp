@@ -415,6 +415,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Real evidence for the download path: the sealed playback links only exist here, where the live
+      # backend and its secrets are available. A failure blocks publication rather than shipping blind.
+      - name: Verify live Watch playback, Range handling & real download size
+        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
+        env:
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/ci/watch-live-check.mjs
+
       - name: Publish GitHub Release with all signed architecture APKs & changelog
         if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
         env:
@@ -431,6 +440,10 @@ jobs:
           fi
           if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
             echo "::error title=Release notes required::Provide user-facing What's New notes before publishing this build."
+            exit 1
+          fi
+          if grep -Eqi '(^|[[:space:]])(feat|fix|chore|refactor|perf|docs|test|build|ci|revert)(\(|:)' <<< "$HALLYU_RELEASE_NOTES"; then
+            echo "::error title=Release notes must be plain language::Release notes are read by users. Write them by hand and remove technical prefixes such as feat(...) or fix:."
             exit 1
           fi
           TAG="apk-${{ github.run_number }}"
@@ -516,6 +529,10 @@ jobs:
           fi
           if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
             echo "::error title=Release notes required::Add release-notes/next.txt with user-facing What's New notes."
+            exit 1
+          fi
+          if grep -Eqi '(^|[[:space:]])(feat|fix|chore|refactor|perf|docs|test|build|ci|revert)(\(|:)' <<< "$HALLYU_RELEASE_NOTES"; then
+            echo "::error title=Release notes must be plain language::release-notes/next.txt is read by users. Write plain sentences and remove technical prefixes such as feat(...) or fix:."
             exit 1
           fi
           node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk

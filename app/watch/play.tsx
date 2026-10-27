@@ -12,16 +12,22 @@ import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchPlayback } from '../../lib/api/moviebox';
 import { getProgress, saveProgress, setPreferredQuality, type WatchEpisodeRef } from '../../lib/watchStore';
 import {
+  BUFFER_STALL_MS,
   CONTROLS_AUTO_HIDE_MS,
   DOUBLE_TAP_WINDOW_MS,
   SAVE_PROGRESS_EVERY_MS,
   SKIP_MS,
   fractionAt,
   formatClock,
+  isUnavailableReason,
+  playerState,
   seekTarget,
   sortQualities,
+  stalledForMs,
   volumeAfterSwipe,
+  watchErrorMessage,
 } from '../../lib/watchRules';
+import { recordWatch } from '../../lib/watchPerf';
 
 const HOLD_STEP_MS = 2000;
 const HOLD_INTERVAL_MS = 250;
@@ -30,14 +36,6 @@ const RESUME_MIN_MS = 5000;
 
 type Phase = 'loading' | 'ready' | 'error';
 type Zone = 'left' | 'right';
-
-function messageFor(reason: string): string {
-  if (reason === 'no_full_stream') return 'No full-length stream is available for this episode at this quality right now.';
-  if (reason === 'signed_out') return 'Sign in to watch Hallyu TV.';
-  if (reason === 'offline') return 'You are offline. Connect to stream, or play a downloaded copy.';
-  if (reason === 'not_configured') return 'Hallyu TV is not set up yet.';
-  return 'This stream could not be loaded. Check your connection and try again.';
-}
 
 /**
  * Hallyu TV player. Plays a proxy stream (fetched fresh from `playback`) or a file saved on this device.
@@ -86,6 +84,9 @@ export default function WatchPlayer() {
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestSeq = useRef(0);
+  /** When the player last made forward progress; the watchdog measures stalls against this. */
+  const lastProgressAt = useRef(Date.now());
+  const mountedAt = useRef(Date.now());
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [source, setSource] = useState<{ uri: string } | null>(null);
@@ -94,6 +95,9 @@ export default function WatchPlayer() {
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** Set only for reasons retrying can never fix; the player then shows "unavailable", never "error". */
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
+  const [stalled, setStalled] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
@@ -125,7 +129,11 @@ export default function WatchPlayer() {
     const seq = ++requestSeq.current;
     setPhase('loading');
     setErrorMessage(null);
+    setStalled(false);
+    setUnavailableReason(null);
+    lastProgressAt.current = Date.now();
     pendingSeek.current = resumeAt;
+    const startedAt = Date.now();
     const r = await fetchWatchPlayback(
       ref.subjectId,
       ref.season ?? undefined,
@@ -133,9 +141,11 @@ export default function WatchPlayer() {
       quality,
       fresh,
     );
+    recordWatch('play:link', Date.now() - startedAt);
     if (seq !== requestSeq.current) return false;
     if (!r.ok) {
-      setErrorMessage(messageFor(r.reason));
+      setUnavailableReason(isUnavailableReason(r.reason) ? r.reason : null);
+      setErrorMessage(watchErrorMessage(r.reason, quality));
       setPhase('error');
       return false;
     }
@@ -172,6 +182,19 @@ export default function WatchPlayer() {
 
   useEffect(() => () => { requestSeq.current += 1; }, []);
 
+  // A buffering player is never allowed to spin forever: no forward progress for BUFFER_STALL_MS turns
+  // into the error state, which shows the real reason and a working retry.
+  useEffect(() => {
+    if (!isBuffering || phase !== 'ready') {
+      setStalled(false);
+      return;
+    }
+    const id = setInterval(() => {
+      if (stalledForMs(Date.now(), lastProgressAt.current, true) >= BUFFER_STALL_MS) setStalled(true);
+    }, 2_000);
+    return () => clearInterval(id);
+  }, [isBuffering, phase]);
+
   /* ----- playback status ----- */
 
   const handleFailure = () => {
@@ -197,6 +220,9 @@ export default function WatchPlayer() {
     }
     const pos = status.positionMillis;
     const dur = status.durationMillis ?? 0;
+    // Forward progress is what the stall watchdog measures; a rewind also counts as progress.
+    if (pos !== latest.current.positionMs) lastProgressAt.current = Date.now();
+    if (status.isPlaying && stalled) setStalled(false);
     latest.current = { positionMs: pos, durationMs: dur };
     setPositionMs(pos);
     setDurationMs(dur);
@@ -220,6 +246,9 @@ export default function WatchPlayer() {
 
   const onLoad = async () => {
     retries.current = 0;
+    lastProgressAt.current = Date.now();
+    setStalled(false);
+    recordWatch('play:start', Date.now() - mountedAt.current);
     setPhase('ready');
     void video.current?.setRateAsync(rateRef.current, true).catch(() => {});
     const seekTo = pendingSeek.current;
@@ -268,6 +297,8 @@ export default function WatchPlayer() {
     const seq = ++requestSeq.current;
     setSwitchingTo(q);
     setNotice(null);
+    setStalled(false);
+    lastProgressAt.current = Date.now();
     const r = await fetchWatchPlayback(ref.subjectId, ref.season ?? undefined, ref.episode ?? undefined, q);
     if (seq !== requestSeq.current) return;
     if (!r.ok) {
@@ -287,6 +318,9 @@ export default function WatchPlayer() {
 
   const retry = () => {
     retries.current = 0;
+    setStalled(false);
+    setUnavailableReason(null);
+    lastProgressAt.current = Date.now();
     if (isLocal) {
       setPhase('loading');
       setErrorMessage(null);
@@ -468,7 +502,18 @@ export default function WatchPlayer() {
   const shownPosition = scrubFraction !== null && durationMs > 0 ? scrubFraction * durationMs : positionMs;
   const progress = durationMs > 0 ? Math.min(1, shownPosition / durationMs) : 0;
   const remaining = durationMs > 0 ? Math.max(0, durationMs - shownPosition) : 0;
-  const showControls = controlsVisible && phase !== 'error';
+  // One resolved state drives every overlay, so loading / playing / paused / error / unavailable can
+  // never be shown together and a stall can never present itself as an endless spinner.
+  const state = playerState({
+    hasSource: !!source,
+    loading: phase === 'loading',
+    unavailable: unavailableReason !== null,
+    failed: stalled || phase === 'error',
+    isPlaying,
+    isBuffering,
+    stalledMs: stalled ? BUFFER_STALL_MS : stalledForMs(Date.now(), lastProgressAt.current, isBuffering),
+  });
+  const showControls = controlsVisible && state !== 'error' && state !== 'unavailable';
 
   const stage = (
     <View style={fullScreen ? styles.stageFull : styles.stage}>
@@ -489,7 +534,7 @@ export default function WatchPlayer() {
       ) : null}
 
       {/* Gesture layer. Left and right thirds seek, the centre toggles the controls. Sits under the controls. */}
-      {phase !== 'error' ? (
+      {state !== 'error' && state !== 'unavailable' ? (
         <View style={StyleSheet.absoluteFill} {...volumePan.panHandlers}>
           <Pressable
             accessibilityRole="button"
@@ -527,25 +572,41 @@ export default function WatchPlayer() {
         </View>
       ) : null}
 
-      {(phase === 'loading' || isBuffering) && phase !== 'error' ? (
+      {state === 'loading' || state === 'buffering' ? (
         <View style={styles.center} pointerEvents="none">
           <ActivityIndicator color="#fff" />
           <Text variant="caption" tone="secondary" style={{ marginTop: space.x2 }}>
-            {switchingTo ? `Switching to ${switchingTo}…` : phase === 'loading' ? 'Loading…' : 'Buffering…'}
+            {switchingTo ? `Switching to ${switchingTo}…` : state === 'loading' ? 'Loading…' : 'Buffering…'}
           </Text>
         </View>
       ) : null}
 
-      {phase === 'error' ? (
+      {state === 'error' ? (
         <View style={styles.errorBox}>
-          <ErrorState kind="server" title="This stream could not be played" body={errorMessage ?? undefined} onRetry={retry} />
+          <ErrorState
+            kind={stalled ? 'timeout' : 'server'}
+            title={stalled ? 'Playback stalled' : 'This stream could not be played'}
+            body={stalled ? watchErrorMessage('stalled') : errorMessage ?? undefined}
+            onRetry={retry}
+          />
           <Pressable onPress={() => router.back()} accessibilityRole="button" style={styles.ghostBtn}>
             <Text variant="body" tone="secondary">Back</Text>
           </Pressable>
         </View>
       ) : null}
 
-      {locked && phase !== 'error' ? (
+      {state === 'unavailable' ? (
+        <View style={styles.errorBox} accessibilityRole="alert">
+          <Text variant="title" tone="onAccent" align="center">Not available</Text>
+          <Text variant="bodySmall" tone="secondary" align="center">{errorMessage ?? watchErrorMessage(unavailableReason)}</Text>
+          <Text variant="caption" tone="tertiary" align="center">Trying again will not change this. Pick another title, another episode, or another quality.</Text>
+          <Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Go back" style={styles.ghostBtn}>
+            <Text variant="body" tone="secondary">Back</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {locked && state !== 'error' && state !== 'unavailable' ? (
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable onPress={() => { setLocked(false); touch(); }} accessibilityRole="button" accessibilityLabel="Unlock controls" style={styles.lockBtn} hitSlop={8}>
             <Ionicons name="lock-closed" size={18} color="#fff" />

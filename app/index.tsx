@@ -1,7 +1,7 @@
 import { usePathname, useRouter, useRootNavigationState } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Animated, Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Animated, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Text } from '../components/ui/Text';
 import { colors, motion } from '../constants/theme';
@@ -103,8 +103,11 @@ export default function Index() {
   // prove, so it resolves immediately to the local-mode path.
   const gateSatisfied = configured ? conn === 'connected' : conn !== null;
   const ready = coreReady && gateSatisfied;
-  // A configured build that could not connect is blocked on screen, not routed into the app.
-  const blocked = configured && coreReady && conn !== null && conn !== 'connected';
+  // A configured build that could not connect is blocked on screen in the app shells. On web the gate
+  // never blocks: the public landing page must load even when the backend does not answer, so visitors
+  // see the product instead of an "unavailable" wall.
+  const blocked = configured && coreReady && conn !== null && conn !== 'connected' && Platform.OS !== 'web';
+  const webLanding = configured && conn !== null && conn !== 'connected' && Platform.OS === 'web';
   const fade = useRef(new Animated.Value(0)).current;
   const hasNavigated = useRef(false);
   const [stuck, setStuck] = useState(false);
@@ -124,6 +127,25 @@ export default function Index() {
       cancelled = true;
     };
   }, [coreReady, online, attempt]);
+
+  // Web: an unreachable backend goes to the public landing page rather than an unavailable wall. The
+  // landing page (sign in, create account, browse as a guest, install the app) needs no backend.
+  useEffect(() => {
+    if (!webLanding || !navReady || hasNavigated.current) return;
+    hasNavigated.current = true;
+    markBoot('index:web-landing');
+    router.replace('/(auth)/welcome' as never);
+  }, [webLanding, navReady, router]);
+
+  // Anonymous access is always available: a probe that cannot reach the backend must never be a dead end.
+  const continueAsGuest = () => {
+    markBoot('index:guest-fallback');
+    void auth.continueAsGuest();
+    if (!hasNavigated.current && navReady) {
+      hasNavigated.current = true;
+      router.replace('/(tabs)' as never);
+    }
+  };
 
   const retry = () => {
     markBoot('gate:retry');
@@ -231,6 +253,11 @@ export default function Index() {
           <Pressable onPress={retry} style={styles.retry} accessibilityRole="button" accessibilityLabel="Retry connection">
             <Text variant="label" tone="primary">
               Retry
+            </Text>
+          </Pressable>
+          <Pressable onPress={continueAsGuest} style={styles.retry} accessibilityRole="button" accessibilityLabel="Continue as a guest">
+            <Text variant="caption" tone="secondary">
+              Continue as a guest
             </Text>
           </Pressable>
         </View>
