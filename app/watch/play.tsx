@@ -225,6 +225,7 @@ export default function WatchPlayer() {
 
   // MovieBox captions first. A caption is used only when its file parses to real cues.
   useEffect(() => {
+    if (isLocal) return;
     let cancelled = false;
     void (async () => {
       const r = await fetchMovieboxCaptions({ subjectId: ref.subjectId, season: ref.season ?? undefined, episode: ref.episode ?? undefined });
@@ -356,7 +357,7 @@ export default function WatchPlayer() {
       await video.current?.setPositionAsync(seekTo).catch(() => {});
       return;
     }
-    if (isLocal || ref.subjectId === '') return;
+    if (ref.subjectId === '') return;
     const p = await getProgress(`${ref.subjectId}:${ref.season ?? 0}:${ref.episode ?? 0}`);
     if (p && p.positionMs > RESUME_MIN_MS && p.durationMs > 0 && p.positionMs / p.durationMs < 0.95) {
       await video.current?.setPositionAsync(p.positionMs).catch(() => {});

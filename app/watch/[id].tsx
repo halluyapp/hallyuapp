@@ -35,6 +35,7 @@ import {
   setPreferredQuality,
   setTitleQuality,
   startDownload,
+  subscribeCompletedDownloads,
   episodeKey,
   type DownloadEntry,
   type ProgressEntry,
@@ -161,15 +162,20 @@ export default function WatchTitleScreen() {
   // both stay playable offline.
   useEffect(() => {
     let alive = true;
-    Promise.all([listDownloads(), getProgress(key)]).then(([all, p]) => {
-      if (!alive) return;
-      setSavedList(all.filter((d) => d.subjectId === subjectId && d.season === seasonValue && d.episode === episodeValue));
-      setResume(p && p.positionMs > 5000 ? p : null);
-    });
+    const reload = () => {
+      Promise.all([listDownloads(), getProgress(key)]).then(([all, p]) => {
+        if (!alive) return;
+        setSavedList(all.filter((d) => d.subjectId === subjectId && d.season === seasonValue && d.episode === episodeValue));
+        setResume(p && p.positionMs > 5000 ? p : null);
+      });
+    };
+    reload();
+    const unsub = subscribeCompletedDownloads(reload);
     return () => {
       alive = false;
+      unsub();
     };
-  }, [subjectId, isSeries, season, episode, key, seasonValue, episodeValue, transfers.length]);
+  }, [subjectId, isSeries, season, episode, key, seasonValue, episodeValue]);
 
   const ref = () => ({
     subjectId,

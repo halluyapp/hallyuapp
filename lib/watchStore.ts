@@ -14,6 +14,7 @@ import { Platform } from 'react-native';
 import { clearDownloadNotice, reportDownload } from './watchNotify';
 import { fetchWatchDownloadUrl } from './api/moviebox';
 import { nativeDownloader } from './watchNative';
+import { decodeBase64 } from './textEncoding';
 import {
   canStartDownload,
   canTransition,
@@ -134,14 +135,20 @@ export function downloadsSupported(): boolean {
   return Platform.OS !== 'web' && !!FileSystem.documentDirectory;
 }
 
-export async function listDownloads(): Promise<DownloadEntry[]> {
+let completedCache: DownloadEntry[] | null = null;
+const completedListeners = new Set<Listener>();
+
+export async function listDownloads(forceRefresh = false): Promise<DownloadEntry[]> {
+  if (!forceRefresh && completedCache !== null) return completedCache;
   const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
   const checked = await Promise.all(
     all.map(async (d) => ((await FileSystem.getInfoAsync(d.fileUri).catch(() => ({ exists: false }))).exists ? d : null)),
   );
   const alive = checked.filter((d): d is DownloadEntry => d !== null);
   if (alive.length !== all.length) await writeJson(DOWNLOADS_KEY, alive);
-  return alive.sort((a, b) => b.savedAt - a.savedAt);
+  const sorted = alive.sort((a, b) => b.savedAt - a.savedAt);
+  completedCache = sorted;
+  return sorted;
 }
 
 export async function findDownload(subjectId: string, season: number | null, episode: number | null, quality?: string | null): Promise<DownloadEntry | null> {
@@ -152,22 +159,37 @@ export async function findDownload(subjectId: string, season: number | null, epi
 export async function removeDownload(entry: DownloadEntry): Promise<void> {
   await FileSystem.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => {});
   const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
-  await writeJson(DOWNLOADS_KEY, all.filter((d) => d.key !== entry.key));
-  notify();
+  const next = all.filter((d) => d.key !== entry.key);
+  await writeJson(DOWNLOADS_KEY, next);
+  completedCache = next.sort((a, b) => b.savedAt - a.savedAt);
+  notifyDownloads();
+}
+
+/** Subscribe to completed downloads changes (added or removed). */
+export function subscribeCompletedDownloads(fn: Listener): () => void {
+  completedListeners.add(fn);
+  return () => completedListeners.delete(fn);
+}
+
+function notifyDownloads(): void {
+  completedListeners.forEach((fn) => fn());
+  notifyTransfers();
 }
 
 /* ---------- Transfers ---------- */
 
 type Listener = () => void;
-const listeners = new Set<Listener>();
-function notify(): void {
-  listeners.forEach((fn) => fn());
+const transferListeners = new Set<Listener>();
+export const transfersMemory = new Map<string, TransferEntry>();
+
+function notifyTransfers(): void {
+  transferListeners.forEach((fn) => fn());
 }
 
 /** Subscribe to transfer changes. Returns an unsubscribe function. */
 export function subscribeTransfers(fn: Listener): () => void {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
+  transferListeners.add(fn);
+  return () => transferListeners.delete(fn);
 }
 
 function stripLegacyResumeData(t: TransferEntry): TransferEntry {
@@ -177,10 +199,15 @@ function stripLegacyResumeData(t: TransferEntry): TransferEntry {
 export async function listTransfers(): Promise<TransferEntry[]> {
   const raw = await readJson<TransferEntry[]>(TRANSFERS_KEY, []);
   const all = raw.map(stripLegacyResumeData);
+  // Overlay memory state for live byte counts without waiting for disk
+  const overlaid = all.map((t) => transfersMemory.get(t.key) ?? t);
+  for (const t of overlaid) {
+    if (!transfersMemory.has(t.key)) transfersMemory.set(t.key, t);
+  }
   // Native downloads may have finished while the app was closed. Checking them when the app opens picks that up.
-  if (all.some((t) => t.engine === 'native' && t.status === 'downloading')) ensureNativePoll();
+  if (overlaid.some((t) => t.engine === 'native' && t.status === 'downloading')) ensureNativePoll();
   // A download that was "downloading" when the app closed is interrupted now, not still running.
-  const repaired = all.map((t) =>
+  const repaired = overlaid.map((t) =>
     repairTransfer(t, { running: active.has(t.key) || t.engine === 'native', queued: queuedKeys.has(t.key) }),
   );
   if (JSON.stringify(repaired) !== JSON.stringify(raw)) await writeJson(TRANSFERS_KEY, repaired);
@@ -195,10 +222,11 @@ function noticeTitle(t: TransferEntry): string {
 
 async function putTransfer(t: TransferEntry): Promise<void> {
   const safe = stripLegacyResumeData(t);
+  transfersMemory.set(safe.key, safe);
   const raw = await readJson<TransferEntry[]>(TRANSFERS_KEY, []);
   const all = raw.map(stripLegacyResumeData);
   await writeJson(TRANSFERS_KEY, [safe, ...all.filter((x) => x.key !== safe.key)]);
-  notify();
+  notifyTransfers();
   if (safe.engine === 'native' && safe.status === 'downloading') return; // DownloadManager owns its visible system notification.
   if (safe.status === 'downloading') void reportDownload(safe.key, noticeTitle(safe), 'progress', safe.bytesWritten, safe.totalBytes);
   else if (safe.status === 'paused') void reportDownload(safe.key, noticeTitle(safe), 'paused', safe.bytesWritten, safe.totalBytes);
@@ -206,13 +234,17 @@ async function putTransfer(t: TransferEntry): Promise<void> {
 }
 
 async function dropTransfer(key: string): Promise<void> {
+  transfersMemory.delete(key);
   const all = (await readJson<TransferEntry[]>(TRANSFERS_KEY, [])).map(stripLegacyResumeData);
   await writeJson(TRANSFERS_KEY, all.filter((x) => x.key !== key));
-  notify();
+  notifyTransfers();
 }
 
 async function getTransfer(key: string): Promise<TransferEntry | null> {
-  return (await readJson<TransferEntry[]>(TRANSFERS_KEY, [])).map(stripLegacyResumeData).find((t) => t.key === key) ?? null;
+  if (transfersMemory.has(key)) return transfersMemory.get(key)!;
+  const t = (await readJson<TransferEntry[]>(TRANSFERS_KEY, [])).map(stripLegacyResumeData).find((x) => x.key === key) ?? null;
+  if (t) transfersMemory.set(key, t);
+  return t;
 }
 
 interface ActiveTransfer {
@@ -249,7 +281,7 @@ function headerOf(headers: Record<string, string> | undefined, name: string): st
 /** Reads a byte range of a saved file. Empty when the range is past the end. */
 async function readFileRange(fileUri: string, position: number, length: number): Promise<Uint8Array> {
   const b64 = await FileSystem.readAsStringAsync(fileUri, { encoding: FileSystem.EncodingType.Base64, position, length }).catch(() => '');
-  return b64 ? Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)) : new Uint8Array();
+  return b64 ? decodeBase64(b64) : new Uint8Array();
 }
 
 const INVALID_FILE_MESSAGES = {
@@ -262,7 +294,7 @@ const INVALID_FILE_MESSAGES = {
 async function finalize(key: string, t: TransferEntry, bytes: number): Promise<void> {
   // Structure, not size, decides whether the file is a video: boxes must parse to the exact end of the file,
   // begin with "ftyp", and contain "moov". Any HTML, JSON, truncated or expired-link body fails here.
-  const verdict = await validateMp4Layout((p, n) => readFileRange(t.fileUri, p, n), bytes, t.totalBytes);
+  const verdict = await validateMp4Layout((p, n) => readFileRange(t.fileUri, p, n), bytes, bytes);
   if (!verdict.ok) {
     await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
     return failTransfer(key, 'invalid_file', INVALID_FILE_MESSAGES[verdict.reason]);
@@ -281,8 +313,11 @@ async function finalize(key: string, t: TransferEntry, bytes: number): Promise<v
     savedAt: Date.now(),
   };
   const done = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
-  await writeJson(DOWNLOADS_KEY, [entry, ...done.filter((d) => !(d.key === key && d.quality === t.quality))]);
+  const updatedDone = [entry, ...done.filter((d) => !(d.key === key && d.quality === t.quality))];
+  await writeJson(DOWNLOADS_KEY, updatedDone);
+  completedCache = updatedDone.sort((a, b) => b.savedAt - a.savedAt);
   await dropTransfer(key);
+  notifyDownloads();
   if (t.engine !== 'native') void reportDownload(key, noticeTitle(t), 'done', bytes, bytes);
 }
 
@@ -488,23 +523,37 @@ async function pollNative(): Promise<void> {
   }
 }
 
-/** Moves a finished DownloadManager file into the private folder, then applies the same checks as any download. */
+/** Moves a finished DownloadManager file into the private app sandbox folder, then validates it. */
 async function settleNativeSuccess(key: string, localPath: string | null): Promise<void> {
   const t = await getTransfer(key);
   if (!t) return;
   if (!localPath) return failTransfer(key, 'unknown', 'The download finished but could not be found. Tap retry.');
-  // Register the file where DownloadManager wrote it. A copy or move between folders is an extra write that
-  // can fail halfway; the file is already complete in its own folder, so it is validated and used in place.
   const from = localPath.startsWith('file://') ? localPath : `file://${localPath}`;
   const bytes = await bytesOnDisk(from);
-  if (bytes === 0) return failTransfer(key, 'unknown', 'The download finished but its file could not be found. Tap retry.');
-  if (t.totalBytes && bytes !== t.totalBytes) {
+  if (bytes === 0 || bytes < MIN_PLAYABLE_BYTES) {
     await FileSystem.deleteAsync(from, { idempotent: true }).catch(() => {});
-    return failTransfer(key, 'network', lostMessage(bytes, t.totalBytes));
+    return failTransfer(key, 'unknown', 'The download finished but its file was empty or missing. Tap retry.');
   }
-  const registered: TransferEntry = { ...t, fileUri: from };
+
+  // Ensure file is safely placed inside the app's private document directory (sandboxed, never in gallery)
+  await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true }).catch(() => {});
+  const dest = t.fileUri;
+  if (from !== dest) {
+    try {
+      await FileSystem.copyAsync({ from, to: dest });
+      await FileSystem.deleteAsync(from, { idempotent: true }).catch(() => {});
+    } catch {
+      await FileSystem.moveAsync({ from, to: dest }).catch(() => {});
+    }
+  }
+
+  const savedBytes = await bytesOnDisk(dest);
+  if (savedBytes === 0 || savedBytes < MIN_PLAYABLE_BYTES) {
+    return failTransfer(key, 'unknown', 'Could not save the download to app storage. Tap retry.');
+  }
+  const registered: TransferEntry = { ...t, fileUri: dest, bytesWritten: savedBytes, totalBytes: savedBytes };
   await putTransfer(registered);
-  await finalize(key, registered, bytes);
+  await finalize(key, registered, savedBytes);
 }
 
 /** Runs one transfer chain. When it ends (complete, failed, paused, or cancelled), the next queued download starts. */
@@ -572,11 +621,27 @@ function makeResumable(key: string, url: string, onBytes: (written: number, tota
   );
 }
 
-/** Persists byte progress only. Signed links and opaque resume blobs are never persisted. */
+let lastBytesPersist = 0;
+
+/** Persists byte progress only. In-memory state updates smoothly; disk writes are throttled to save CPU and battery. */
 async function updateBytes(key: string, written: number, total: number | null): Promise<void> {
   const t = await getTransfer(key);
   if (!t || t.status !== 'downloading') return;
-  await putTransfer({ ...t, bytesWritten: written, totalBytes: total ?? t.totalBytes, updatedAt: Date.now() });
+  const updated: TransferEntry = {
+    ...t,
+    bytesWritten: written,
+    totalBytes: total ?? t.totalBytes,
+    updatedAt: Date.now(),
+  };
+  transfersMemory.set(key, updated);
+  notifyTransfers();
+  const now = Date.now();
+  if (now - lastBytesPersist > 4000) {
+    lastBytesPersist = now;
+    const raw = await readJson<TransferEntry[]>(TRANSFERS_KEY, []);
+    const all = raw.map(stripLegacyResumeData);
+    await writeJson(TRANSFERS_KEY, [updated, ...all.filter((x) => x.key !== key)]);
+  }
 }
 
 export interface StartResult {

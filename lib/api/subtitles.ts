@@ -76,7 +76,7 @@ export async function searchOpenSubtitles(args: { query: string; imdbId?: string
     language: args.language ?? 'en',
   });
   if (!res.ok) return res;
-  const rows = Array.isArray(res.value.data) ? (res.value.data as Array<Record<string, unknown>>) : [];
+  const rows = Array.isArray(res.value.data) ? (res.value.data as Record<string, unknown>[]) : [];
   return {
     ok: true,
     value: rows.map((r) => ({
