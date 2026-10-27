@@ -260,6 +260,7 @@ declare r record; v_ids text[] := '{}'; v_airing text[] := '{}';
 begin
   perform set_config('role', 'service_role', true);
   perform set_config('request.jwt.claim.role', 'service_role', true);
+  perform set_config('request.jwt.claim.sub', '', true);
   perform public.refresh_trending('kdrama');
   for r in select id from public.trending_titles(p_world => 'kdrama', p_limit => 50) loop
     v_ids := v_ids || r.id::text;
@@ -284,6 +285,7 @@ declare v_id uuid; v_claimed boolean; v_attempt integer; v_id2 uuid; v_claimed2 
 begin
   perform set_config('role', 'service_role', true);
   perform set_config('request.jwt.claim.role', 'service_role', true);
+  perform set_config('request.jwt.claim.sub', '', true);
   select id, did_claim, attempt into v_id, v_claimed, v_attempt from public.job_claim('verification.probe', 'local-1');
   select id, did_claim into v_id2, v_claimed2 from public.job_claim('verification.probe', 'local-1');
   raise notice 'CHECK job-claim: OK (first id=%, claimed=%, attempt=%; second claimed=%)',
