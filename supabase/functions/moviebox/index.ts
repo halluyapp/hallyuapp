@@ -412,6 +412,98 @@ async function handleMedia(req: Request): Promise<Response> {
   return new Response(res.body, { status: res.status, headers: out });
 }
 
+/* ---------- Subtitles ---------- */
+
+// Official OpenSubtitles REST API (v1). The legacy rest.opensubtitles.org endpoint is deliberately not used.
+// The key lives in the OPENSUBTITLES_API_KEY secret and never reaches the app.
+const OPENSUBTITLES_BASE = 'https://api.opensubtitles.com/api/v1';
+const OPENSUBTITLES_UA = 'Hallyu v1.0';
+const SUBTITLE_MAX_BYTES = 2_000_000;
+
+function openSubtitlesKey(): string {
+  return (Deno.env.get('OPENSUBTITLES_API_KEY') ?? '').trim();
+}
+
+/** Accepts only plain https URLs without credentials or query secrets. */
+function safeHttpsUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const u = new URL(value);
+    if (u.protocol !== 'https:' || u.username || u.password) return null;
+    if (/api_key=/i.test(u.search)) return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalises a MovieBox caption list. The upstream shape is not published, so every known wrapper is
+ * accepted; an entry is kept only when it has a clean https URL. Nothing is guessed.
+ */
+function normaliseCaptions(body: any): Array<{ language: string; label: string; format: string | null; url: string }> {
+  const list: unknown[] = Array.isArray(body)
+    ? body
+    : Array.isArray(body?.data)
+      ? body.data
+      : Array.isArray(body?.captions)
+        ? body.captions
+        : Array.isArray(body?.data?.captions)
+          ? body.data.captions
+          : [];
+  const out: Array<{ language: string; label: string; format: string | null; url: string }> = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'object') continue;
+    const c = raw as Record<string, unknown>;
+    const url = safeHttpsUrl(c.url ?? c.src ?? c.file ?? c.link);
+    if (!url) continue;
+    const language = String(c.lan ?? c.language ?? c.lang ?? c.code ?? 'und').slice(0, 24);
+    const label = String(c.label ?? c.name ?? language).slice(0, 60);
+    const fromField = typeof c.format === 'string' ? c.format.toLowerCase() : null;
+    const ext = /\.(srt|vtt)(\?|$)/i.exec(url)?.[1]?.toLowerCase() ?? null;
+    const format = fromField === 'srt' || fromField === 'vtt' ? fromField : ext;
+    out.push({ language, label, format, url });
+  }
+  return out;
+}
+
+async function openSubtitlesFetch(path: string, init: RequestInit, key: string): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('Api-Key', key);
+  headers.set('User-Agent', OPENSUBTITLES_UA);
+  headers.set('Accept', 'application/json');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    return await fetch(`${OPENSUBTITLES_BASE}${path}`, { ...init, headers, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Maps one OpenSubtitles search result to the fields the picker shows. */
+function mapOpenSubtitle(item: any) {
+  const a = item?.attributes ?? {};
+  const f = a.feature_details ?? {};
+  const file = Array.isArray(a.files) ? a.files[0] : null;
+  const fileId = typeof file?.file_id === 'number' ? file.file_id : null;
+  return {
+    id: String(item?.id ?? ''),
+    file_id: fileId,
+    release: typeof a.release === 'string' ? a.release.slice(0, 160) : '',
+    file_name: typeof file?.file_name === 'string' ? file.file_name.slice(0, 160) : null,
+    language: typeof a.language === 'string' ? a.language : null,
+    download_count: typeof a.download_count === 'number' ? a.download_count : 0,
+    hearing_impaired: a.hearing_impaired === true,
+    from_trusted: a.from_trusted === true,
+    machine_translated: a.machine_translated === true || a.ai_translated === true,
+    feature_type: typeof f.feature_type === 'string' ? f.feature_type : null,
+    title: typeof f.movie_name === 'string' ? f.movie_name.slice(0, 160) : null,
+    season: typeof f.season_number === 'number' ? f.season_number : null,
+    episode: typeof f.episode_number === 'number' ? f.episode_number : null,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
@@ -491,6 +583,87 @@ Deno.serve(async (req) => {
       const origin = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
       if (!origin) return json({ error: 'not_configured' }, 503);
       return handlePlayback(input, `${origin}/functions/v1/moviebox`);
+    }
+
+    case 'captions': {
+      // MovieBox captions for a subject (and season/episode for series). Megan key stays server-side.
+      const subjectId = validId(input.subjectId);
+      if (!subjectId) return json({ error: 'bad_request' }, 400);
+      const params: Record<string, string> = {};
+      if (input.se !== undefined) params.se = String(intParam(input.se, 0, 99, 0));
+      if (input.ep !== undefined) params.ep = String(intParam(input.ep, 0, 999, 0));
+      if (typeof input.streamId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(input.streamId)) params.stream_id = input.streamId;
+      const r = await upstream(`/api/stream/${subjectId}/captions`, params, key);
+      if (!r.ok) return json({ error: 'upstream_error', status: r.status }, r.status === 429 ? 429 : 502);
+      const list = normaliseCaptions(r.body);
+      return json({ data: list, usable: list.length > 0 });
+    }
+
+    case 'subtitle_search': {
+      // OpenSubtitles search. Series results must match the requested season and episode exactly, so a
+      // subtitle for another episode is never offered as a match.
+      const osKey = openSubtitlesKey();
+      if (!osKey) return json({ error: 'not_configured', detail: 'OPENSUBTITLES_API_KEY secret is not set' }, 503);
+      const query = typeof input.query === 'string' ? input.query.trim().slice(0, 120) : '';
+      const imdbRaw = typeof input.imdbId === 'string' ? input.imdbId.replace(/^tt/i, '') : '';
+      const imdb = /^[0-9]{1,9}$/.test(imdbRaw) ? imdbRaw : '';
+      if (query.length < 2 && !imdb) return json({ error: 'bad_request' }, 400);
+      const language = typeof input.language === 'string' && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(input.language) ? input.language : 'en';
+      const isSeries = input.season !== undefined && input.season !== null;
+      const season = isSeries ? intParam(input.season, 0, 99, -1) : -1;
+      const episode = isSeries ? intParam(input.episode, 0, 999, -1) : -1;
+      if (isSeries && (season < 0 || episode < 0)) return json({ error: 'bad_request' }, 400);
+      const params = new URLSearchParams({ languages: language, order_by: 'download_count' });
+      if (query) params.set('query', query);
+      if (imdb) params.set('imdb_id', imdb);
+      if (isSeries) {
+        params.set('type', 'episode');
+        params.set('season_number', String(season));
+        params.set('episode_number', String(episode));
+      } else {
+        params.set('type', 'movie');
+      }
+      let r: Response;
+      try {
+        r = await openSubtitlesFetch(`/subtitles?${params.toString()}`, { method: 'GET' }, osKey);
+      } catch {
+        return json({ error: 'upstream_unreachable' }, 502);
+      }
+      if (!r.ok) return json({ error: 'upstream_error', status: r.status }, r.status === 429 ? 429 : 502);
+      const body = (await r.json().catch(() => null)) as { data?: unknown[] } | null;
+      const rows = Array.isArray(body?.data) ? body!.data.map(mapOpenSubtitle) : [];
+      const matching = rows.filter((row) => row.file_id !== null && (!isSeries || (row.season === season && row.episode === episode)));
+      return json({ data: matching.slice(0, 20), usable: matching.length > 0 });
+    }
+
+    case 'subtitle_fetch': {
+      // Downloads one OpenSubtitles file and returns its text. The download link and key are not returned.
+      const osKey = openSubtitlesKey();
+      if (!osKey) return json({ error: 'not_configured', detail: 'OPENSUBTITLES_API_KEY secret is not set' }, 503);
+      const fileId = typeof input.fileId === 'number' ? input.fileId : typeof input.fileId === 'string' && /^[0-9]{1,12}$/.test(input.fileId) ? Number(input.fileId) : NaN;
+      if (!Number.isSafeInteger(fileId) || fileId <= 0) return json({ error: 'bad_request' }, 400);
+      let dl: Response;
+      try {
+        dl = await openSubtitlesFetch('/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: fileId }) }, osKey);
+      } catch {
+        return json({ error: 'upstream_unreachable' }, 502);
+      }
+      if (dl.status === 406 || dl.status === 429) return json({ error: 'quota_exceeded' }, 429);
+      if (!dl.ok) return json({ error: 'upstream_error', status: dl.status }, 502);
+      const meta = (await dl.json().catch(() => null)) as { link?: unknown; file_name?: unknown } | null;
+      const link = safeHttpsUrl(meta?.link);
+      if (!link) return json({ error: 'unexpected_shape' }, 502);
+      let file: Response;
+      try {
+        file = await fetch(link, { signal: AbortSignal.timeout(12_000) });
+      } catch {
+        return json({ error: 'upstream_unreachable' }, 502);
+      }
+      if (!file.ok) return json({ error: 'upstream_error', status: file.status }, 502);
+      const text = await file.text();
+      if (text.length === 0 || text.length > SUBTITLE_MAX_BYTES) return json({ error: 'bad_subtitle_size' }, 502);
+      const name = typeof meta?.file_name === 'string' ? meta.file_name : '';
+      return json({ data: { text, file_name: name.slice(0, 160), format: /\.vtt$/i.test(name) ? 'vtt' : 'srt' } });
     }
 
     default:

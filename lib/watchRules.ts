@@ -110,6 +110,70 @@ export function isMp4Header(bytes: Uint8Array): boolean {
   return bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70; // "ftyp"
 }
 
+/**
+ * Smallest file that can be a real video. This is a sanity floor for empty and error bodies only, not a
+ * "full-length" rule: a short clip or a trailer is still a legitimate download.
+ */
+export const MIN_PLAYABLE_BYTES = 64 * 1024;
+
+export interface Mp4Box {
+  type: string;
+  offset: number;
+  size: number;
+}
+
+/**
+ * Walks the top-level ISO BMFF boxes of a file. `readAt(position, length)` must return the bytes at that
+ * position (fewer at end of file). Returns null when the structure is not a valid box chain.
+ */
+export async function readTopLevelMp4Boxes(
+  readAt: (position: number, length: number) => Promise<Uint8Array>,
+  fileSize: number,
+): Promise<Mp4Box[] | null> {
+  const boxes: Mp4Box[] = [];
+  let offset = 0;
+  while (offset < fileSize) {
+    if (boxes.length >= 64) return null;
+    const head = await readAt(offset, 16);
+    if (head.length < 8) return null;
+    const view = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    let size = view.getUint32(0);
+    const type = String.fromCharCode(head[4], head[5], head[6], head[7]);
+    let headerLen = 8;
+    if (size === 1) {
+      if (head.length < 16) return null;
+      const large = view.getBigUint64(8);
+      if (large > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      size = Number(large);
+      headerLen = 16;
+    } else if (size === 0) {
+      size = fileSize - offset; // box runs to the end of the file
+    }
+    if (size < headerLen || offset + size > fileSize) return null;
+    boxes.push({ type, offset, size });
+    offset += size;
+  }
+  return boxes;
+}
+
+/**
+ * A download is accepted only when the whole file parses as ISO BMFF boxes, begins with "ftyp", contains
+ * "moov" (without it the player cannot start), and matches the byte count the server promised when known.
+ * Any HTML page, JSON error, truncated body or expired-link response fails here.
+ */
+export async function validateMp4Layout(
+  readAt: (position: number, length: number) => Promise<Uint8Array>,
+  fileSize: number,
+  expectedBytes: number | null,
+): Promise<{ ok: true } | { ok: false; reason: 'too_small' | 'not_mp4' | 'no_movie_box' | 'size_mismatch' }> {
+  if (fileSize < MIN_PLAYABLE_BYTES) return { ok: false, reason: 'too_small' };
+  if (expectedBytes !== null && expectedBytes > 0 && fileSize !== expectedBytes) return { ok: false, reason: 'size_mismatch' };
+  const boxes = await readTopLevelMp4Boxes(readAt, fileSize);
+  if (!boxes || boxes.length === 0 || boxes[0].type !== 'ftyp') return { ok: false, reason: 'not_mp4' };
+  if (!boxes.some((b) => b.type === 'moov')) return { ok: false, reason: 'no_movie_box' };
+  return { ok: true };
+}
+
 /** Human size. Returns "Size unavailable" for null, negative, or NaN values. Never guesses a size. */
 export function formatBytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) return 'Size unavailable';

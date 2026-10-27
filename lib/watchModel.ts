@@ -238,6 +238,4 @@ export function isDownloadable(s: Pick<WatchStream, 'format'>): boolean {
   return (s.format ?? '').toUpperCase() === 'MP4';
 }
 
-/** Smallest file that counts as a full-length download. Matches the 50 MB rule. */
-export const MIN_FULL_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 

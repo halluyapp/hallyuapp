@@ -13,13 +13,13 @@ import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import { clearDownloadNotice, reportDownload } from './watchNotify';
 import { fetchWatchDownloadUrl } from './api/moviebox';
-import { MIN_FULL_DOWNLOAD_BYTES } from './watchModel';
 import { nativeDownloader } from './watchNative';
 import {
   canStartDownload,
   canTransition,
   decideAfterTransfer,
-  isMp4Header,
+  MIN_PLAYABLE_BYTES,
+  validateMp4Layout,
   lostMessage,
   repairTransfer,
   qualityDownloadKey,
@@ -246,13 +246,26 @@ function headerOf(headers: Record<string, string> | undefined, name: string): st
 }
 
 /** Validates a file whose bytes are all on disk, then records it as a completed download. */
+/** Reads a byte range of a saved file. Empty when the range is past the end. */
+async function readFileRange(fileUri: string, position: number, length: number): Promise<Uint8Array> {
+  const b64 = await FileSystem.readAsStringAsync(fileUri, { encoding: FileSystem.EncodingType.Base64, position, length }).catch(() => '');
+  return b64 ? Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)) : new Uint8Array();
+}
+
+const INVALID_FILE_MESSAGES = {
+  too_small: 'The file is too small to be a video. It was removed. Tap retry.',
+  not_mp4: 'The file is not a playable video (it may be an error page). It was removed. Tap retry.',
+  no_movie_box: 'The video file is incomplete (no movie index). It was removed. Tap retry.',
+  size_mismatch: 'The file size does not match the server. It was removed. Tap retry.',
+} as const;
+
 async function finalize(key: string, t: TransferEntry, bytes: number): Promise<void> {
-  if (bytes < MIN_FULL_DOWNLOAD_BYTES) return failTransfer(key, 'invalid_file', 'The server file is shorter than a full-length download. It was not saved.');
-  const head = await FileSystem.readAsStringAsync(t.fileUri, { encoding: FileSystem.EncodingType.Base64, position: 0, length: 12 }).catch(() => '');
-  const headBytes = head ? Uint8Array.from(atob(head), (c) => c.charCodeAt(0)) : new Uint8Array();
-  if (!isMp4Header(headBytes)) {
+  // Structure, not size, decides whether the file is a video: boxes must parse to the exact end of the file,
+  // begin with "ftyp", and contain "moov". Any HTML, JSON, truncated or expired-link body fails here.
+  const verdict = await validateMp4Layout((p, n) => readFileRange(t.fileUri, p, n), bytes, t.totalBytes);
+  if (!verdict.ok) {
     await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
-    return failTransfer(key, 'invalid_file', 'The file is not a playable video. It was removed. Try a different quality.');
+    return failTransfer(key, 'invalid_file', INVALID_FILE_MESSAGES[verdict.reason]);
   }
   const entry: DownloadEntry = {
     subjectId: t.subjectId,
@@ -480,20 +493,18 @@ async function settleNativeSuccess(key: string, localPath: string | null): Promi
   const t = await getTransfer(key);
   if (!t) return;
   if (!localPath) return failTransfer(key, 'unknown', 'The download finished but could not be found. Tap retry.');
+  // Register the file where DownloadManager wrote it. A copy or move between folders is an extra write that
+  // can fail halfway; the file is already complete in its own folder, so it is validated and used in place.
   const from = localPath.startsWith('file://') ? localPath : `file://${localPath}`;
-  await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true }).catch(() => {});
-  await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
-  try {
-    await FileSystem.moveAsync({ from, to: t.fileUri });
-  } catch {
-    return failTransfer(key, 'unknown', 'The download finished but could not be saved. Tap retry.');
-  }
-  const bytes = await bytesOnDisk(t.fileUri);
+  const bytes = await bytesOnDisk(from);
+  if (bytes === 0) return failTransfer(key, 'unknown', 'The download finished but its file could not be found. Tap retry.');
   if (t.totalBytes && bytes !== t.totalBytes) {
-    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+    await FileSystem.deleteAsync(from, { idempotent: true }).catch(() => {});
     return failTransfer(key, 'network', lostMessage(bytes, t.totalBytes));
   }
-  await finalize(key, t, bytes);
+  const registered: TransferEntry = { ...t, fileUri: from };
+  await putTransfer(registered);
+  await finalize(key, registered, bytes);
 }
 
 /** Runs one transfer chain. When it ends (complete, failed, paused, or cancelled), the next queued download starts. */
@@ -522,8 +533,8 @@ async function pumpQueue(): Promise<void> {
       await failTransfer(next, 'unknown', 'Could not confirm the file size from the server. Tap retry later.');
       return;
     }
-    if (total < MIN_FULL_DOWNLOAD_BYTES) {
-      await failTransfer(next, 'invalid_file', 'The server file is shorter than a full-length download.');
+    if (total < MIN_PLAYABLE_BYTES) {
+      await failTransfer(next, 'invalid_file', 'The server returned an empty or error response instead of a video.');
       return;
     }
     const free = await FileSystem.getFreeDiskStorageAsync().catch(() => Number.POSITIVE_INFINITY);
@@ -606,7 +617,7 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
   if (!total) {
     return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server, so the download was not started. Try again later.' };
   }
-  if (total < MIN_FULL_DOWNLOAD_BYTES) return { ok: false, reason: 'invalid_file', message: 'The server file is shorter than a full-length download.' };
+  if (total < MIN_PLAYABLE_BYTES) return { ok: false, reason: 'invalid_file', message: 'The server returned an empty or error response instead of a video.' };
   const free = await FileSystem.getFreeDiskStorageAsync().catch(() => Number.POSITIVE_INFINITY);
   if (free < total + STORAGE_RESERVE_BYTES) {
     return { ok: false, reason: 'insufficient_storage', message: 'Not enough free storage for this download. Free up space and try again.' };
@@ -684,7 +695,7 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
   if (!url) return { ok: false, reason: 'link_expired', message: 'Could not get a fresh link. Check your connection and try again.' };
   const total = await probeLength(url);
   if (!total) return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server. Try again later.' };
-  if (total < MIN_FULL_DOWNLOAD_BYTES) return { ok: false, reason: 'invalid_file', message: 'The server file is shorter than a full-length download.' };
+  if (total < MIN_PLAYABLE_BYTES) return { ok: false, reason: 'invalid_file', message: 'The server returned an empty or error response instead of a video.' };
   const free = await FileSystem.getFreeDiskStorageAsync().catch(() => Number.POSITIVE_INFINITY);
   if (free < total + STORAGE_RESERVE_BYTES) {
     return { ok: false, reason: 'insufficient_storage', message: 'Not enough free storage for this download. Free up space and try again.' };

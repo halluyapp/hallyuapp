@@ -21,7 +21,7 @@ async function load(rel) {
   return import(pathToFileURL(file).href);
 }
 
-const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, normalisePlayback, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics, DEFAULT_QUALITIES, MIN_FULL_DOWNLOAD_BYTES } = await load('lib/watchModel.ts');
+const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, normalisePlayback, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics, DEFAULT_QUALITIES } = await load('lib/watchModel.ts');
 
 const subject = (id, title, extra = {}) => ({
   subjectId: id,
@@ -104,8 +104,9 @@ test('downloads: only progressive MP4 is offered as a file; DASH never is', () =
   assert.equal(isDownloadable({ format: null }), false);
 });
 
-test('downloads: a full file must be at least 50 MB', () => {
-  assert.equal(MIN_FULL_DOWNLOAD_BYTES, 50 * 1024 * 1024);
+test('downloads: no arbitrary full-length floor; the sanity floor only rejects empty bodies', () => {
+  // Short clips and trailers are legitimate. The floor is 64 KB, for empty and error responses only.
+  assert.equal(R.MIN_PLAYABLE_BYTES, 64 * 1024);
 });
 
 const raw = (over) => ({ source: 'Web CDN', quality: '720p', quality_value: 720, format: 'MP4', size_mb: 900, duration_sec: 2700, ...over });
@@ -251,6 +252,65 @@ test('downloads: a valid MP4 has "ftyp" at byte 4; HTML and short data are rejec
   assert.equal(R.isMp4Header(mp4), true);
   assert.equal(R.isMp4Header(new TextEncoder().encode('<html><body>error</body></html>')), false);
   assert.equal(R.isMp4Header(new Uint8Array([0, 0, 0, 0x18])), false);
+});
+
+/** Builds a minimal ISO BMFF file from [type, payloadBytes] pairs, with a correct 32-bit size per box. */
+function boxFile(boxes) {
+  const parts = boxes.map(([type, payload]) => {
+    const size = 8 + payload;
+    const out = new Uint8Array(size);
+    new DataView(out.buffer).setUint32(0, size);
+    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    return out;
+  });
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const file = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    file.set(p, at);
+    at += p.length;
+  }
+  return file;
+}
+const readerOf = (bytes) => async (position, length) => bytes.slice(position, position + length);
+
+test('validation: a real MP4 layout (ftyp, mdat, moov) passes; the file size must match the server', async () => {
+  const file = boxFile([['ftyp', 100], ['mdat', 200 * 1024], ['moov', 500]]);
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, file.length), { ok: true });
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, null), { ok: true });
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, file.length + 1), { ok: false, reason: 'size_mismatch' });
+});
+
+test('validation: a short but complete clip is accepted (no full-length rule)', async () => {
+  const file = boxFile([['ftyp', 100], ['mdat', 70 * 1024], ['moov', 300]]);
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, null), { ok: true });
+});
+
+test('validation: HTML, JSON, empty, truncated and missing-moov files are rejected', async () => {
+  const html = new TextEncoder().encode('<html><body>' + 'x'.repeat(70 * 1024) + '</body></html>');
+  assert.equal((await R.validateMp4Layout(readerOf(html), html.length, null)).reason, 'not_mp4');
+  const json = new TextEncoder().encode('{"error":"expired"}' + ' '.repeat(70 * 1024));
+  assert.equal((await R.validateMp4Layout(readerOf(json), json.length, null)).reason, 'not_mp4');
+  const tiny = boxFile([['ftyp', 20], ['moov', 20]]);
+  assert.equal((await R.validateMp4Layout(readerOf(tiny), tiny.length, null)).reason, 'too_small');
+  const full = boxFile([['ftyp', 100], ['mdat', 200 * 1024], ['moov', 500]]);
+  const truncated = full.slice(0, full.length - 100);
+  assert.equal((await R.validateMp4Layout(readerOf(truncated), truncated.length, null)).reason, 'not_mp4');
+  const noMoov = boxFile([['ftyp', 100], ['mdat', 200 * 1024]]);
+  assert.equal((await R.validateMp4Layout(readerOf(noMoov), noMoov.length, null)).reason, 'no_movie_box');
+});
+
+test('validation: box walker reads 64-bit sizes and rejects impossible sizes', async () => {
+  const largeHeader = new Uint8Array(16 + 80000);
+  const dv = new DataView(largeHeader.buffer);
+  dv.setUint32(0, 1);
+  largeHeader.set([0x66, 0x74, 0x79, 0x70], 4); // ftyp
+  dv.setBigUint64(8, BigInt(largeHeader.length));
+  const boxes = await R.readTopLevelMp4Boxes(readerOf(largeHeader), largeHeader.length);
+  assert.deepEqual(boxes, [{ type: 'ftyp', offset: 0, size: largeHeader.length }]);
+  const bad = boxFile([['ftyp', 100]]);
+  new DataView(bad.buffer).setUint32(0, 9999999);
+  assert.equal(await R.readTopLevelMp4Boxes(readerOf(bad), bad.length), null);
 });
 
 test('sizes: MB and GB formatting; unknown is never guessed', () => {

@@ -10,6 +10,8 @@ import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchPlayback } from '../../lib/api/moviebox';
+import { fetchCaptionCues, fetchMovieboxCaptions, fetchOpenSubtitleCues, searchOpenSubtitles, type MovieboxCaption, type OpenSubtitleResult } from '../../lib/api/subtitles';
+import { cueTextAt, type SubtitleCue } from '../../lib/subtitles';
 import { getProgress, saveProgress, setTitleQuality, type WatchEpisodeRef } from '../../lib/watchStore';
 import {
   BUFFER_STALL_MS,
@@ -105,6 +107,14 @@ export default function WatchPlayer() {
   const [scrubFraction, setScrubFraction] = useState<number | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
+  // Subtitles: MovieBox captions load automatically; OpenSubtitles is searched only when asked.
+  const [cues, setCues] = useState<SubtitleCue[]>([]);
+  const [cueLabel, setCueLabel] = useState<string | null>(null);
+  const [subsOpen, setSubsOpen] = useState(false);
+  const [subsBusy, setSubsBusy] = useState(false);
+  const [subsNote, setSubsNote] = useState<string | null>(null);
+  const [captionChoices, setCaptionChoices] = useState<MovieboxCaption[]>([]);
+  const [osChoices, setOsChoices] = useState<OpenSubtitleResult[] | null>(null);
   const [immersive, setImmersive] = useState(false);
   const [dismissLandscape, setDismissLandscape] = useState(false);
   const [rate, setRate] = useState(1);
@@ -212,6 +222,95 @@ export default function WatchPlayer() {
     setErrorMessage('Playback stopped. Check your connection, then tap Try again.');
     setPhase('error');
   };
+
+  // MovieBox captions first. A caption is used only when its file parses to real cues.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const r = await fetchMovieboxCaptions({ subjectId: ref.subjectId, season: ref.season ?? undefined, episode: ref.episode ?? undefined });
+      if (cancelled || !r.ok) return;
+      setCaptionChoices(r.value);
+      const preferred = r.value.find((c) => /^en/i.test(c.language)) ?? r.value[0];
+      if (!preferred) {
+        setSubsNote('MovieBox has no captions for this title. Use Find subtitles online.');
+        return;
+      }
+      const got = await fetchCaptionCues(preferred.url);
+      if (cancelled) return;
+      if (got.ok) {
+        setCues(got.value.cues);
+        setCueLabel(`MovieBox · ${preferred.label}`);
+      } else {
+        setSubsNote('MovieBox captions could not be loaded. Use Find subtitles online.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // The title and episode identify the captions; `ref` is rebuilt every render.
+  }, [ref.subjectId, ref.season, ref.episode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const subtitleReasonText = (reason: string): string => {
+    switch (reason) {
+      case 'signed_out':
+        return 'Sign in to load subtitles.';
+      case 'not_configured':
+        return 'Online subtitles are not set up yet.';
+      case 'quota':
+        return 'The subtitle service is busy. Try again later.';
+      case 'offline':
+        return 'No connection. Subtitles need a network connection.';
+      case 'timeout':
+        return 'The subtitle service took too long. Try again.';
+      case 'empty':
+        return 'That subtitle file has no readable lines. Pick another.';
+      default:
+        return 'Subtitles could not be loaded. Try again.';
+    }
+  };
+
+  const chooseCaption = async (c: MovieboxCaption) => {
+    setSubsBusy(true);
+    setSubsNote(null);
+    const got = await fetchCaptionCues(c.url);
+    setSubsBusy(false);
+    if (!got.ok) {
+      setSubsNote(subtitleReasonText(got.reason));
+      return;
+    }
+    setCues(got.value.cues);
+    setCueLabel(`MovieBox · ${c.label}`);
+    setSubsOpen(false);
+  };
+
+  const findOnline = async () => {
+    setSubsBusy(true);
+    setSubsNote(null);
+    const r = await searchOpenSubtitles({ query: ref.title, season: ref.season ?? undefined, episode: ref.episode ?? undefined, language: 'en' });
+    setSubsBusy(false);
+    if (!r.ok) {
+      setSubsNote(subtitleReasonText(r.reason));
+      return;
+    }
+    setOsChoices(r.value);
+    if (r.value.length === 0) setSubsNote('No matching subtitles were found online for this episode.');
+  };
+
+  const chooseOnline = async (row: OpenSubtitleResult) => {
+    setSubsBusy(true);
+    setSubsNote(null);
+    const got = await fetchOpenSubtitleCues(row.fileId);
+    setSubsBusy(false);
+    if (!got.ok) {
+      setSubsNote(subtitleReasonText(got.reason));
+      return;
+    }
+    setCues(got.value.cues);
+    setCueLabel(`OpenSubtitles · ${row.release || row.language || 'subtitle'}`);
+    setSubsOpen(false);
+  };
+
+  const subtitleText = cues.length > 0 ? cueTextAt(cues, positionMs) : null;
 
   const onStatus = (status: AVPlaybackStatus) => {
     if (!status.isLoaded) {
@@ -567,6 +666,14 @@ export default function WatchPlayer() {
         </View>
       ) : null}
 
+      {subtitleText ? (
+        <View style={styles.subtitleWrap} pointerEvents="none" accessibilityLiveRegion="polite">
+          <Text variant="body" tone="onAccent" align="center" style={styles.subtitleText}>
+            {subtitleText}
+          </Text>
+        </View>
+      ) : null}
+
       {feedback ? (
         <View style={styles.feedback} pointerEvents="none">
           <Text variant="label" tone="onAccent">{feedback}</Text>
@@ -607,6 +714,51 @@ export default function WatchPlayer() {
         </View>
       ) : null}
 
+      {subsOpen && state !== 'error' && state !== 'unavailable' ? (
+        <View style={styles.subsPanel} accessibilityLabel="Subtitle choices">
+          <View style={styles.subsHeader}>
+            <Text variant="label" tone="onAccent">Subtitles</Text>
+            <Pressable onPress={() => setSubsOpen(false)} accessibilityRole="button" accessibilityLabel="Close subtitles" hitSlop={8}>
+              <Ionicons name="close" size={22} color="#fff" />
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() => {
+              setCues([]);
+              setCueLabel(null);
+              setSubsOpen(false);
+            }}
+            accessibilityRole="button"
+            style={styles.subsRow}
+          >
+            <Text variant="bodySmall" tone="onAccent">Off</Text>
+          </Pressable>
+          {captionChoices.map((c) => (
+            <Pressable key={c.url} onPress={() => void chooseCaption(c)} accessibilityRole="button" style={styles.subsRow}>
+              <Text variant="bodySmall" tone="onAccent">MovieBox · {c.label}</Text>
+            </Pressable>
+          ))}
+          <Pressable onPress={() => void findOnline()} accessibilityRole="button" accessibilityLabel="Find subtitles online" style={styles.subsRow}>
+            <Text variant="bodySmall" tone="onAccent">Find subtitles online (OpenSubtitles)</Text>
+          </Pressable>
+          {osChoices?.map((row) => (
+            <Pressable key={row.id} onPress={() => void chooseOnline(row)} accessibilityRole="button" style={styles.subsRow}>
+              <Text variant="caption" tone="onAccent" numberOfLines={2}>
+                {row.release || row.fileName || 'Subtitle'} · {row.language ?? '?'}
+                {row.hearingImpaired ? ' · HI' : ''}
+                {row.machineTranslated ? ' · machine translated' : ''}
+              </Text>
+            </Pressable>
+          ))}
+          {subsBusy ? <ActivityIndicator color="#fff" /> : null}
+          {subsNote ? (
+            <Text variant="caption" tone="secondary" accessibilityLiveRegion="polite">
+              {subsNote}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
       {locked && state !== 'error' && state !== 'unavailable' ? (
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable onPress={() => { setLocked(false); touch(); }} accessibilityRole="button" accessibilityLabel="Unlock controls" style={styles.lockBtn} hitSlop={8}>
@@ -624,6 +776,18 @@ export default function WatchPlayer() {
             <Text variant="label" tone="onAccent" numberOfLines={1} style={{ flex: 1, marginHorizontal: space.x2 }}>
               {ref.title || 'Hallyu TV'}
             </Text>
+            <Pressable
+              onPress={() => {
+                touch();
+                setSubsOpen((v) => !v);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={cues.length > 0 ? `Subtitles on: ${cueLabel ?? ''}. Change subtitles` : 'Subtitles off. Choose subtitles'}
+              style={styles.iconBtn}
+              hitSlop={8}
+            >
+              <Ionicons name={cues.length > 0 ? 'text' : 'text-outline'} size={22} color="#fff" />
+            </Pressable>
           </View>
 
           <Pressable onPress={togglePlay} accessibilityRole="button" accessibilityLabel={isPlaying ? 'Pause' : 'Play'} style={styles.playBtn} disabled={phase !== 'ready'}>
@@ -711,6 +875,11 @@ const styles = StyleSheet.create({
   centreZone: { position: 'absolute', top: 0, bottom: 0, left: '35%', right: '35%' },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   feedback: { position: 'absolute', top: '42%', alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: space.x3, paddingVertical: space.x1, borderRadius: radius.md },
+  subtitleWrap: { position: 'absolute', left: space.x3, right: space.x3, bottom: 110, alignItems: 'center' },
+  subtitleText: { backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: space.x2, paddingVertical: space.x1, borderRadius: radius.sm },
+  subsPanel: { position: 'absolute', right: space.x3, top: 56, width: 300, maxHeight: '75%', backgroundColor: 'rgba(12,12,16,0.95)', borderRadius: radius.md, padding: space.x3, gap: space.x2 },
+  subsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  subsRow: { paddingVertical: space.x2, paddingHorizontal: space.x2, borderRadius: radius.sm, backgroundColor: 'rgba(255,255,255,0.06)' },
   overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', backgroundColor: 'rgba(0,0,0,0.35)' },
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.x3, paddingTop: space.x3 },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
