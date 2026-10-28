@@ -12,7 +12,7 @@ import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchPlayback } from '../../lib/api/moviebox';
 import { fetchCaptionCues, fetchMovieboxCaptions, fetchOpenSubtitleCues, searchOpenSubtitles, type MovieboxCaption, type OpenSubtitleResult } from '../../lib/api/subtitles';
 import { cueTextAt, type SubtitleCue } from '../../lib/subtitles';
-import { getProgress, saveProgress, setTitleQuality, type WatchEpisodeRef } from '../../lib/watchStore';
+import { getProgress, listDownloads, saveProgress, setTitleQuality, type DownloadEntry, type WatchEpisodeRef } from '../../lib/watchStore';
 import {
   BUFFER_STALL_MS,
   CONTROLS_AUTO_HIDE_MS,
@@ -178,6 +178,33 @@ export default function WatchPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const [nextDownloaded, setNextDownloaded] = useState<DownloadEntry | null>(null);
+
+  useEffect(() => {
+    if (!isLocal || !ref.subjectId || ref.episode === null) return;
+    void listDownloads().then((all) => {
+      const next =
+        all.find((d) => d.subjectId === ref.subjectId && d.season === ref.season && d.episode === (ref.episode ?? 0) + 1) ??
+        all.find((d) => d.subjectId === ref.subjectId && (d.season ?? 0) === (ref.season ?? 0) + 1 && d.episode === 1);
+      if (next) setNextDownloaded(next);
+    });
+  }, [isLocal, ref.subjectId, ref.season, ref.episode]);
+
+  const playNextDownloaded = (next: DownloadEntry) => {
+    router.replace({
+      pathname: '/watch/play',
+      params: {
+        subjectId: next.subjectId,
+        title: next.title,
+        cover: next.cover ?? '',
+        season: next.season ?? '',
+        episode: next.episode ?? '',
+        quality: next.quality ?? '',
+        local: next.fileUri,
+      },
+    });
+  };
+
   useEffect(() => {
     if (phase !== 'loading' || !source?.uri) return;
     const timer = setTimeout(() => {
@@ -335,6 +362,9 @@ export default function WatchPlayer() {
     if (dur > 0 && pos > RESUME_MIN_MS && (justPaused || (status.isPlaying && Date.now() - lastSaved.current >= SAVE_PROGRESS_EVERY_MS))) {
       lastSaved.current = Date.now();
       void saveProgress(ref, pos, dur);
+    }
+    if (status.didJustFinish && nextDownloaded) {
+      playNextDownloaded(nextDownloaded);
     }
   };
 
@@ -824,8 +854,24 @@ export default function WatchPlayer() {
                     );
                   })}
                 </View>
+              ) : isLocal ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text variant="caption" tone="onAccent">Downloaded</Text>
+                  {nextDownloaded ? (
+                    <Pressable
+                      onPress={() => playNextDownloaded(nextDownloaded)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Play next episode, S${nextDownloaded.season ?? 1} E${nextDownloaded.episode ?? 1}`}
+                      style={styles.nextEpBtn}
+                      hitSlop={6}
+                    >
+                      <Ionicons name="play-skip-forward" size={11} color="#fff" style={{ marginRight: 3 }} />
+                      <Text variant="caption" tone="onAccent" style={{ fontSize: 11, fontWeight: '600' }}>Next Ep</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               ) : (
-                <Text variant="caption" tone="onAccent">{isLocal ? 'Downloaded' : ''}</Text>
+                <View />
               )}
               <Pressable onPress={() => applyRate(PLAYBACK_RATES[(PLAYBACK_RATES.indexOf(rate) + 1) % PLAYBACK_RATES.length] ?? 1)} accessibilityRole="button" accessibilityLabel={`Playback speed ${rate}x`} style={styles.speedBtn} hitSlop={8}>
                 <Text variant="caption" tone="onAccent">{`${rate}×`}</Text>
@@ -896,4 +942,12 @@ const styles = StyleSheet.create({
   qPillOn: { backgroundColor: colors.accent, borderColor: colors.accent },
   errorBox: { ...StyleSheet.absoluteFillObject, padding: space.x4, justifyContent: 'center', gap: space.x3, backgroundColor: '#000' },
   ghostBtn: { alignSelf: 'center', paddingVertical: space.x2 },
+  nextEpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.sm,
+    backgroundColor: colors.accent,
+  },
 });

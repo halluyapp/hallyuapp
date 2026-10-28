@@ -19,6 +19,8 @@ import {
   canStartDownload,
   canTransition,
   decideAfterTransfer,
+  formatEta,
+  formatSpeed,
   MIN_PLAYABLE_BYTES,
   validateMp4Layout,
   lostMessage,
@@ -82,6 +84,10 @@ export interface TransferEntry extends WatchEpisodeRef {
   engine?: 'native' | 'expo';
   /** Android DownloadManager is waiting on network/power constraints; still owned by the system. */
   nativeWaiting?: boolean;
+  /** Live smoothed download speed in bytes per second. */
+  speedBytesPerSec?: number | null;
+  /** Estimated remaining seconds. */
+  etaSeconds?: number | null;
 }
 
 export type TransferFailure = 'insufficient_storage' | 'already_downloading' | 'already_downloaded' | 'link_expired' | 'network' | 'invalid_file' | 'http_error' | 'unknown';
@@ -227,12 +233,26 @@ async function putTransfer(t: TransferEntry): Promise<void> {
   const all = raw.map(stripLegacyResumeData);
   await writeJson(TRANSFERS_KEY, [safe, ...all.filter((x) => x.key !== safe.key)]);
   notifyTransfers();
-  if (safe.status === 'downloading') void reportDownload(safe.key, noticeTitle(safe), 'progress', safe.bytesWritten, safe.totalBytes);
-  else if (safe.status === 'paused') void reportDownload(safe.key, noticeTitle(safe), 'paused', safe.bytesWritten, safe.totalBytes);
-  else if (safe.status === 'failed') void reportDownload(safe.key, noticeTitle(safe), 'failed', safe.bytesWritten, safe.totalBytes, safe.error);
+  if (safe.status === 'downloading') {
+    void reportDownload(
+      safe.key,
+      noticeTitle(safe),
+      'progress',
+      safe.bytesWritten,
+      safe.totalBytes,
+      null,
+      formatSpeed(safe.speedBytesPerSec),
+      formatEta(safe.etaSeconds),
+    );
+  } else if (safe.status === 'paused') {
+    void reportDownload(safe.key, noticeTitle(safe), 'paused', safe.bytesWritten, safe.totalBytes);
+  } else if (safe.status === 'failed') {
+    void reportDownload(safe.key, noticeTitle(safe), 'failed', safe.bytesWritten, safe.totalBytes, safe.error);
+  }
 }
 
 async function dropTransfer(key: string): Promise<void> {
+  speedTrackers.delete(key);
   transfersMemory.delete(key);
   const all = (await readJson<TransferEntry[]>(TRANSFERS_KEY, [])).map(stripLegacyResumeData);
   await writeJson(TRANSFERS_KEY, all.filter((x) => x.key !== key));
@@ -627,16 +647,51 @@ function makeResumable(key: string, url: string, onBytes: (written: number, tota
   );
 }
 
+interface SpeedTracker {
+  lastWritten: number;
+  lastTime: number;
+  speed: number;
+}
+const speedTrackers = new Map<string, SpeedTracker>();
+
+function calculateSpeedAndEta(key: string, written: number, total: number | null): { speed: number | null; eta: number | null } {
+  const now = Date.now();
+  const tracker = speedTrackers.get(key);
+  if (!tracker) {
+    speedTrackers.set(key, { lastWritten: written, lastTime: now, speed: 0 });
+    return { speed: null, eta: null };
+  }
+  const dt = (now - tracker.lastTime) / 1000;
+  if (dt < 0.8) {
+    const s = tracker.speed > 0 ? tracker.speed : null;
+    const remaining = total !== null && total > written ? total - written : 0;
+    const e = s && s > 1024 && remaining > 0 ? Math.round(remaining / s) : null;
+    return { speed: s, eta: e };
+  }
+  const deltaBytes = Math.max(0, written - tracker.lastWritten);
+  const currentSpeed = deltaBytes / dt;
+  const smoothed = tracker.speed > 0 ? Math.round(tracker.speed * 0.6 + currentSpeed * 0.4) : Math.round(currentSpeed);
+  tracker.lastWritten = written;
+  tracker.lastTime = now;
+  tracker.speed = smoothed;
+  const remaining = total !== null && total > written ? total - written : 0;
+  const eta = smoothed > 1024 && remaining > 0 ? Math.round(remaining / smoothed) : null;
+  return { speed: smoothed, eta };
+}
+
 let lastBytesPersist = 0;
 
 /** Persists byte progress only. In-memory state updates smoothly; disk writes are throttled to save CPU and battery. */
 async function updateBytes(key: string, written: number, total: number | null): Promise<void> {
   const t = await getTransfer(key);
   if (!t || t.status !== 'downloading') return;
+  const { speed, eta } = calculateSpeedAndEta(key, written, total);
   const updated: TransferEntry = {
     ...t,
     bytesWritten: written,
     totalBytes: total ?? t.totalBytes,
+    speedBytesPerSec: speed,
+    etaSeconds: eta,
     updatedAt: Date.now(),
   };
   transfersMemory.set(key, updated);

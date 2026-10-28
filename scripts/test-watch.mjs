@@ -430,6 +430,25 @@ test('the failure message states how far the transfer got', () => {
   test('progress notice shows the percentage', () => {
     assert.deepEqual(rules.progressNotice('progress', 'Lupin', 42, null), { title: 'Downloading', body: 'Lupin · 42%' });
   });
+  test('progress notice includes live speed and ETA when available', () => {
+    assert.deepEqual(rules.progressNotice('progress', 'Lupin', 45, null, '3.5 MB/s', '1m left'), {
+      title: 'Downloading',
+      body: 'Lupin · 45% · 3.5 MB/s · 1m left',
+    });
+  });
+  test('formatSpeed formats KB/s and MB/s accurately', () => {
+    assert.equal(rules.formatSpeed(0), '');
+    assert.equal(rules.formatSpeed(null), '');
+    assert.equal(rules.formatSpeed(500 * 1024), '500 KB/s');
+    assert.equal(rules.formatSpeed(3.5 * 1024 * 1024), '3.5 MB/s');
+  });
+  test('formatEta formats seconds, minutes and hours', () => {
+    assert.equal(rules.formatEta(0), '');
+    assert.equal(rules.formatEta(null), '');
+    assert.equal(rules.formatEta(45), '45s left');
+    assert.equal(rules.formatEta(60), '1m left');
+    assert.equal(rules.formatEta(125), '2m 5s left');
+  });
   test('failed notice uses the reason, and falls back to a default', () => {
     assert.equal(rules.progressNotice('failed', 'Lupin', 0, 'Connection lost').body, 'Connection lost');
     assert.match(rules.progressNotice('failed', 'Lupin', 0, null).body, /Lupin stopped/);

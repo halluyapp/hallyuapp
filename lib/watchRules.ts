@@ -289,15 +289,42 @@ export function stoppedMessage(bytes: number, total: number | null, status: numb
   return `Stopped at ${where} (server status ${status}). Tap retry to restart safely.`;
 }
 
+/** Human-readable transfer speed (e.g. 3.4 MB/s, 450 KB/s). Empty for unknown/zero speed. */
+export function formatSpeed(bytesPerSec: number | null | undefined): string {
+  if (!bytesPerSec || bytesPerSec <= 0 || !Number.isFinite(bytesPerSec)) return '';
+  if (bytesPerSec < 1024 * 1024) return `${Math.max(1, Math.round(bytesPerSec / 1024))} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+/** Human-readable remaining transfer time (e.g. 45s left, 2m 10s left). */
+export function formatEta(seconds: number | null | undefined): string {
+  if (!seconds || seconds <= 0 || !Number.isFinite(seconds)) return '';
+  if (seconds < 60) return `${Math.round(seconds)}s left`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (mins < 60) return secs > 0 ? `${mins}m ${secs}s left` : `${mins}m left`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `${hours}h ${remMins}m left`;
+}
+
 /** Text for a download notification. Progress shows a percentage; failures and pauses show the reason. */
 export type NoticeKind = 'progress' | 'paused' | 'failed' | 'done';
 
-export function progressNotice(kind: NoticeKind, title: string, percent: number, message: string | null): { title: string; body: string } {
+export function progressNotice(
+  kind: NoticeKind,
+  title: string,
+  percent: number,
+  message: string | null,
+  speed?: string | null,
+  eta?: string | null,
+): { title: string; body: string } {
   const name = title.trim() || 'Download';
   if (kind === 'done') return { title: 'Download complete', body: `${name} is saved on this device.` };
   if (kind === 'failed') return { title: 'Download stopped', body: message ?? `${name} stopped. Open Downloads to retry.` };
   if (kind === 'paused') return { title: 'Download paused', body: `${name} · ${percent}%` };
-  return { title: 'Downloading', body: `${name} · ${percent}%` };
+  const extra = [speed, eta].filter(Boolean).join(' · ');
+  return { title: 'Downloading', body: extra ? `${name} · ${percent}% · ${extra}` : `${name} · ${percent}%` };
 }
 
 /**

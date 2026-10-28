@@ -11,6 +11,7 @@ import { useAuth } from '../lib/auth';
 import { getBackendHealth, isBackendConfigured, probeBackend, type ConnectionStatus } from '../lib/api/client';
 import { useNetwork } from '../lib/hooks';
 import { GUEST_ID, useStore } from '../lib/store';
+import { listDownloads } from '../lib/watchStore';
 
 /**
  * Splash → route gate.
@@ -52,7 +53,7 @@ function gateLine(conn: ConnectionStatus | null): string {
     case 'connected':
       return '';
     case 'offline':
-      return 'You’re offline — Hallyu needs the backend to load your account';
+      return 'You’re offline · Watch downloads or continue offline';
     case 'unavailable':
       return 'Hallyu’s backend could not be reached';
     case 'misconfigured':
@@ -64,7 +65,7 @@ function gateLine(conn: ConnectionStatus | null): string {
 function gateDetail(conn: ConnectionStatus | null): string {
   switch (conn) {
     case 'offline':
-      return 'This device has no network connection. Hallyu needs the backend to load your account, so it will not open with local data instead. Turn on a network and retry.';
+      return 'No network connection detected. You can watch your downloaded movies and series right now, or continue into the app in offline mode.';
     case 'unavailable':
       return 'The backend did not answer the connection check. This is usually a network or server problem. Nothing has been changed and no local data will be shown — retry in a moment.';
     case 'misconfigured':
@@ -118,6 +119,11 @@ export default function Index() {
   const [stuck, setStuck] = useState(false);
   // Bumped by Retry; the probe effect keys off it so retrying is a plain state change.
   const [attempt, setAttempt] = useState(0);
+  const [downloadCount, setDownloadCount] = useState<number>(0);
+
+  useEffect(() => {
+    void listDownloads().then((d) => setDownloadCount(d.length)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!coreReady || !isBackendConfigured()) return;
@@ -156,6 +162,23 @@ export default function Index() {
     if (!hasNavigated.current && navReady) {
       hasNavigated.current = true;
       router.replace('/(tabs)' as never);
+    }
+  };
+
+  const continueOffline = () => {
+    markBoot('index:offline-continue');
+    if (!hasNavigated.current && navReady) {
+      hasNavigated.current = true;
+      const dest = auth.status === 'signedIn' && !state.onboarding.done ? '/(onboarding)/fandoms' : '/(tabs)';
+      router.replace(dest as never);
+    }
+  };
+
+  const goToDownloads = () => {
+    markBoot('index:offline-downloads');
+    if (!hasNavigated.current && navReady) {
+      hasNavigated.current = true;
+      router.replace('/watch/downloads' as never);
     }
   };
 
@@ -257,26 +280,63 @@ export default function Index() {
       {blocked ? (
         <View style={styles.blocked} accessibilityLiveRegion="polite">
           <Text variant="body" tone="primary" style={styles.blockedTitle}>
-            {conn === 'offline' ? 'No connection' : conn === 'misconfigured' ? 'Backend not configured' : 'Cannot reach Hallyu'}
+            {conn === 'offline' ? 'Offline Mode' : conn === 'misconfigured' ? 'Backend not configured' : 'Cannot reach Hallyu'}
           </Text>
           <Text variant="caption" tone="secondary" style={styles.blockedBody}>
             {gateDetail(conn)}
           </Text>
-          {getBackendHealth().message ? (
-            <Text variant="caption" tone="tertiary" style={styles.blockedBody} accessibilityLabel="Connection detail">
-              Technical detail: {getBackendHealth().message?.slice(0, 160)}
-            </Text>
-          ) : null}
-          <Pressable onPress={retry} style={styles.retry} accessibilityRole="button" accessibilityLabel="Retry connection">
-            <Text variant="label" tone="primary">
-              Retry
-            </Text>
-          </Pressable>
-          <Pressable onPress={continueAsGuest} style={styles.retry} accessibilityRole="button" accessibilityLabel="Continue as a guest">
-            <Text variant="caption" tone="secondary">
-              Continue as a guest
-            </Text>
-          </Pressable>
+          {conn === 'offline' ? (
+            <View style={styles.buttonGroup}>
+              <Pressable
+                onPress={goToDownloads}
+                style={[styles.retry, styles.retryPrimary]}
+                accessibilityRole="button"
+                accessibilityLabel="Watch downloaded titles offline"
+              >
+                <Text variant="label" tone="onAccent">
+                  {downloadCount > 0 ? `Watch Offline (${downloadCount} saved)` : 'Watch Offline (Downloads)'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={continueOffline}
+                style={styles.retry}
+                accessibilityRole="button"
+                accessibilityLabel="Continue into app in offline mode"
+              >
+                <Text variant="label" tone="primary">
+                  Continue to App Offline
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={retry}
+                style={styles.retryGhost}
+                accessibilityRole="button"
+                accessibilityLabel="Retry connection"
+              >
+                <Text variant="caption" tone="secondary">
+                  Retry connection
+                </Text>
+              </Pressable>
+            </View>
+          ) : (
+            <>
+              {getBackendHealth().message ? (
+                <Text variant="caption" tone="tertiary" style={styles.blockedBody} accessibilityLabel="Connection detail">
+                  Technical detail: {getBackendHealth().message?.slice(0, 160)}
+                </Text>
+              ) : null}
+              <Pressable onPress={retry} style={styles.retry} accessibilityRole="button" accessibilityLabel="Retry connection">
+                <Text variant="label" tone="primary">
+                  Retry
+                </Text>
+              </Pressable>
+              <Pressable onPress={continueAsGuest} style={styles.retry} accessibilityRole="button" accessibilityLabel="Continue as a guest">
+                <Text variant="caption" tone="secondary">
+                  Continue as a guest
+                </Text>
+              </Pressable>
+            </>
+          )}
         </View>
       ) : null}
       <Pressable
@@ -302,15 +362,25 @@ const styles = StyleSheet.create({
   gate: { position: 'absolute', bottom: 120, paddingHorizontal: 32, textAlign: 'center' },
   stuck: { position: 'absolute', bottom: 84 },
   foot: { position: 'absolute', bottom: 48 },
-  blocked: { position: 'absolute', left: 32, right: 32, bottom: 150, alignItems: 'center', gap: 12 },
+  blocked: { position: 'absolute', left: 32, right: 32, bottom: 140, alignItems: 'center', gap: 12 },
   blockedTitle: { textAlign: 'center' },
   blockedBody: { textAlign: 'center' },
+  buttonGroup: { width: '100%', alignItems: 'center', gap: 8, marginTop: 4 },
   retry: {
-    marginTop: 4,
+    minWidth: 220,
+    alignItems: 'center',
     paddingHorizontal: 28,
     paddingVertical: 12,
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,
+  },
+  retryPrimary: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  retryGhost: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
   },
 });
