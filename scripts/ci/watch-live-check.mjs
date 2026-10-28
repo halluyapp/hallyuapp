@@ -167,37 +167,50 @@ function startFromContentRange(value) {
   return m ? Number(m[1]) : null;
 }
 
-/** Finds one real title and returns a full-length candidate to test with. */
+/** Finds one real title across candidate queries and returns a full-length candidate to test with. */
 async function findCandidate() {
-  const search = await call({ action: 'search', q: QUERY, page: 1 });
-  const items = Array.isArray(search.json?.data?.items) ? search.json.data.items : [];
-  if (items.length === 0) throw new Error(`search for "${QUERY}" returned no titles (status ${search.status})`);
+  const primaryQuery = (process.env.WATCH_CHECK_QUERY || 'Lupin').trim();
+  const fallbackQueries = ['Squid Game', 'Goblin', 'Crash Landing on You', 'Demon Slayer', 'The Glory', 'Kingdom', 'All of Us Are Dead', 'Love', 'Doctor', 'Vincenzo'];
+  const queries = Array.from(new Set([primaryQuery, ...fallbackQueries].filter(Boolean)));
+
   const tried = [];
-  for (const item of items.slice(0, 6)) {
-    const subject = item?.subject && typeof item.subject === 'object' ? item.subject : item;
-    const subjectId = String(subject?.subjectId ?? '');
-    const detailPath = String(subject?.detailPath ?? '');
-    if (!subjectId || !detailPath) continue;
-    const detail = await call({ action: 'detail', detailPath });
-    const seasons = Array.isArray(detail.json?.data?.resource?.seasons) ? detail.json.data.resource.seasons : [];
-    const se = seasons.length > 0 ? Number(seasons[0].se) : undefined;
-    const ep = seasons.length > 0 ? 1 : undefined;
-    const streams = await call(se === undefined ? { action: 'stream', subjectId } : { action: 'stream', subjectId, se, ep });
-    const list = Array.isArray(streams.json?.streams) ? streams.json.streams : [];
-    const mp4 = list.filter((s) => String(s?.format ?? '').toUpperCase() === 'MP4' && typeof s?.quality === 'string');
-    if (mp4.length === 0) {
-      tried.push(`${subject.title ?? subjectId} (no MP4)`);
-      continue;
+  for (const q of queries) {
+    try {
+      const search = await call({ action: 'search', q, page: 1 });
+      const items = Array.isArray(search.json?.data?.items) ? search.json.data.items : [];
+      if (items.length === 0) {
+        tried.push(`query "${q}": no items`);
+        continue;
+      }
+      for (const item of items.slice(0, 8)) {
+        const subject = item?.subject && typeof item.subject === 'object' ? item.subject : item;
+        const subjectId = String(subject?.subjectId ?? '');
+        const detailPath = String(subject?.detailPath ?? '');
+        if (!subjectId || !detailPath) continue;
+        const detail = await call({ action: 'detail', detailPath });
+        const seasons = Array.isArray(detail.json?.data?.resource?.seasons) ? detail.json.data.resource.seasons : [];
+        const se = seasons.length > 0 ? Number(seasons[0].se) : undefined;
+        const ep = seasons.length > 0 ? 1 : undefined;
+        const streams = await call(se === undefined ? { action: 'stream', subjectId } : { action: 'stream', subjectId, se, ep });
+        const list = Array.isArray(streams.json?.streams) ? streams.json.streams : [];
+        const mp4 = list.filter((s) => String(s?.format ?? '').toUpperCase() === 'MP4' && typeof s?.quality === 'string');
+        if (mp4.length === 0) {
+          tried.push(`${subject.title ?? subjectId} (no MP4)`);
+          continue;
+        }
+        // Prefer a file around 83/84 MB; otherwise the largest full-length MP4.
+        const sized = mp4
+          .map((s) => ({ ...s, bytes: typeof s.size_mb === 'number' ? Math.round(s.size_mb * 1024 * 1024) : null }))
+          .filter((s) => s.bytes !== null);
+        const inRange = sized.find((s) => s.bytes >= TARGET_LOW && s.bytes <= TARGET_HIGH);
+        const chosen = inRange ?? sized.sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0))[0] ?? mp4[0];
+        return { subjectId, title: String(subject?.title ?? subjectId), se, ep, candidate: chosen };
+      }
+    } catch (err) {
+      tried.push(`query "${q}": ${err?.message || err}`);
     }
-    // Prefer a file around 83/84 MB (the size the brief calls out); otherwise the largest full-length MP4.
-    const sized = mp4
-      .map((s) => ({ ...s, bytes: typeof s.size_mb === 'number' ? Math.round(s.size_mb * 1024 * 1024) : null }))
-      .filter((s) => s.bytes !== null);
-    const inRange = sized.find((s) => s.bytes >= TARGET_LOW && s.bytes <= TARGET_HIGH);
-    const chosen = inRange ?? sized.sort((a, b) => b.bytes - a.bytes)[0] ?? mp4[0];
-    return { subjectId, title: String(subject?.title ?? subjectId), se, ep, candidate: chosen };
   }
-  throw new Error(`no downloadable full-length MP4 found (tried: ${tried.join(', ') || 'none'})`);
+  throw new Error(`no downloadable full-length MP4 found (tried: ${tried.slice(0, 15).join(', ') || 'none'})`);
 }
 
 async function main() {
