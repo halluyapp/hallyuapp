@@ -15,15 +15,16 @@ import { clearDownloadNotice, reportDownload } from './watchNotify';
 import { fetchWatchDownloadUrl } from './api/moviebox';
 import { nativeDownloader } from './watchNative';
 import { decodeBase64 } from './textEncoding';
+import NetInfo from '@react-native-community/netinfo';
 import {
   canStartDownload,
   canTransition,
   decideAfterTransfer,
   formatEta,
   formatSpeed,
+  MAX_CONCURRENT_TRANSFERS,
   MIN_PLAYABLE_BYTES,
   validateMp4Layout,
-  lostMessage,
   repairTransfer,
   qualityDownloadKey,
   stoppedMessage,
@@ -415,7 +416,8 @@ async function drive(
       // If the socket failed after the final byte, validate the complete file instead of retrying it.
       const bytes = await bytesOnDisk(t.fileUri);
       if (t.totalBytes && bytes === t.totalBytes) return finalize(key, t, bytes);
-      await putTransfer({ ...t, status: 'failed', bytesWritten: bytes, error: lostMessage(bytes, t.totalBytes), updatedAt: Date.now() });
+      // Seamless network recovery: pause with waiting message so NetInfo can auto-resume when online
+      await putTransfer({ ...t, status: 'paused', bytesWritten: bytes, error: 'Network interrupted. Will auto-resume when online.', updatedAt: Date.now() });
     }
   }
 }
@@ -587,12 +589,14 @@ function runTransfer(key: string, run: () => Promise<FileSystem.FileSystemDownlo
   void drive(key, run).finally(() => void pumpQueue());
 }
 
-/** Starts the oldest queued download, one at a time, minting a fresh URL only when its slot opens. */
+/** Starts the oldest queued download, up to MAX_CONCURRENT_TRANSFERS at once, minting a fresh URL when a slot opens. */
 async function pumpQueue(): Promise<void> {
   if (queuePumping || activeStartReservation !== null) return;
   queuePumping = true;
   try {
-    if ((await listTransfers()).some((t) => t.status === 'downloading')) return;
+    const transfers = await listTransfers();
+    const downloadingCount = transfers.filter((t) => t.status === 'downloading').length;
+    if (downloadingCount >= MAX_CONCURRENT_TRANSFERS) return;
     const next = queuedKeys.values().next().value as string | undefined;
     if (next === undefined) return;
     queuedKeys.delete(next);
@@ -738,7 +742,8 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
   }
 
   await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true });
-  const queueNow = transfers.some((t) => t.status === 'downloading') || activeStartReservation !== key || queuedKeys.size > 0;
+  const downloadingCount = transfers.filter((t) => t.status === 'downloading').length;
+  const queueNow = downloadingCount >= MAX_CONCURRENT_TRANSFERS || activeStartReservation !== key || queuedKeys.size > 0;
   const total = await probeLength(source.downloadUrl);
   if (!total) {
     return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server, so the download was not started. Try again later.' };
@@ -811,7 +816,7 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
   try {
   const t = await getTransfer(key);
   if (!t || !canTransition(t.status, 'downloading')) return { ok: false, reason: 'unknown', message: 'This download cannot be resumed.' };
-  const busy = (await listTransfers()).some((x) => x.key !== key && x.status === 'downloading') || activeStartReservation !== key || queuedKeys.size > 0;
+  const busy = (await listTransfers()).filter((x) => x.key !== key && x.status === 'downloading').length >= MAX_CONCURRENT_TRANSFERS || activeStartReservation !== key || queuedKeys.size > 0;
   if (busy) {
     queuedKeys.add(key);
     await putTransfer({ ...t, status: 'queued', error: null, updatedAt: Date.now() });
@@ -911,3 +916,37 @@ export async function setTitleQuality(subjectId: string, season: number | null, 
   for (const k of kept) trimmed[k] = next[k];
   await writeJson(TITLE_QUALITY_KEY, trimmed);
 }
+
+/* ---------- Network loss auto-recovery ---------- */
+
+let networkRecoveryInstalled = false;
+
+/** Auto-resumes downloads that were paused due to network loss once connectivity returns. */
+export async function resumeNetworkPausedTransfers(): Promise<void> {
+  try {
+    const transfers = await listTransfers();
+    const paused = transfers.filter((t) => t.status === 'paused' && t.error && t.error.includes('Network'));
+    for (const t of paused) {
+      void resumeDownload(t.key, () => fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality));
+    }
+  } catch {
+    // Network recovery best effort
+  }
+}
+
+export function installNetworkRecoveryListener(): void {
+  if (networkRecoveryInstalled) return;
+  networkRecoveryInstalled = true;
+  try {
+    NetInfo.addEventListener((state) => {
+      if (state.isConnected && state.isInternetReachable !== false) {
+        void resumeNetworkPausedTransfers();
+        void pumpQueue();
+      }
+    });
+  } catch {
+    // NetInfo safe fallback in mock environments
+  }
+}
+
+installNetworkRecoveryListener();

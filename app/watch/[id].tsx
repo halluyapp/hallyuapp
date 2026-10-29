@@ -16,6 +16,7 @@ import {
   fetchWatchStreams,
   isDownloadable,
   pickStream,
+  prewarmWatchPlayback,
   qualityOptions,
   type WatchDetail,
   type WatchDiagnostic,
@@ -206,6 +207,13 @@ export default function WatchTitleScreen() {
   const selectedTarget = targets.find((t) => t.quality === (watchable?.quality ?? null)) ?? null;
   const selectedSaved = selectedTarget?.savedBytes != null;
   const canDownloadSelected = !!downloadable && downloadsSupported() && !!selectedTarget && selectedTarget.canStart;
+
+  // Pre-warms the playback token & proxy so pressing Watch Now starts playback in 0ms
+  useEffect(() => {
+    if (watchable?.quality) {
+      prewarmWatchPlayback(subjectId, seasonValue ?? undefined, episodeValue ?? undefined, watchable.quality);
+    }
+  }, [subjectId, seasonValue, episodeValue, watchable?.quality]);
 
   const pickQuality = (q: string | null) => {
     setQuality(q);

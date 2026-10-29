@@ -217,6 +217,9 @@ export function canTransition(from: TransferStatus, to: TransferStatus): boolean
 /** Largest number of automatic continuations for one transfer before it is reported as failed. */
 export const MAX_AUTO_CONTINUES = 6;
 
+/** Maximum concurrent active downloads allowed before queueing additional transfers. */
+export const MAX_CONCURRENT_TRANSFERS = 3;
+
 export type AfterTransfer =
   | { action: 'complete' }
   | { action: 'continue'; fromBytes: number }

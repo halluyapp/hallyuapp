@@ -225,3 +225,12 @@ export async function fetchWatchDownloadUrl(subjectId: string, se: number | unde
   const r = await fetchWatchPlayback(subjectId, se, ep, quality, true);
   return r.ok ? r.value.downloadUrl : null;
 }
+
+/**
+ * Pre-warms playback cache in background so clicking Play starts immediately with zero network delay.
+ */
+export function prewarmWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null): void {
+  const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}|${quality ?? ''}`;
+  if (ttlGet(playbackCache, cacheKey)) return;
+  void fetchWatchPlayback(subjectId, se, ep, quality).catch(() => {});
+}

@@ -565,6 +565,46 @@ export default function WatchPlayer() {
     return () => StatusBar.setHidden(false, 'fade');
   }, [fullScreen]);
 
+  const seekByRef = useRef(seekBy);
+  seekByRef.current = seekBy;
+  const togglePlayRef = useRef(togglePlay);
+  togglePlayRef.current = togglePlay;
+
+  // Web desktop keyboard controls: Space, Arrows, F, M
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        void togglePlayRef.current();
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        seekByRef.current(-SKIP_MS);
+        showFeedback(`−${SKIP_MS / 1000}s`);
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        seekByRef.current(SKIP_MS);
+        showFeedback(`+${SKIP_MS / 1000}s`);
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        if (fullScreen) exitFullScreen();
+        else enterFullScreen();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        setVolume((v) => {
+          const next = v > 0 ? 0 : 1;
+          volumeRef.current = next;
+          showFeedback(next === 0 ? 'Muted' : 'Unmuted');
+          return next;
+        });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullScreen]);
+
   // Controls hide themselves after a few seconds of playback, and show again on any touch.
   useEffect(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -708,6 +748,53 @@ export default function WatchPlayer() {
       {feedback ? (
         <View style={styles.feedback} pointerEvents="none">
           <Text variant="label" tone="onAccent">{feedback}</Text>
+        </View>
+      ) : null}
+
+      {/* Modern Skip Intro button (first 2 minutes) */}
+      {shownPosition > 8000 && shownPosition < 120000 && durationMs > 180000 && state === 'playing' ? (
+        <Pressable
+          onPress={() => {
+            seekBy(85000);
+            showFeedback('Intro skipped (+85s)');
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Skip intro"
+          style={styles.skipIntroBtn}
+        >
+          <Ionicons name="play-forward" size={13} color="#fff" style={{ marginRight: 4 }} />
+          <Text variant="caption" tone="onAccent" style={{ fontWeight: '700' }}>Skip Intro</Text>
+        </Pressable>
+      ) : null}
+
+      {/* Up Next Episode Overlay (final 6% of video) */}
+      {durationMs > 60000 && shownPosition / durationMs >= 0.94 && state !== 'error' ? (
+        <View style={styles.nextPromptCard}>
+          <View style={{ flex: 1 }}>
+            <Text variant="caption" tone="secondary">Next up</Text>
+            <Text variant="label" tone="onAccent" numberOfLines={1}>
+              {nextDownloaded ? nextDownloaded.title : ref.episode !== null ? `Episode ${(ref.episode ?? 1) + 1}` : 'Next episode'}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => {
+              if (nextDownloaded) playNextDownloaded(nextDownloaded);
+              else if (ref.episode !== null) {
+                router.replace({
+                  pathname: '/watch/play',
+                  params: {
+                    ...params,
+                    episode: String((ref.episode ?? 1) + 1),
+                  },
+                });
+              }
+            }}
+            style={styles.nextPromptAction}
+            accessibilityRole="button"
+          >
+            <Ionicons name="play" size={13} color="#fff" style={{ marginRight: 4 }} />
+            <Text variant="caption" tone="onAccent" style={{ fontWeight: '700' }}>Play</Text>
+          </Pressable>
         </View>
       ) : null}
 
@@ -949,5 +1036,52 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: radius.sm,
     backgroundColor: colors.accent,
+  },
+  skipIntroBtn: {
+    position: 'absolute',
+    right: 18,
+    bottom: 96,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+    borderRadius: radius.pill,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    zIndex: 25,
+  },
+  nextPromptCard: {
+    position: 'absolute',
+    left: 18,
+    right: 18,
+    bottom: 84,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(18,18,24,0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    borderRadius: radius.md,
+    padding: space.x3,
+    zIndex: 25,
+  },
+  nextPromptAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+  },
+  rippleOverlay: {
+    position: 'absolute',
+    top: '38%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(0,0,0,0.55)',
   },
 });
