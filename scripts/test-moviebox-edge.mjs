@@ -87,6 +87,7 @@ const calls = [];
 let mediaRange = null;
 let mediaReturn429 = 0;
 const mediaLog = [];
+const mediaHeaders = [];
 function route(url, init) {
   const u = String(url);
   calls.push(u);
@@ -104,6 +105,7 @@ function route(url, init) {
   if (u.includes('hakunaymatata.com')) {
     mediaRange = init?.headers?.Range ?? null;
     mediaLog.push(mediaRange);
+    mediaHeaders.push(init?.headers ?? {});
     if (mediaReturn429 > 0) {
       mediaReturn429 -= 1;
       return new Response('slow down', { status: 429, headers: { 'retry-after': '0' } });
@@ -252,6 +254,17 @@ test('proxy: a 429 from the media host is retried, and the retried answer is pas
   assert.equal(part.status, 206);
   assert.equal(mediaLog.length, 2, 'one refused attempt, then one answered attempt');
   assert.equal(mediaLog[1], 'bytes=0-3', 'the same Range is sent again');
+});
+
+test('proxy: media requests carry the Referer the video CDN requires, and a browser-style agent', async () => {
+  const r = await post({ action: 'playback', ...BB, se: 1, ep: 1, quality: '360p' });
+  mediaHeaders.length = 0;
+  await get(r.json.playback_url);
+  assert.ok(mediaHeaders.length > 0);
+  const sent = mediaHeaders[0];
+  assert.equal(sent.Referer, 'https://movieboxonline.net/');
+  assert.match(sent['User-Agent'], /Mozilla\/5\.0/);
+  assert.equal(sent['Accept-Encoding'], 'identity');
 });
 
 test('proxy: a plain request with no token is refused', async () => {

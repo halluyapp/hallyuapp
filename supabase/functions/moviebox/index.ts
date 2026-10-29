@@ -516,10 +516,13 @@ async function actionCaptions(input: Raw): Promise<Response> {
 
 // ---------- media proxy (GET) ----------
 
-// What the media host sees from this proxy: a plain player-style client, and identity encoding so byte
-// offsets and Content-Length always describe the file itself.
+// What the media host sees from this proxy. The Moviebox video CDN refuses requests from cloud IPs that carry
+// no Referer (it answers 429 to them), so the proxy sends the Referer its player uses. Identity encoding keeps
+// byte offsets and Content-Length describing the file itself.
 const MEDIA_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
+  Referer: 'https://movieboxonline.net/',
+  Origin: 'https://movieboxonline.net',
   Accept: '*/*',
   'Accept-Encoding': 'identity',
 };
