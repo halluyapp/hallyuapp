@@ -31,7 +31,8 @@ const SERVICE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 const PROXY = `${BASE}/functions/v1/moviebox`;
 const QUERY = (process.env.WATCH_CHECK_QUERY || 'Lupin').trim();
 
-const MIN_FULL_BYTES = 50 * 1024 * 1024;
+const MIN_FULL_BYTES = 50 * 1024 * 1024; // informational only: the server's full-length rule, not the app's save rule
+const MIN_PLAYABLE_BYTES = 64 * 1024; // lib/watchRules.ts MIN_PLAYABLE_BYTES
 const TARGET_LOW = 83 * 1024 * 1024;
 const TARGET_HIGH = 84.6 * 1024 * 1024;
 const PROBE_TIMEOUT_MS = 30_000;
@@ -316,10 +317,16 @@ async function main() {
     bad('the downloaded file does not begin with an MP4 header');
   }
   const mb = total / (1024 * 1024);
-  if (mb >= MIN_FULL_BYTES / (1024 * 1024)) {
-    ok(`the file passes the app's full-length floor of 50 MB (this one is ${mb.toFixed(2)} MB)`);
+  // The app's save rule is the 64 KB playable floor plus a full MP4 layout check (lib/watchRules.ts).
+  // Full-length selection is made by the server (duration and size filter in the moviebox function), so a
+  // short legitimate clip is not a failure here.
+  if (total >= MIN_PLAYABLE_BYTES) {
+    ok(`the file passes the app's playable floor of 64 KB (this one is ${mb.toFixed(2)} MB)`);
   } else {
-    bad(`the file is only ${mb.toFixed(2)} MB, below the app's 50 MB full-length floor`);
+    bad(`the file is only ${total} bytes, below the app's 64 KB playable floor`);
+  }
+  if (mb < MIN_FULL_BYTES / (1024 * 1024)) {
+    info(`NOTE: this title's file is ${mb.toFixed(2)} MB, below 50 MB; the server only offers it because its duration qualifies as full-length`);
   }
   if (total >= TARGET_LOW && total <= TARGET_HIGH) {
     ok(`the 83/84 MB download case is covered: ${mb.toFixed(2)} MB verified with real server headers`);
