@@ -116,11 +116,18 @@ test('streams: rejects Mobile Native previews even when labelled 1080p', () => {
   assert.equal(r.streams.length, 0);
 });
 
-test('streams: rejects 300 seconds or less, unknown duration, and 50 MB or less', () => {
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 300, sizeMb: 900 }), false);
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: null, sizeMb: 900 }), false);
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 2700, sizeMb: 50 }), false);
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 301, sizeMb: 51 }), true);
+test('streams: kept when over 5 minutes OR over 50 MB; dropped only when both checks fail', () => {
+  // A large file counts even when its duration is missing (zarhosting reports size reliably).
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 300, sizeMb: 900 }), true);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: null, sizeMb: 900 }), true);
+  // A long file counts even when it is small.
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 2700, sizeMb: 50 }), true);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 301, sizeMb: 51 }), true);
+  // A preview: short AND small, or unknown on both counts.
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 300, sizeMb: 50 }), false);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: null, sizeMb: 50 }), false);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: null, sizeMb: null }), false);
+  assert.equal(isFullStream({ source: 'Mobile Native preview', durationSec: 2700, sizeMb: 900 }), false);
 });
 
 test('streams: sorts MP4 before DASH, then higher quality first', () => {
@@ -178,9 +185,9 @@ test('playback: rejects missing links, plain http, and too-short or too-small fu
   assert.equal(normalisePlayback({ ...base, playback_url: undefined }), null);
   assert.equal(normalisePlayback({ ...base, download_url: undefined }), null);
   assert.equal(normalisePlayback({ ...base, playback_url: 'http://x.supabase.co/f?t=1' }), null);
-  assert.equal(normalisePlayback({ ...base, duration_sec: 300 }), null);
-  assert.equal(normalisePlayback({ ...base, duration_sec: null }), null);
-  assert.equal(normalisePlayback({ ...base, size_mb: 50 }), null);
+  assert.equal(normalisePlayback({ ...base, duration_sec: 300, size_mb: 50 }), null);
+  assert.equal(normalisePlayback({ ...base, duration_sec: null, size_mb: null }), null);
+  assert.notEqual(normalisePlayback({ ...base, duration_sec: 300 }), null, 'a large file is full-length even at 300 s');
   assert.equal(normalisePlayback(null), null);
 });
 

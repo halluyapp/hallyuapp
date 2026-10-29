@@ -10,7 +10,7 @@ import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchPlayback } from '../../lib/api/moviebox';
-import { fetchCaptionCues, fetchMovieboxCaptions, fetchOpenSubtitleCues, searchOpenSubtitles, type MovieboxCaption, type OpenSubtitleResult } from '../../lib/api/subtitles';
+import { fetchCaptionCues, fetchMovieboxCaptions, type MovieboxCaption } from '../../lib/api/subtitles';
 import { cueTextAt, type SubtitleCue } from '../../lib/subtitles';
 import { getProgress, listDownloads, saveProgress, setTitleQuality, type DownloadEntry, type WatchEpisodeRef } from '../../lib/watchStore';
 import { readLocalSubtitle } from '../../lib/watchSubtitleDownload';
@@ -108,14 +108,13 @@ export default function WatchPlayer() {
   const [scrubFraction, setScrubFraction] = useState<number | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
-  // Subtitles: MovieBox captions load automatically; OpenSubtitles is searched only when asked.
+  // Subtitles come only from the MovieBox captions, loaded automatically for the title.
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [cueLabel, setCueLabel] = useState<string | null>(null);
   const [subsOpen, setSubsOpen] = useState(false);
   const [subsBusy, setSubsBusy] = useState(false);
   const [subsNote, setSubsNote] = useState<string | null>(null);
   const [captionChoices, setCaptionChoices] = useState<MovieboxCaption[]>([]);
-  const [osChoices, setOsChoices] = useState<OpenSubtitleResult[] | null>(null);
   const [immersive, setImmersive] = useState(false);
   const [dismissLandscape, setDismissLandscape] = useState(false);
   const [rate, setRate] = useState(1);
@@ -151,6 +150,7 @@ export default function WatchPlayer() {
       ref.episode ?? undefined,
       quality,
       fresh,
+      ref.detailPath,
     );
     recordWatch('play:link', Date.now() - startedAt);
     if (seq !== requestSeq.current) return false;
@@ -263,12 +263,12 @@ export default function WatchPlayer() {
           return;
         }
       }
-      const r = await fetchMovieboxCaptions({ subjectId: ref.subjectId, season: ref.season ?? undefined, episode: ref.episode ?? undefined });
+      const r = await fetchMovieboxCaptions({ subjectId: ref.subjectId, detailPath: ref.detailPath, season: ref.season ?? undefined, episode: ref.episode ?? undefined });
       if (cancelled || !r.ok) return;
       setCaptionChoices(r.value);
       const preferred = r.value.find((c) => /^en/i.test(c.language)) ?? r.value[0];
       if (!preferred) {
-        setSubsNote('MovieBox has no captions for this title. Use Find subtitles online.');
+        setSubsNote('MovieBox has no captions for this title.');
         return;
       }
       const got = await fetchCaptionCues(preferred.url);
@@ -277,7 +277,7 @@ export default function WatchPlayer() {
         setCues(got.value.cues);
         setCueLabel(`MovieBox · ${preferred.label}`);
       } else {
-        setSubsNote('MovieBox captions could not be loaded. Use Find subtitles online.');
+        setSubsNote('MovieBox captions could not be loaded.');
       }
     })();
     return () => {
@@ -291,7 +291,7 @@ export default function WatchPlayer() {
       case 'signed_out':
         return 'Sign in to load subtitles.';
       case 'not_configured':
-        return 'Online subtitles are not set up yet.';
+        return 'Subtitles are not available right now.';
       case 'quota':
         return 'The subtitle service is busy. Try again later.';
       case 'offline':
@@ -316,33 +316,6 @@ export default function WatchPlayer() {
     }
     setCues(got.value.cues);
     setCueLabel(`MovieBox · ${c.label}`);
-    setSubsOpen(false);
-  };
-
-  const findOnline = async () => {
-    setSubsBusy(true);
-    setSubsNote(null);
-    const r = await searchOpenSubtitles({ query: ref.title, season: ref.season ?? undefined, episode: ref.episode ?? undefined, language: 'en' });
-    setSubsBusy(false);
-    if (!r.ok) {
-      setSubsNote(subtitleReasonText(r.reason));
-      return;
-    }
-    setOsChoices(r.value);
-    if (r.value.length === 0) setSubsNote('No matching subtitles were found online for this episode.');
-  };
-
-  const chooseOnline = async (row: OpenSubtitleResult) => {
-    setSubsBusy(true);
-    setSubsNote(null);
-    const got = await fetchOpenSubtitleCues(row.fileId);
-    setSubsBusy(false);
-    if (!got.ok) {
-      setSubsNote(subtitleReasonText(got.reason));
-      return;
-    }
-    setCues(got.value.cues);
-    setCueLabel(`OpenSubtitles · ${row.release || row.language || 'subtitle'}`);
     setSubsOpen(false);
   };
 
@@ -437,7 +410,7 @@ export default function WatchPlayer() {
     setNotice(null);
     setStalled(false);
     lastProgressAt.current = Date.now();
-    const r = await fetchWatchPlayback(ref.subjectId, ref.season ?? undefined, ref.episode ?? undefined, q);
+    const r = await fetchWatchPlayback(ref.subjectId, ref.season ?? undefined, ref.episode ?? undefined, q, false, ref.detailPath);
     if (seq !== requestSeq.current) return;
     if (!r.ok) {
       setSwitchingTo(null);
@@ -862,18 +835,6 @@ export default function WatchPlayer() {
           {captionChoices.map((c) => (
             <Pressable key={c.url} onPress={() => void chooseCaption(c)} accessibilityRole="button" style={styles.subsRow}>
               <Text variant="bodySmall" tone="onAccent">MovieBox · {c.label}</Text>
-            </Pressable>
-          ))}
-          <Pressable onPress={() => void findOnline()} accessibilityRole="button" accessibilityLabel="Find subtitles online" style={styles.subsRow}>
-            <Text variant="bodySmall" tone="onAccent">Find subtitles online (OpenSubtitles)</Text>
-          </Pressable>
-          {osChoices?.map((row) => (
-            <Pressable key={row.id} onPress={() => void chooseOnline(row)} accessibilityRole="button" style={styles.subsRow}>
-              <Text variant="caption" tone="onAccent" numberOfLines={2}>
-                {row.release || row.fileName || 'Subtitle'} · {row.language ?? '?'}
-                {row.hearingImpaired ? ' · HI' : ''}
-                {row.machineTranslated ? ' · machine translated' : ''}
-              </Text>
             </Pressable>
           ))}
           {subsBusy ? <ActivityIndicator color="#fff" /> : null}

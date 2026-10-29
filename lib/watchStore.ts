@@ -605,7 +605,7 @@ async function pumpQueue(): Promise<void> {
     queuedKeys.delete(next);
     const t = await getTransfer(next);
     if (!t || t.status !== 'queued') return;
-    const url = await fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality);
+    const url = await fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality, t.detailPath);
     if (!url) {
       await failTransfer(next, 'link_expired', 'Could not get a fresh download link. Check your connection and tap retry.');
       return;
@@ -930,7 +930,7 @@ export async function resumeNetworkPausedTransfers(): Promise<void> {
     const transfers = await listTransfers();
     const paused = transfers.filter((t) => t.status === 'paused' && t.error && t.error.includes('Network'));
     for (const t of paused) {
-      void resumeDownload(t.key, () => fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality));
+      void resumeDownload(t.key, () => fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality, t.detailPath));
     }
   } catch {
     // Network recovery best effort

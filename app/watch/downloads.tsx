@@ -121,7 +121,7 @@ export default function WatchDownloads() {
   const resume = async (t: TransferEntry) => {
     setMessage(null);
     const r = await resumeDownload(t.key, () =>
-      fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality),
+      fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality, t.detailPath),
     );
     if (!r.ok) setMessage(r.message ?? 'This download could not be resumed.');
   };

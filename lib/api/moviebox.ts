@@ -1,7 +1,7 @@
 /**
  * Hallyu Watch — client for the server-side `moviebox` edge function.
  *
- * The app never holds the Megan key and never calls Megan or the CDN directly. Every playable or
+ * The app never calls the upstream or its CDN directly. Every playable or
  * downloadable link is a proxy link issued by the `playback` action, with a sealed token that expires
  * after 4 hours. Mobile and web use the same rule, so a stream that plays on web also plays natively.
  */
@@ -152,7 +152,9 @@ export async function fetchWatchDetail(detailPath: string): Promise<WatchResult<
 }
 
 /** Full-length stream metadata (quality list, availability). No URLs. */
-export async function fetchWatchStreams(subjectId: string, se?: number, ep?: number): Promise<WatchResult<WatchStreams>> {
+export async function fetchWatchStreams(subjectId: string, se?: number, ep?: number, detailPath?: string | null): Promise<WatchResult<WatchStreams>> {
+  // The upstream needs the title's slug. Without it nothing can be resolved, so no request is made.
+  if (!detailPath) return { ok: false, reason: 'not_found' };
   const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}`;
   const hit = ttlGet(streamCache, cacheKey);
   if (hit) return { ok: true, value: hit };
@@ -160,7 +162,7 @@ export async function fetchWatchStreams(subjectId: string, se?: number, ep?: num
   // a normal outcome, and re-asking upstream for it on every open is a duplicate lookup.
   const negative = ttlGet(streamEmptyCache, cacheKey);
   if (negative) return negative;
-  const body: Body = { action: 'stream', subjectId };
+  const body: Body = { action: 'stream', subjectId, detailPath };
   if (se !== undefined) body.se = se;
   if (ep !== undefined) body.ep = ep;
   beginWatch('watch:streams');
@@ -191,16 +193,19 @@ export async function fetchWatchStreams(subjectId: string, se?: number, ep?: num
 const playbackCache = new Map<string, TtlEntry<WatchPlayback>>();
 const PLAYBACK_CACHE_MARGIN_MS = 10 * 60 * 1000;
 
-export async function fetchWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null, fresh = false): Promise<WatchResult<WatchPlayback>> {
+export async function fetchWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null, fresh = false, detailPath: string | null = null): Promise<WatchResult<WatchPlayback>> {
+  if (!detailPath) return { ok: false, reason: 'not_found' };
   const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}|${quality ?? ''}`;
   if (!fresh) {
     const hit = ttlGet(playbackCache, cacheKey);
     if (hit) return { ok: true, value: hit };
   }
-  const body: Body = { action: 'playback', subjectId };
+  const body: Body = { action: 'playback', subjectId, detailPath };
   if (se !== undefined) body.se = se;
   if (ep !== undefined) body.ep = ep;
   if (quality) body.quality = quality;
+  // A fresh request asks the server to resolve the stream again, so a moved CDN link is replaced.
+  if (fresh) body.fresh = true;
   let last: WatchResult<WatchPlayback> = { ok: false, reason: 'failed' };
   for (let attempt = 0; attempt < 2; attempt++) {
     beginWatch('watch:playback');
@@ -221,16 +226,17 @@ export async function fetchWatchPlayback(subjectId: string, se: number | undefin
 }
 
 /** A fresh download link for one full-length stream. Returns null when no valid link exists. */
-export async function fetchWatchDownloadUrl(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null): Promise<string | null> {
-  const r = await fetchWatchPlayback(subjectId, se, ep, quality, true);
+export async function fetchWatchDownloadUrl(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null, detailPath: string | null = null): Promise<string | null> {
+  const r = await fetchWatchPlayback(subjectId, se, ep, quality, true, detailPath);
   return r.ok ? r.value.downloadUrl : null;
 }
 
 /**
  * Pre-warms playback cache in background so clicking Play starts immediately with zero network delay.
  */
-export function prewarmWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null): void {
+export function prewarmWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null, detailPath: string | null = null): void {
+  if (!detailPath) return;
   const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}|${quality ?? ''}`;
   if (ttlGet(playbackCache, cacheKey)) return;
-  void fetchWatchPlayback(subjectId, se, ep, quality).catch(() => {});
+  void fetchWatchPlayback(subjectId, se, ep, quality, false, detailPath).catch(() => {});
 }

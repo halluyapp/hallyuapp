@@ -6,4 +6,5 @@
 • Downloads now shows each quality you have saved as its own item, with its own size and its own Remove button, and you can see the app's real load timings under Show load timings.
 • On the web, an unreachable backend no longer replaces the whole site: the public page loads and you can continue as a guest.
 • A download is now checked before it is marked finished. A file that is incomplete or damaged is removed and shown as failed, so it can no longer appear as ready and then refuse to play. Short clips are no longer rejected just for being short.
-• Subtitles: when a title has captions, Watch turns them on automatically. Tap the subtitle button in the player to switch captions, turn them off, or search for subtitles online for that episode.
+• Subtitles: when a title has captions, Watch turns them on automatically. Tap the subtitle button in the player to switch captions or turn them off.
+• Watch titles now load from a new source. Playback starts at 360p by default so it opens faster, and you can pick a higher quality from the chips.

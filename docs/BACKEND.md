@@ -42,7 +42,6 @@ supabase/
 │   ├── media-cleanup/              reconciles media rows against storage objects
 │   ├── purge-deleted-accounts/     retention: hard-deletes tombstoned accounts and their objects
 │   ├── moderation-digest/          groups open reports into one decision per target
-│   ├── megan-metadata/             retrieves protected entertainment metadata
 │   └── moviebox/                   playback/search integration (review its external-provider and rights controls)
 └── types/database.ts               the typed contract (tables, rows, inserts, updates, RPCs, enums)
 ```

@@ -149,15 +149,16 @@ export function normaliseDetail(data: unknown): WatchDetail | null {
 }
 
 /**
- * Full-length rule, shared with the server (supabase/functions/moviebox). A stream is rejected when its
- * source is a "Mobile Native" preview, when its duration is 300 seconds or less or unknown, or when its
- * size is 50 MB or less. Quality labels are not trusted: a 23-second preview can be labelled 1080p.
+ * Full-length rule, shared with the server (supabase/functions/moviebox, isFullCandidate). A stream is
+ * dropped when its source is a "Mobile Native" preview, or when it is both short (300 seconds or less) and
+ * small (50 MB or less), with an unknown value counting as failing. Quality labels are never trusted.
  */
 export function isFullStream(s: Pick<WatchStream, 'source' | 'durationSec' | 'sizeMb'>): boolean {
   if ((s.source ?? '').toLowerCase().includes('mobile native')) return false;
-  if (s.durationSec === null || s.durationSec <= 300) return false;
-  if (s.sizeMb !== null && s.sizeMb <= 50) return false;
-  return true;
+  // Kept when the duration is over 5 minutes OR the size is over 50 MB. Dropped only when both fail.
+  const longEnough = s.durationSec !== null && s.durationSec > 300;
+  const bigEnough = s.sizeMb !== null && s.sizeMb > 50;
+  return longEnough || bigEnough;
 }
 
 /** Progressive MP4 first, then the higher quality. */

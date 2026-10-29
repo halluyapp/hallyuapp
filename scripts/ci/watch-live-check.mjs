@@ -192,7 +192,7 @@ async function findCandidate() {
         const seasons = Array.isArray(detail.json?.data?.resource?.seasons) ? detail.json.data.resource.seasons : [];
         const se = seasons.length > 0 ? Number(seasons[0].se) : undefined;
         const ep = seasons.length > 0 ? 1 : undefined;
-        const streams = await call(se === undefined ? { action: 'stream', subjectId } : { action: 'stream', subjectId, se, ep });
+        const streams = await call(se === undefined ? { action: 'stream', subjectId, detailPath } : { action: 'stream', subjectId, detailPath, se, ep });
         const list = Array.isArray(streams.json?.streams) ? streams.json.streams : [];
         const mp4 = list.filter((s) => String(s?.format ?? '').toUpperCase() === 'MP4' && typeof s?.quality === 'string');
         if (mp4.length === 0) {
@@ -205,7 +205,7 @@ async function findCandidate() {
           .filter((s) => s.bytes !== null);
         const inRange = sized.find((s) => s.bytes >= TARGET_LOW && s.bytes <= TARGET_HIGH);
         const chosen = inRange ?? sized.sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0))[0] ?? mp4[0];
-        return { subjectId, title: String(subject?.title ?? subjectId), se, ep, candidate: chosen };
+        return { subjectId, detailPath, title: String(subject?.title ?? subjectId), se, ep, candidate: chosen };
       }
     } catch (err) {
       tried.push(`query "${q}": ${err?.message || err}`);
@@ -217,11 +217,11 @@ async function findCandidate() {
 async function main() {
   line(`Live Watch check against ${BASE} (query "${QUERY}")`);
 
-  const { subjectId, title, se, ep, candidate } = await findCandidate();
+  const { subjectId, detailPath, title, se, ep, candidate } = await findCandidate();
   info(`title: ${title} (subject ${subjectId}${se ? `, S${se} E${ep}` : ''})`);
   info(`quality chosen for the test: ${candidate.quality} (source size ${candidate.size_mb ?? 'unknown'} MB)`);
 
-  const playback = await call(se === undefined ? { action: 'playback', subjectId, quality: candidate.quality } : { action: 'playback', subjectId, se, ep, quality: candidate.quality });
+  const playback = await call(se === undefined ? { action: 'playback', subjectId, detailPath, quality: candidate.quality } : { action: 'playback', subjectId, detailPath, se, ep, quality: candidate.quality });
   if (playback.status !== 200 || typeof playback.json?.download_url !== 'string') {
     bad(`playback did not return a download link (status ${playback.status}, error ${playback.json?.error ?? 'none'})`);
     return;

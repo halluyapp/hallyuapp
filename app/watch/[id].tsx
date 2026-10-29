@@ -119,7 +119,7 @@ export default function WatchTitleScreen() {
   useEffect(() => {
     let alive = true;
     const startedAt = Date.now();
-    fetchWatchStreams(subjectId).then((r) => {
+    fetchWatchStreams(subjectId, undefined, undefined, detailPath).then((r) => {
       if (!alive) return;
       recordWatch('title:probe', Date.now() - startedAt);
       setMovieProbe(r.ok ? r.value : null);
@@ -127,7 +127,7 @@ export default function WatchTitleScreen() {
     return () => {
       alive = false;
     };
-  }, [subjectId, streamReload]);
+  }, [subjectId, detailPath, streamReload]);
 
   // Decide once per episode whether a full-length stream exists. Movies are requested without season or episode.
   useEffect(() => {
@@ -143,7 +143,7 @@ export default function WatchTitleScreen() {
         alive = false;
       };
     }
-    fetchWatchStreams(subjectId, isSeries ? season ?? undefined : undefined, isSeries ? episode ?? undefined : undefined).then((r) => {
+    fetchWatchStreams(subjectId, isSeries ? season ?? undefined : undefined, isSeries ? episode ?? undefined : undefined, detailPath).then((r) => {
       if (!alive) return;
       if (!r.ok) {
         setPlayable(null);
@@ -157,7 +157,7 @@ export default function WatchTitleScreen() {
     return () => {
       alive = false;
     };
-  }, [detail, subjectId, isSeries, season, episode, streamReload, movieProbe]);
+  }, [detail, subjectId, detailPath, isSeries, season, episode, streamReload, movieProbe]);
 
   // Every saved quality of this episode is loaded, not just one: 360p and 480p are separate files and
   // both stay playable offline.
@@ -211,9 +211,9 @@ export default function WatchTitleScreen() {
   // Pre-warms the playback token & proxy so pressing Watch Now starts playback in 0ms
   useEffect(() => {
     if (watchable?.quality) {
-      prewarmWatchPlayback(subjectId, seasonValue ?? undefined, episodeValue ?? undefined, watchable.quality);
+      prewarmWatchPlayback(subjectId, seasonValue ?? undefined, episodeValue ?? undefined, watchable.quality, detailPath);
     }
-  }, [subjectId, seasonValue, episodeValue, watchable?.quality]);
+  }, [subjectId, detailPath, seasonValue, episodeValue, watchable?.quality]);
 
   const pickQuality = (q: string | null) => {
     setQuality(q);
@@ -240,7 +240,7 @@ export default function WatchTitleScreen() {
 
   const download = async (stream: WatchStream) => {
     setMessage(null);
-    const url = await fetchWatchDownloadUrl(subjectId, seasonValue ?? undefined, episodeValue ?? undefined, stream.quality);
+    const url = await fetchWatchDownloadUrl(subjectId, seasonValue ?? undefined, episodeValue ?? undefined, stream.quality, detailPath);
     if (!url) {
       setMessage('Could not get a download link for this quality. Check your connection and try again.');
       return;
@@ -251,9 +251,9 @@ export default function WatchTitleScreen() {
     if (!r.ok) setMessage(r.message ?? 'The download could not start.');
   };
 
-  const retryOrResume = async (t: { key: string; subjectId: string; season: number | null; episode: number | null; quality: string | null }) => {
+  const retryOrResume = async (t: { key: string; subjectId: string; season: number | null; episode: number | null; quality: string | null; detailPath: string | null }) => {
     setMessage(null);
-    const r = await resumeDownload(t.key, () => fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality));
+    const r = await resumeDownload(t.key, () => fetchWatchDownloadUrl(t.subjectId, t.season ?? undefined, t.episode ?? undefined, t.quality, t.detailPath));
     if (!r.ok) setMessage(r.message ?? 'The download could not be resumed.');
   };
 
