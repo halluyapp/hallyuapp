@@ -516,6 +516,45 @@ async function actionCaptions(input: Raw): Promise<Response> {
 
 // ---------- media proxy (GET) ----------
 
+// What the media host sees from this proxy: a plain player-style client, and identity encoding so byte
+// offsets and Content-Length always describe the file itself.
+const MEDIA_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
+  Accept: '*/*',
+  'Accept-Encoding': 'identity',
+};
+
+/** One media request with a bounded deadline. A 429 or 5xx is retried twice with a short, capped backoff. */
+async function mediaFetch(target: string, range: string | null): Promise<Response> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const headers: Record<string, string> = { ...MEDIA_HEADERS };
+    if (range) headers.Range = range;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), MEDIA_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(target, { headers, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status !== 429 && res.status < 500) return res;
+    if (attempt === 2) return res;
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 3000) : 700 * (attempt + 1);
+    res.body?.cancel().catch(() => {});
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
+  throw new Error('unreachable');
+}
+
+/** The total length of the file, read from a one-byte ranged probe. Null when the host does not say. */
+async function probeTotal(target: string): Promise<number | null> {
+  const res = await mediaFetch(target, 'bytes=0-0');
+  res.body?.cancel().catch(() => {});
+  const m = /\/(\d+)\s*$/.exec(res.headers.get('content-range') ?? '');
+  return m ? Number(m[1]) : null;
+}
+
 async function handleMedia(req: Request): Promise<Response> {
   const t = new URL(req.url).searchParams.get('t') ?? '';
   const p = await openToken(t);
@@ -524,21 +563,16 @@ async function handleMedia(req: Request): Promise<Response> {
   const target = safeHttpsUrl(p.u);
   if (!target) return json({ error: 'host_not_allowed' }, 403);
 
-  const headers: Record<string, string> = {};
   const range = req.headers.get('range');
-  if (range && /^bytes=\d*-\d*$/.test(range)) headers.Range = range;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), MEDIA_TIMEOUT_MS);
+  const wantRange = range && /^bytes=\d*-\d*$/.test(range) ? range : null;
   let res: Response;
   try {
-    res = await fetch(target, { headers, signal: controller.signal });
+    res = await mediaFetch(target, wantRange);
   } catch {
     return json({ error: 'upstream_unreachable' }, 502);
-  } finally {
-    clearTimeout(timer);
   }
   if (!res.ok && res.status !== 206 && res.status !== 416) {
+    res.body?.cancel().catch(() => {});
     return json({ error: 'upstream_error', status: res.status }, res.status === 429 ? 429 : 502);
   }
 
@@ -546,6 +580,11 @@ async function handleMedia(req: Request): Promise<Response> {
   for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
     const v = res.headers.get(h);
     if (v) out[h] = v;
+  }
+  // A whole-file answer with no stated length: learn the total from a probe, so the client can verify it.
+  if (!wantRange && res.status === 200 && !out['content-length']) {
+    const total = await probeTotal(target);
+    if (total !== null) out['content-length'] = String(total);
   }
   if (p.dl) out['Content-Disposition'] = 'attachment; filename="hallyu-video.mp4"';
   return new Response(res.body, { status: res.status, headers: out });

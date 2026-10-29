@@ -85,6 +85,8 @@ globalThis.Deno = {
 
 const calls = [];
 let mediaRange = null;
+let mediaReturn429 = 0;
+const mediaLog = [];
 function route(url, init) {
   const u = String(url);
   calls.push(u);
@@ -101,10 +103,22 @@ function route(url, init) {
   }
   if (u.includes('hakunaymatata.com')) {
     mediaRange = init?.headers?.Range ?? null;
-    return new Response('MEDIA-BYTES', {
-      status: mediaRange ? 206 : 200,
-      headers: { 'content-type': 'video/mp4', 'content-range': mediaRange ? 'bytes 0-11/1000' : '', 'accept-ranges': 'bytes' },
-    });
+    mediaLog.push(mediaRange);
+    if (mediaReturn429 > 0) {
+      mediaReturn429 -= 1;
+      return new Response('slow down', { status: 429, headers: { 'retry-after': '0' } });
+    }
+    if (mediaRange) {
+      const m = /bytes=(\d+)-(\d*)/.exec(mediaRange);
+      const start = Number(m[1]);
+      const end = m[2] ? Number(m[2]) : 999;
+      return new Response('MEDIA-BYTES'.slice(0, end - start + 1), {
+        status: 206,
+        headers: { 'content-type': 'video/mp4', 'content-range': `bytes ${start}-${end}/1000`, 'accept-ranges': 'bytes' },
+      });
+    }
+    // A whole-file answer that states no length, as the live host does for this request.
+    return new Response('MEDIA-BYTES', { status: 200, headers: { 'content-type': 'video/mp4', 'accept-ranges': 'bytes' } });
   }
   return new Response('unexpected host', { status: 599 });
 }
@@ -219,6 +233,25 @@ test('proxy: a tampered token is refused and nothing is fetched', async () => {
   const res = await get(`https://proj.supabase.co/functions/v1/moviebox?action=proxy&t=${bad}`);
   assert.equal(res.status, 403);
   assert.equal(calls.filter((u) => u.includes('hakunaymatata')).length, 0);
+});
+
+test('proxy: a whole-file answer with no stated length gets its total from a one-byte probe', async () => {
+  const r = await post({ action: 'playback', ...BB, se: 1, ep: 1, quality: '360p' });
+  mediaLog.length = 0;
+  const full = await get(r.json.playback_url);
+  assert.equal(full.status, 200);
+  assert.equal(full.headers.get('content-length'), '1000', 'the total is stated so the client can verify the download');
+  assert.ok(mediaLog.includes('bytes=0-0'), 'the total came from a ranged probe');
+});
+
+test('proxy: a 429 from the media host is retried, and the retried answer is passed on', async () => {
+  const r = await post({ action: 'playback', ...BB, se: 1, ep: 1, quality: '360p' });
+  mediaReturn429 = 1;
+  mediaLog.length = 0;
+  const part = await handler(new Request(r.json.playback_url, { method: 'GET', headers: { Range: 'bytes=0-3' } }));
+  assert.equal(part.status, 206);
+  assert.equal(mediaLog.length, 2, 'one refused attempt, then one answered attempt');
+  assert.equal(mediaLog[1], 'bytes=0-3', 'the same Range is sent again');
 });
 
 test('proxy: a plain request with no token is refused', async () => {
