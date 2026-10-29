@@ -66,8 +66,8 @@ async function head(url, range, timeoutMs = PROBE_TIMEOUT_MS) {
     const res = await fetch(url, {
       headers: {
         ...(range ? { Range: range } : {}),
-        Referer: 'https://www.moviebox.ph/',
-        'User-Agent': 'HallyuApp/1.0 (+media player)',
+        Referer: 'https://moviebox.ph/',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       },
       signal: controller.signal,
     });
@@ -102,8 +102,8 @@ async function measure(url, range, budgetMs = DOWNLOAD_BUDGET_MS) {
     const res = await fetch(url, {
       headers: {
         ...(range ? { Range: range } : {}),
-        Referer: 'https://www.moviebox.ph/',
-        'User-Agent': 'HallyuApp/1.0 (+media player)',
+        Referer: 'https://moviebox.ph/',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       },
       signal: controller.signal,
     });

@@ -449,8 +449,8 @@ export function probeLength(url: string): Promise<number | null> {
     };
     xhr.open('GET', url);
     xhr.setRequestHeader('Range', 'bytes=0-0');
-    xhr.setRequestHeader('Referer', 'https://www.moviebox.ph/');
-    xhr.setRequestHeader('User-Agent', 'HallyuApp/1.0 (+media downloader)');
+    xhr.setRequestHeader('Referer', 'https://moviebox.ph/');
+    xhr.setRequestHeader('User-Agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1');
     xhr.timeout = 20000;
     xhr.onreadystatechange = () => {
       if (xhr.readyState !== 2) return; // HEADERS_RECEIVED
@@ -647,8 +647,8 @@ function makeResumable(key: string, url: string, onBytes: (written: number, tota
     fileUriFor(key),
     {
       headers: {
-        Referer: 'https://www.moviebox.ph/',
-        'User-Agent': 'HallyuApp/1.0 (+media downloader)',
+        Referer: 'https://moviebox.ph/',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       },
     },
     (p) => {
