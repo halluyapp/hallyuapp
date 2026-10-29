@@ -672,7 +672,13 @@ export default function WatchPlayer() {
       {source && phase !== 'error' ? (
         <Video
           ref={video}
-          source={source}
+          source={{
+            uri: source.uri,
+            headers: {
+              Referer: 'https://www.moviebox.ph/',
+              'User-Agent': 'HallyuApp/1.0 (+media player)',
+            },
+          }}
           style={StyleSheet.absoluteFill}
           resizeMode={ResizeMode.CONTAIN}
           useNativeControls={false}

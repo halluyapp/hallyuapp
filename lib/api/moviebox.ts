@@ -6,27 +6,23 @@
  * after 4 hours. Mobile and web use the same rule, so a stream that plays on web also plays natively.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ensureBackendSessionToken, supabase } from './client';
-import { normaliseDetail, normaliseDiagnostics, normaliseHome, normalisePlayback, normaliseSearch, normaliseStreams, type WatchDetail, type WatchPlayback, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
+import { normaliseDetail, normaliseHome, normaliseSearch, normaliseStreams, pickStream, qualityOptions, type WatchDetail, type WatchPlayback, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
 import { ttlGet, ttlPut, type TtlEntry } from '../watchRules';
 import { beginWatch, endWatch } from '../watchPerf';
 
 export * from '../watchModel';
 
-type Body = Record<string, unknown>;
 type Raw = Record<string, unknown>;
-type CallError = Extract<WatchResult<never>, { ok: false }>;
 
 const CALL_TIMEOUT_MS = 25_000;
-const SESSION_TIMEOUT_MS = 10_000;
 const HOME_CACHE_KEY = 'watch.home.cache.v1';
 const HOME_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DETAIL_TTL_MS = 10 * 60_000;
-/** Matches the server's own 10-minute metadata cache, so a repeat open inside it costs nothing. */
 const STREAM_TTL_MS = 10 * 60_000;
-/** A title with nothing playable is remembered briefly, so re-opening it does not re-ask upstream. */
 const STREAM_EMPTY_TTL_MS = 30_000;
-/** A stream metadata response, or the "nothing full-length here" answer, during its window. */
+
+const ZARHOSTING_BASE = 'https://movieapi.zarhosting.dpdns.org/api/public/v1';
+
 type EmptyStream = { ok: false; reason: 'no_full_stream'; diagnostics?: ReturnType<typeof normaliseDiagnostics> };
 
 let homeMemory: { rows: WatchRow[]; savedAt: number } | null = null;
@@ -75,38 +71,21 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-/** supabase-js returns non-2xx responses as `error`, and the JSON body sits on `error.context`. */
-async function errorBody(error: unknown): Promise<Raw | null> {
-  const ctx = (error as { context?: unknown } | null)?.context as { json?: () => Promise<unknown> } | undefined;
-  if (!ctx || typeof ctx.json !== 'function') return null;
+async function callDirect(endpoint: string): Promise<WatchResult<Raw>> {
   try {
-    const body = await ctx.json();
-    return body && typeof body === 'object' ? (body as Raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function mapError(body: Raw | null): CallError {
-  const err = body?.error;
-  if (err === 'no_full_stream') return { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics(body?.diagnostics) };
-  if (err === 'not_configured') return { ok: false, reason: 'not_configured' };
-  if (err === 'unauthorized') return { ok: false, reason: 'signed_out' };
-  return { ok: false, reason: 'failed' };
-}
-
-async function callOnce(body: Body): Promise<WatchResult<Raw>> {
-  if (!supabase) return { ok: false, reason: 'offline' };
-  try {
-    const hasSession = await withTimeout(ensureBackendSessionToken(), SESSION_TIMEOUT_MS);
-    if (!hasSession) return { ok: false, reason: 'signed_out' };
-    const { data, error } = await withTimeout(supabase.functions.invoke<Raw>('moviebox', { body }), CALL_TIMEOUT_MS);
-    if (error) {
-      const body = await withTimeout(errorBody(error), 4_000).catch(() => null);
-      return mapError(body);
-    }
+    const url = `${ZARHOSTING_BASE}${endpoint}`;
+    const res = await withTimeout(
+      fetch(url, {
+        headers: {
+          'User-Agent': 'HallyuApp/1.0 (+media client)',
+          Accept: 'application/json',
+        },
+      }),
+      CALL_TIMEOUT_MS,
+    );
+    if (!res.ok) return { ok: false, reason: 'failed' };
+    const data = (await res.json()) as Raw;
     if (!data) return { ok: false, reason: 'failed' };
-    if (data.error) return mapError(data);
     return { ok: true, value: data };
   } catch (error) {
     return { ok: false, reason: error instanceof Error && error.message === 'watch_timeout' ? 'timeout' : 'offline' };
@@ -114,67 +93,61 @@ async function callOnce(body: Body): Promise<WatchResult<Raw>> {
 }
 
 /** Identical in-flight actions share one bounded request. */
-function call(body: Body): Promise<WatchResult<Raw>> {
-  const key = JSON.stringify(body);
-  const existing = inFlight.get(key);
+function callKeyed(endpoint: string): Promise<WatchResult<Raw>> {
+  const existing = inFlight.get(endpoint);
   if (existing) return existing;
-  const pending = callOnce(body).finally(() => inFlight.delete(key));
-  inFlight.set(key, pending);
+  const pending = callDirect(endpoint).finally(() => inFlight.delete(endpoint));
+  inFlight.set(endpoint, pending);
   return pending;
 }
 
 export async function fetchWatchHome(): Promise<WatchResult<WatchRow[]>> {
   beginWatch('watch:home');
-  const r = await call({ action: 'home' });
+  const r = await callKeyed('/home');
   endWatch('watch:home');
   if (!r.ok) return r;
-  const rows = normaliseHome(r.value.data);
+  const rows = normaliseHome(r.value);
   if (rows.length > 0) void saveWatchHomeCache(rows);
   return { ok: true, value: rows };
 }
 
 export async function searchWatch(q: string, page = 1): Promise<WatchResult<WatchTitle[]>> {
-  const r = await call({ action: 'search', q, page });
-  return r.ok ? { ok: true, value: normaliseSearch(r.value.data) } : r;
+  const endpoint = `/search?q=${encodeURIComponent(q)}&page=${page}`;
+  const r = await callKeyed(endpoint);
+  return r.ok ? { ok: true, value: normaliseSearch(r.value) } : r;
 }
 
 export async function fetchWatchDetail(detailPath: string): Promise<WatchResult<WatchDetail>> {
   const hit = ttlGet(detailCache, detailPath);
   if (hit) return { ok: true, value: hit };
   beginWatch('watch:detail');
-  const r = await call({ action: 'detail', detailPath });
+  const r = await callKeyed(`/detail/${encodeURIComponent(detailPath)}`);
   endWatch('watch:detail');
   if (!r.ok) return r;
-  const detail = normaliseDetail(r.value.data);
+  const detail = normaliseDetail(r.value);
   if (!detail) return { ok: false, reason: 'not_found' };
   ttlPut(detailCache, detailPath, detail, DETAIL_TTL_MS);
   return { ok: true, value: detail };
 }
 
-/** Full-length stream metadata (quality list, availability). No URLs. */
+/** Full-length stream metadata (quality list, availability). Direct CDN URLs included in items. */
 export async function fetchWatchStreams(subjectId: string, se?: number, ep?: number, detailPath?: string | null): Promise<WatchResult<WatchStreams>> {
-  // The upstream needs the title's slug. Without it nothing can be resolved, so no request is made.
   if (!detailPath) return { ok: false, reason: 'not_found' };
   const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}`;
   const hit = ttlGet(streamCache, cacheKey);
   if (hit) return { ok: true, value: hit };
-  // A negative answer is cached too (briefly): a title whose first episode has no full-length stream is
-  // a normal outcome, and re-asking upstream for it on every open is a duplicate lookup.
   const negative = ttlGet(streamEmptyCache, cacheKey);
   if (negative) return negative;
-  const body: Body = { action: 'stream', subjectId, detailPath };
-  if (se !== undefined) body.se = se;
-  if (ep !== undefined) body.ep = ep;
+
+  const endpoint = `/stream/${subjectId}?detail_path=${encodeURIComponent(detailPath)}&se=${se ?? 0}&ep=${ep ?? 0}`;
   beginWatch('watch:streams');
-  const r = await call(body);
+  const r = await callKeyed(endpoint);
   endWatch('watch:streams');
-  if (!r.ok) {
-    if (r.reason === 'no_full_stream') ttlPut(streamEmptyCache, cacheKey, r as EmptyStream, STREAM_EMPTY_TTL_MS);
-    return r;
-  }
+  if (!r.ok) return r;
+
   const value = normaliseStreams(r.value);
   if (value.streams.length === 0) {
-    const empty: EmptyStream = { ok: false, reason: 'no_full_stream', diagnostics: normaliseDiagnostics(r.value.diagnostics) };
+    const empty: EmptyStream = { ok: false, reason: 'no_full_stream' };
     ttlPut(streamEmptyCache, cacheKey, empty, STREAM_EMPTY_TTL_MS);
     return empty;
   }
@@ -182,14 +155,6 @@ export async function fetchWatchStreams(subjectId: string, se?: number, ep?: num
   return { ok: true, value };
 }
 
-/**
- * Proxy playback and download links for one full-length stream. Retries once on a transient failure
- * (for example a 502 from upstream). A short clip or a missing link is never returned as success.
- */
-/**
- * Playback links are cached per title, episode and quality until shortly before their token expires,
- * so reopening the same episode does not repeat the lookup. `fresh` skips the cache (used after a failure).
- */
 const playbackCache = new Map<string, TtlEntry<WatchPlayback>>();
 const PLAYBACK_CACHE_MARGIN_MS = 10 * 60 * 1000;
 
@@ -200,29 +165,34 @@ export async function fetchWatchPlayback(subjectId: string, se: number | undefin
     const hit = ttlGet(playbackCache, cacheKey);
     if (hit) return { ok: true, value: hit };
   }
-  const body: Body = { action: 'playback', subjectId, detailPath };
-  if (se !== undefined) body.se = se;
-  if (ep !== undefined) body.ep = ep;
-  if (quality) body.quality = quality;
-  // A fresh request asks the server to resolve the stream again, so a moved CDN link is replaced.
-  if (fresh) body.fresh = true;
-  let last: WatchResult<WatchPlayback> = { ok: false, reason: 'failed' };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    beginWatch('watch:playback');
-    const r = await call(body);
-    endWatch('watch:playback');
-    if (r.ok) {
-      const playback = normalisePlayback(r.value);
-      if (!playback) return { ok: false, reason: 'no_full_stream' };
-      const ttl = playback.expiresAt ? playback.expiresAt - PLAYBACK_CACHE_MARGIN_MS - Date.now() : 0;
-      if (ttl > 0) ttlPut(playbackCache, cacheKey, playback, ttl);
-      return { ok: true, value: playback };
-    }
-    last = r;
-    // Only transient failures are retried. A missing stream or a sign-in problem will not change on retry.
-    if (r.reason !== 'failed') break;
-  }
-  return last;
+
+  const endpoint = `/stream/${subjectId}?detail_path=${encodeURIComponent(detailPath)}&se=${se ?? 0}&ep=${ep ?? 0}`;
+  const r = await callKeyed(endpoint);
+  if (!r.ok) return r;
+
+  const streams = normaliseStreams(r.value);
+  const chosenMeta = pickStream(streams.streams, quality);
+  if (!chosenMeta) return { ok: false, reason: 'no_full_stream' };
+
+  const rawList = (Array.isArray(r.value.sources) ? r.value.sources : Array.isArray(r.value.streams) ? r.value.streams : []) as Record<string, unknown>[];
+  const matchedRaw = rawList.find((s) => (s.resolution ?? s.quality) === chosenMeta.quality) ?? rawList[0];
+  const rawUrl = typeof matchedRaw?.url === 'string' ? matchedRaw.url : typeof matchedRaw?.playback_url === 'string' ? (matchedRaw.playback_url as string) : null;
+
+  if (!rawUrl || !rawUrl.startsWith('https://')) return { ok: false, reason: 'no_full_stream' };
+
+  const playback: WatchPlayback = {
+    playbackUrl: rawUrl,
+    downloadUrl: rawUrl,
+    quality: chosenMeta.quality,
+    format: chosenMeta.format ?? 'MP4',
+    durationSec: chosenMeta.durationSec ?? 0,
+    sizeMb: chosenMeta.sizeMb,
+    qualities: qualityOptions(streams.streams),
+    expiresAt: Date.now() + 4 * 60 * 60 * 1000,
+  };
+
+  ttlPut(playbackCache, cacheKey, playback, 3 * 60 * 60 * 1000);
+  return { ok: true, value: playback };
 }
 
 /** A fresh download link for one full-length stream. Returns null when no valid link exists. */
@@ -231,9 +201,7 @@ export async function fetchWatchDownloadUrl(subjectId: string, se: number | unde
   return r.ok ? r.value.downloadUrl : null;
 }
 
-/**
- * Pre-warms playback cache in background so clicking Play starts immediately with zero network delay.
- */
+/** Pre-warms playback cache in background so clicking Play starts immediately with zero network delay. */
 export function prewarmWatchPlayback(subjectId: string, se: number | undefined, ep: number | undefined, quality: string | null, detailPath: string | null = null): void {
   if (!detailPath) return;
   const cacheKey = `${subjectId}|${se ?? ''}|${ep ?? ''}|${quality ?? ''}`;

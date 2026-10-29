@@ -449,6 +449,8 @@ export function probeLength(url: string): Promise<number | null> {
     };
     xhr.open('GET', url);
     xhr.setRequestHeader('Range', 'bytes=0-0');
+    xhr.setRequestHeader('Referer', 'https://www.moviebox.ph/');
+    xhr.setRequestHeader('User-Agent', 'HallyuApp/1.0 (+media downloader)');
     xhr.timeout = 20000;
     xhr.onreadystatechange = () => {
       if (xhr.readyState !== 2) return; // HEADERS_RECEIVED
@@ -643,7 +645,12 @@ function makeResumable(key: string, url: string, onBytes: (written: number, tota
   return FileSystem.createDownloadResumable(
     url,
     fileUriFor(key),
-    {},
+    {
+      headers: {
+        Referer: 'https://www.moviebox.ph/',
+        'User-Agent': 'HallyuApp/1.0 (+media downloader)',
+      },
+    },
     (p) => {
       const total = p.totalBytesExpectedToWrite > 0 ? p.totalBytesExpectedToWrite : null;
       const now = Date.now();

@@ -95,29 +95,46 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const obj = (v: unknown): Raw => (v && typeof v === 'object' ? (v as Raw) : {});
 
-/** A subject record as the catalog returns it (`subject` nested or flat). */
+/** A subject record as the catalog returns it (`subject` nested or flat, zarhosting or legacy). */
 export function normaliseTitle(raw: unknown): WatchTitle | null {
   const r = obj(raw);
   const s = r.subject && typeof r.subject === 'object' ? obj(r.subject) : r;
-  const subjectId = str(s.subjectId) ?? str(r.subjectId);
-  const title = str(s.title);
+  const subjectId = str(s.subjectId) ?? str(r.subjectId) ?? str(s.subject_id) ?? str(r.subject_id);
+  const title = str(s.title) ?? str(r.title) ?? str(s.name) ?? str(r.name) ?? str(s.base_title) ?? str(r.base_title);
   if (!subjectId || !title) return null;
+  const coverUrl = str(obj(s.cover).url) ?? str(obj(r.cover).url) ?? str(obj(r.image).url) ?? str(s.poster_url) ?? str(r.poster_url);
+  const releaseDate = str(s.releaseDate) ?? str(r.releaseDate) ?? str(s.release_date) ?? str(r.release_date) ?? str(s.year) ?? str(r.year);
+  const rating = str(s.imdbRatingValue) ?? str(r.imdbRatingValue) ?? str(s.imdbRate) ?? str(r.imdbRate) ?? str(s.rating) ?? str(r.rating);
+  const detailPath = str(s.detailPath) ?? str(r.detailPath) ?? str(s.detail_path) ?? str(r.detail_path) ?? str(s.slug) ?? str(r.slug);
+  const countryName = str(s.countryName) ?? str(r.countryName) ?? str(s.country) ?? str(r.country);
   return {
     subjectId,
     title,
-    cover: str(obj(s.cover).url) ?? str(obj(r.image).url),
-    genre: str(s.genre),
-    releaseDate: str(s.releaseDate),
-    rating: str(s.imdbRatingValue),
-    detailPath: str(s.detailPath) ?? str(r.detailPath),
-    countryName: str(s.countryName),
+    cover: coverUrl,
+    genre: str(s.genre) ?? str(r.genre),
+    releaseDate,
+    rating,
+    detailPath,
+    countryName,
   };
 }
 
-/** Home is a list of operating rows. Banner rows nest their items under banner.items. */
+/** Home is a list of operating rows or zarhosting sections. */
 export function normaliseHome(data: unknown): WatchRow[] {
-  const list = Array.isArray(obj(data).operatingList) ? (obj(data).operatingList as unknown[]) : [];
+  const d = obj(data);
   const rows: WatchRow[] = [];
+
+  if (Array.isArray(d.sections)) {
+    for (const rawSec of d.sections) {
+      const sec = obj(rawSec);
+      const title = str(sec.section) ?? str(sec.title);
+      const items = (Array.isArray(sec.items) ? sec.items : []).map(normaliseTitle).filter((t): t is WatchTitle => t !== null);
+      if (title && items.length > 0) rows.push({ title, items });
+    }
+    if (rows.length > 0) return rows;
+  }
+
+  const list = Array.isArray(d.operatingList) ? (d.operatingList as unknown[]) : [];
   for (const rawRow of list) {
     const row = obj(rawRow);
     const source = Array.isArray(row.subjects) && row.subjects.length > 0 ? row.subjects : Array.isArray(obj(row.banner).items) ? (obj(row.banner).items as unknown[]) : [];
@@ -128,20 +145,22 @@ export function normaliseHome(data: unknown): WatchRow[] {
   return rows;
 }
 
-/** Search returns data.items[] of catalog subjects. */
+/** Search returns items array of catalog subjects. */
 export function normaliseSearch(data: unknown): WatchTitle[] {
-  const items = Array.isArray(obj(data).items) ? (obj(data).items as unknown[]) : [];
+  const d = obj(data);
+  const items = Array.isArray(d.items) ? d.items : Array.isArray(obj(d.data).items) ? (obj(d.data).items as unknown[]) : [];
   return items.map(normaliseTitle).filter((t): t is WatchTitle => t !== null);
 }
 
 export function normaliseDetail(data: unknown): WatchDetail | null {
   const d = obj(data);
-  const base = normaliseTitle(d.subject);
+  const source = obj(d.data).subject ? obj(d.data) : d;
+  const base = normaliseTitle(source.subject ?? source);
   if (!base) return null;
-  const seasons = Array.isArray(obj(d.resource).seasons) ? (obj(d.resource).seasons as unknown[]) : [];
+  const seasons = Array.isArray(obj(source.resource).seasons) ? (obj(source.resource).seasons as unknown[]) : [];
   return {
     ...base,
-    description: str(obj(d.subject).description),
+    description: str(obj(source.subject ?? source).description),
     seasons: seasons
       .map((s) => ({ se: num(obj(s).se) ?? 0, maxEp: num(obj(s).maxEp) ?? 0 }))
       .filter((s) => s.se > 0 && s.maxEp > 0),
@@ -149,9 +168,8 @@ export function normaliseDetail(data: unknown): WatchDetail | null {
 }
 
 /**
- * Full-length rule, shared with the server (supabase/functions/moviebox, isFullCandidate). A stream is
- * dropped when its source is a "Mobile Native" preview, or when it is both short (300 seconds or less) and
- * small (50 MB or less), with an unknown value counting as failing. Quality labels are never trusted.
+ * Full-length rule. A stream is dropped when its source is a "Mobile Native" preview, or when it is
+ * both short (300 seconds or less) and small (50 MB or less).
  */
 export function isFullStream(s: Pick<WatchStream, 'source' | 'durationSec' | 'sizeMb'>): boolean {
   if ((s.source ?? '').toLowerCase().includes('mobile native')) return false;
@@ -169,41 +187,58 @@ export function compareStreams(a: WatchStream, b: WatchStream): number {
   return (b.qualityValue ?? 0) - (a.qualityValue ?? 0);
 }
 
-/** Full-length streams only, best first. Never returns previews, and never assumes streams[0] is the title. */
+/** Full-length streams only, best first. */
 export function normaliseStreams(data: unknown): WatchStreams {
   const d = obj(data);
-  const streams = (Array.isArray(d.streams) ? d.streams : []).map(obj).map((s): WatchStream => ({
-    source: str(s.source),
-    quality: str(s.quality),
-    qualityValue: num(s.quality_value),
-    format: str(s.format),
-    codec: str(s.codec),
-    sizeMb: num(s.size_mb),
-    durationSec: num(s.duration_sec),
-  }));
-  return { season: num(d.season), episode: num(d.episode), streams: streams.filter(isFullStream).sort(compareStreams) };
+  const rawList = Array.isArray(d.sources) ? d.sources : Array.isArray(d.streams) ? d.streams : [];
+  const streams = rawList.map(obj).map((s): WatchStream => {
+    const quality = str(s.resolution) ?? str(s.quality);
+    const qualityValue = num(s.quality_value) ?? (quality ? parseInt(quality, 10) || null : null);
+    const rawSize = s.size_mb ?? s.size;
+    const sizeMb = typeof rawSize === 'number'
+      ? (rawSize > 50000 ? rawSize / (1024 * 1024) : rawSize)
+      : typeof rawSize === 'string'
+      ? parseFloat(rawSize) > 50000 ? parseFloat(rawSize) / (1024 * 1024) : parseFloat(rawSize)
+      : null;
+    const durationSec = num(s.duration_sec) ?? num(s.duration) ?? (typeof s.duration === 'string' ? parseFloat(s.duration) : null);
+    return {
+      source: str(s.source) ?? 'Zarhosting CDN',
+      quality,
+      qualityValue,
+      format: str(s.format) ?? 'MP4',
+      codec: str(s.codec),
+      sizeMb: sizeMb !== null && Number.isFinite(sizeMb) ? Math.round(sizeMb * 10) / 10 : null,
+      durationSec,
+    };
+  });
+  return {
+    season: num(d.season) ?? num(d.se),
+    episode: num(d.episode) ?? num(d.ep),
+    streams: streams.filter(isFullStream).sort(compareStreams),
+  };
 }
 
-/**
- * Validates a `playback` response with the same full-length rule. Anything that is not a proxy link
- * with a full duration (and a size above 50 MB when reported) is rejected, so a short clip never plays.
- */
+/** Validates a `playback` response or direct CDN source with full-length checks. */
 export function normalisePlayback(data: unknown): WatchPlayback | null {
   const d = obj(data);
-  const playbackUrl = str(d.playback_url);
-  const downloadUrl = str(d.download_url);
+  const playbackUrl = str(d.playback_url) ?? str(d.url);
+  const downloadUrl = str(d.download_url) ?? str(d.url);
   if (!playbackUrl || !downloadUrl || !playbackUrl.startsWith('https://') || !downloadUrl.startsWith('https://')) return null;
-  const durationSec = num(d.duration_sec);
-  const sizeMb = num(d.size_mb);
-  // The server already removed "Mobile Native" previews. This response carries no source label, so only duration and size are checked here.
-  if (!isFullStream({ source: null, durationSec, sizeMb })) return null;
+  const durationSec = num(d.duration_sec) ?? num(d.duration) ?? (typeof d.duration === 'string' ? parseFloat(d.duration) : null);
+  const rawSize = d.size_mb ?? d.size;
+  const sizeMb = typeof rawSize === 'number'
+    ? (rawSize > 50000 ? rawSize / (1024 * 1024) : rawSize)
+    : typeof rawSize === 'string'
+    ? parseFloat(rawSize) > 50000 ? parseFloat(rawSize) / (1024 * 1024) : parseFloat(rawSize)
+    : null;
+  if (!isFullStream({ source: str(d.source), durationSec, sizeMb })) return null;
   return {
     playbackUrl,
     downloadUrl,
-    quality: str(d.quality),
-    format: str(d.format),
-    durationSec: durationSec as number,
-    sizeMb,
+    quality: str(d.quality) ?? str(d.resolution),
+    format: str(d.format) ?? 'MP4',
+    durationSec: (durationSec ?? 0) as number,
+    sizeMb: sizeMb !== null && Number.isFinite(sizeMb) ? Math.round(sizeMb * 10) / 10 : null,
     qualities: (Array.isArray(d.qualities) ? d.qualities : []).filter((q): q is string => typeof q === 'string'),
     expiresAt: num(d.expires_at),
   };

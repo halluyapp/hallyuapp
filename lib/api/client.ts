@@ -79,7 +79,11 @@ export async function ensureBackendSessionToken(): Promise<string | null> {
   if (!supabase) return null;
   try {
     const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token ?? null;
+    let token = data.session?.access_token ?? null;
+    if (!token) {
+      const { data: anonData } = await supabase.auth.signInAnonymously();
+      token = anonData.session?.access_token ?? null;
+    }
     if (token) currentToken = token;
     return token;
   } catch {
