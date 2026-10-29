@@ -13,6 +13,7 @@ import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import { clearDownloadNotice, reportDownload } from './watchNotify';
 import { fetchWatchDownloadUrl } from './api/moviebox';
+import { deleteLocalSubtitle, saveSubtitleForDownload } from './watchSubtitleDownload';
 import { nativeDownloader } from './watchNative';
 import { decodeBase64 } from './textEncoding';
 import NetInfo from '@react-native-community/netinfo';
@@ -165,6 +166,7 @@ export async function findDownload(subjectId: string, season: number | null, epi
 
 export async function removeDownload(entry: DownloadEntry): Promise<void> {
   await FileSystem.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => {});
+  await deleteLocalSubtitle(entry.fileUri).catch(() => {});
   const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
   const next = all.filter((d) => d.key !== entry.key);
   await writeJson(DOWNLOADS_KEY, next);
@@ -338,6 +340,7 @@ async function finalize(key: string, t: TransferEntry, bytes: number): Promise<v
   completedCache = updatedDone.sort((a, b) => b.savedAt - a.savedAt);
   await dropTransfer(key);
   notifyDownloads();
+  void saveSubtitleForDownload(t, t.fileUri).catch(() => {});
   if (t.engine !== 'native') void reportDownload(key, noticeTitle(t), 'done', bytes, bytes);
 }
 

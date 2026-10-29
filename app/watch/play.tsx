@@ -13,6 +13,7 @@ import { fetchWatchPlayback } from '../../lib/api/moviebox';
 import { fetchCaptionCues, fetchMovieboxCaptions, fetchOpenSubtitleCues, searchOpenSubtitles, type MovieboxCaption, type OpenSubtitleResult } from '../../lib/api/subtitles';
 import { cueTextAt, type SubtitleCue } from '../../lib/subtitles';
 import { getProgress, listDownloads, saveProgress, setTitleQuality, type DownloadEntry, type WatchEpisodeRef } from '../../lib/watchStore';
+import { readLocalSubtitle } from '../../lib/watchSubtitleDownload';
 import {
   BUFFER_STALL_MS,
   CONTROLS_AUTO_HIDE_MS,
@@ -250,11 +251,18 @@ export default function WatchPlayer() {
     setPhase('error');
   };
 
-  // MovieBox captions first. A caption is used only when its file parses to real cues.
+  // MovieBox captions first (or offline saved subtitles if playing a downloaded file).
   useEffect(() => {
-    if (isLocal) return;
     let cancelled = false;
     void (async () => {
+      if (isLocal && params.local) {
+        const localSub = await readLocalSubtitle(String(params.local));
+        if (!cancelled && localSub) {
+          setCues(localSub.cues);
+          setCueLabel(`Downloaded · ${localSub.label}`);
+          return;
+        }
+      }
       const r = await fetchMovieboxCaptions({ subjectId: ref.subjectId, season: ref.season ?? undefined, episode: ref.episode ?? undefined });
       if (cancelled || !r.ok) return;
       setCaptionChoices(r.value);
@@ -275,8 +283,8 @@ export default function WatchPlayer() {
     return () => {
       cancelled = true;
     };
-    // The title and episode identify the captions; `ref` is rebuilt every render.
-  }, [ref.subjectId, ref.season, ref.episode]); // eslint-disable-line react-hooks/exhaustive-deps
+    // The title, episode, and local status identify the captions.
+  }, [ref.subjectId, ref.season, ref.episode, isLocal, params.local]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const subtitleReasonText = (reason: string): string => {
     switch (reason) {
@@ -1046,7 +1054,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.75)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.3)',
-    borderRadius: radius.pill,
+    borderRadius: radius.full,
     paddingHorizontal: 14,
     paddingVertical: 8,
     zIndex: 25,
@@ -1072,7 +1080,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: radius.pill,
+    borderRadius: radius.full,
   },
   rippleOverlay: {
     position: 'absolute',
