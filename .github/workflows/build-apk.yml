@@ -119,7 +119,21 @@ jobs:
           echo "Computed version=${APP_VER}, base=${BASE_CODE}, arm64=${SLIM_CODE}, universal=${UNIV_CODE}"
 
       - name: Full static, SQL, DB-type & regression check suite
-        run: npm run check
+        shell: bash
+        run: |
+          # The full suite runs unchanged. On failure, the lines that name the failing check are published as
+          # annotations, so the cause is visible in the run summary without downloading the raw job log.
+          set +e
+          npm run check > /tmp/check-suite.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -E "^not ok|^# fail [1-9]|Error|error TS|✖|AssertionError|expected|actual|FAIL" /tmp/check-suite.log | grep -v "# fail 0" | head -40 | sed 's/^/::error title=Check suite::/'
+            echo "::group::Last 80 lines of the check suite"
+            tail -80 /tmp/check-suite.log
+            echo "::endgroup::"
+          fi
+          exit $status
 
       - name: Materialize Firebase config & permanent release keystore (ephemeral runner only)
         env:
