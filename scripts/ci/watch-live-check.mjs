@@ -103,16 +103,23 @@ async function head(url, range, timeoutMs = PROBE_TIMEOUT_MS) {
       contentType: res.headers.get('content-type'),
       contentDisposition: res.headers.get('content-disposition'),
     };
-    // Read a little of the body so the connection is used (and released) properly.
+    // Read a little of the body so the connection is used (and released) properly. On an error answer the
+    // first bytes are kept, redacted, so the failure says what the edge reported (never a signed URL).
     const reader = res.body?.getReader();
     let read = 0;
+    const chunks = [];
     if (reader) {
       while (read < 4096) {
         const { done, value } = await reader.read();
         if (done) break;
         read += value?.byteLength ?? 0;
+        if (res.status >= 400 && value) chunks.push(value);
       }
       await reader.cancel().catch(() => {});
+    }
+    if (res.status >= 400) {
+      const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8').slice(0, 240);
+      headers.errorPreview = text.replace(/(sign|t|Signature|Policy|Key-Pair-Id)=[^&\s"]+/g, '$1=<redacted>');
     }
     return headers;
   } finally {
@@ -241,7 +248,7 @@ async function main() {
   } else if (first.status === 206 && total) {
     ok(`positional request answered 206 (content-length ${first.contentLength}, total ${total})`);
   } else {
-    bad(`expected 206 with Content-Range for bytes=0-0, got ${first.status} (Content-Range ${first.contentRange ?? '<none>'})`);
+    bad(`expected 206 with Content-Range for bytes=0-0, got ${first.status} (Content-Range ${first.contentRange ?? '<none>'})${first.errorPreview ? ` — edge said: ${first.errorPreview}` : ''}`);
   }
   if (!total && first.status === 200 && Number.isSafeInteger(Number(first.contentLength))) total = Number(first.contentLength);
   if (!total) {
