@@ -106,7 +106,35 @@ weak** (the acceptance criteria in the brief are no longer verified anywhere).
 Restoring a real lockfile locally (generated, then verified): `bun install` → 1165 packages,
 `tsc --noEmit` → **0 errors**, watch suite → **90/90 pass**.
 
-### 2.5 Scope drift and other findings
+### 2.5 The media CDN is ISP/geo-gated — the likely user-facing cause (added after visiting the provider)
+
+Deeper probing of Zarhosting and its delivery host changed the picture from "CI is unlucky" to
+"the media path itself is not dependable":
+
+* `bcdnxw.hakunaymatata.com` is **ENA CDN** (`u855cyvod2.v.enacdn.net`, `*.enacdn.net`,
+  `151.242.229.x` / `143.14.203.x`) — a licensed, region/ISP-gated video CDN, not a general web host.
+* Its refusal happens **before the token is looked at**: the issued signed URL, the same URL with
+  `sign` removed, with no query at all, and with a deliberately wrong `sign` all return the same
+  `429`. So the decision is made on the client's network, not on the link.
+* Every client identity was refused: curl, python-requests, okhttp, ExoPlayer, stagefright, Android
+  Chrome, iPhone Safari, full `Sec-Fetch-*` browser headers, with and without `Referer`, HTTP/1.1
+  and HTTP/2 → `429`, `426`, or `428`. Our egress is a San Francisco cloud IP; GitHub runners are
+  US datacenter IPs too.
+* The provider's own API surface is thin and partly down: `/home`, `/search`, `/detail/{slug}`,
+  `/stream/{id}` work, but `/trending`, `/genres`, `/latest`, `/episodes` are `404`, the docs host
+  (`movieapi.zarhosting.dpdns.org/`) returns **HTTP 500**, and `zarhosting.dpdns.org` does not
+  resolve. `/stream` returns `hls: []` and `dash: []` for every title tried, so there is no
+  alternate adaptive stream to fall back on. All 13 sources across six titles were on that same
+  ENA CDN host — there is no second host to try.
+* Consequence: the app's new **direct-to-CDN playback and download path** depends on infrastructure
+  that may refuse ordinary users the same way it refuses CI. That is a credible explanation for
+  user-reported playback failures, and it cannot be verified or fixed from our side by changing
+  headers, tokens, or retry logic.
+
+This is the one finding that the original plan could not fix: the plan can restore releases and
+honest error states, but **only a media-source decision fixes playback**. See §3.5.
+
+### 2.6 Scope drift and other findings
 
 | # | Finding | Impact |
 |---|---|---|
@@ -175,6 +203,22 @@ Pick one and remove the other:
 Recommendation: **A for downloads, B for playback** — downloads must be reliable and resumable, and
 a proxy gives a stable origin plus re-mintable links; playback benefits from the direct path but
 needs a fallback so a WAF decision cannot break watching.
+
+### 3.5 Decision required: the media source (this is what actually fixes playback)
+
+The proxy only helps if its egress is allowed by ENA CDN. Supabase's edge already returned `426`
+once, so a US-region proxy is not guaranteed either. Three viable options, in order of preference:
+
+| Option | What it means | Cost / risk | Decision test |
+|---|---|---|---|
+| **1. Keep a provider whose CDN serves our users** (the pre-`4a64ddc` Megan path still works in code history) | Media comes from a host that already served users; Watch keeps the Zarhosting catalog for metadata only if its CDN stays blocked | Low code cost, restores known-good playback | One device in the stakeholder's region plays a title for 60 s |
+| **2. Relay media through a host inside the CDN's allowed network** (small VPS in-region, Range pass-through, signed Hallyu links) | One stable origin we control; devices never touch ENA CDN; links re-mintable on expiry | Bandwidth + a server to operate | The relay fetches bytes and returns `206`/`416` correctly for `bytes=0-0`, `bytes=83MB-`, `bytes=0-` |
+| **3. Direct ENA CDN only** | Fastest and free, but playback depends on a policy we cannot see or test | Users outside the allowed network get nothing | Device test from at least two networks/regions |
+
+Pick **1 or 2**. Do not ship 3 as the only path. Whichever is chosen, the player must map
+`403/426/428/429` to the existing deterministic `unavailable` state with one plain message
+("This title can't be played on your connection right now"), never a spinner, and the live check must
+stop treating a third party's refusal as a Hallyu build defect.
 
 ### Phase 3 — Correctness and honesty pass
 
