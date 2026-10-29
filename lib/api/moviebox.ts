@@ -6,7 +6,7 @@
  * after 4 hours. Mobile and web use the same rule, so a stream that plays on web also plays natively.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { normaliseDetail, normaliseHome, normaliseSearch, normaliseStreams, pickStream, qualityOptions, type WatchDetail, type WatchPlayback, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
+import { normaliseDetail, normaliseHome, normaliseSearch, normaliseStreams, pickStream, qualityOptions, type WatchDetail, type WatchDiagnostic, type WatchPlayback, type WatchResult, type WatchRow, type WatchStreams, type WatchTitle } from '../watchModel';
 import { ttlGet, ttlPut, type TtlEntry } from '../watchRules';
 import { beginWatch, endWatch } from '../watchPerf';
 
@@ -23,7 +23,7 @@ const STREAM_EMPTY_TTL_MS = 30_000;
 
 const ZARHOSTING_BASE = 'https://movieapi.zarhosting.dpdns.org/api/public/v1';
 
-type EmptyStream = { ok: false; reason: 'no_full_stream'; diagnostics?: ReturnType<typeof normaliseDiagnostics> };
+type EmptyStream = { ok: false; reason: 'no_full_stream'; diagnostics?: WatchDiagnostic[] };
 
 let homeMemory: { rows: WatchRow[]; savedAt: number } | null = null;
 const detailCache = new Map<string, TtlEntry<WatchDetail>>();
