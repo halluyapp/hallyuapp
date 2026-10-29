@@ -256,14 +256,15 @@ test('proxy: a 429 from the media host is retried, and the retried answer is pas
   assert.equal(mediaLog[1], 'bytes=0-3', 'the same Range is sent again');
 });
 
-test('proxy: media requests carry the Referer the video CDN requires, and a browser-style agent', async () => {
+test('proxy: media requests carry the app identity and no impersonated player Referer', async () => {
   const r = await post({ action: 'playback', ...BB, se: 1, ep: 1, quality: '360p' });
   mediaHeaders.length = 0;
   await get(r.json.playback_url);
   assert.ok(mediaHeaders.length > 0);
   const sent = mediaHeaders[0];
-  assert.equal(sent.Referer, 'https://movieboxonline.net/');
-  assert.match(sent['User-Agent'], /Mozilla\/5\.0/);
+  assert.equal(sent.Referer, undefined);
+  assert.equal(sent.Origin, undefined);
+  assert.equal(sent['User-Agent'], 'HallyuApp/1.0 (+media proxy)');
   assert.equal(sent['Accept-Encoding'], 'identity');
 });
 
