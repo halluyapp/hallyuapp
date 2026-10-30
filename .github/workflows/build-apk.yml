@@ -196,8 +196,12 @@ jobs:
           chmod +x gradlew
           # Gradle output is kept so a failure can be published as annotations. The job log needs
           # repository admin rights to read, an annotation does not, so a build error is never invisible.
+          # The runner's default shell runs with -e, which would abort on the Gradle line before anything
+          # could be reported. It is disabled for this one command and restored immediately after.
+          set +e
           ./gradlew assembleRelease --no-daemon --stacktrace > /tmp/gradle.log 2>&1
           gradle_status=$?
+          set -e
           if [ "$gradle_status" -ne 0 ]; then
             grep -E "^e: |^w: .*(error)|error:|FAILURE:|Caused by:|What went wrong|Execution failed|AAPT|Duplicate class" /tmp/gradle.log | head -25 | sed 's/^/::error title=Gradle::/'
             # The first real error also becomes a commit status description later, so it is readable
