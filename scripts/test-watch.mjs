@@ -383,6 +383,13 @@ test('state: completed transfers cannot be paused; failed ones can only be retri
     assert.ok(moduleKt.includes('putDouble("reason"'));
   });
 
+  test('an API-24 call is guarded for the API-23 minimum instead of suppressed', () => {
+    // setAllowedOverMetered is API 24. With minSdk 23 an unguarded call fails lintVitalRelease (a
+    // fatal NewApi error) and would throw NoSuchMethodError on Android 6.
+    assert.ok(moduleKt.includes('Build.VERSION.SDK_INT >= 24'), 'setAllowedOverMetered must be API-guarded');
+    assert.ok(!moduleKt.includes('Suppress("NewApi")'), 'the call is guarded, not suppressed');
+  });
+
   test('a native failure is translated into one plain sentence per cause', () => {
     assert.match(rules.nativeFailureMessage(6), /not enough free storage/i);
     assert.match(rules.nativeFailureMessage(2), /server refused/i);
