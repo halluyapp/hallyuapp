@@ -16,6 +16,43 @@ export const BUFFER_STALL_MS = 20_000;
  */
 export const DEFAULT_QUALITY_ORDER = ['360p'];
 
+/**
+ * The identity the media host accepts. Playback, the size probe, the foreground transfer and the generated
+ * Android downloader all send exactly these two values. A request without them, or with a different user
+ * agent, is refused — which is why a title could stream in the app and still fail to download. The Kotlin
+ * module in scripts/ci/android-downloader-module.mjs embeds copies; scripts/test-watch.mjs fails if they
+ * ever drift apart.
+ */
+export const MEDIA_REFERER = 'https://moviebox.ph/';
+export const MEDIA_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
+
+/**
+ * Android's DownloadManager reports a numeric COLUMN_REASON and no HTTP status. Each known reason becomes one
+ * plain sentence that says what happened and what to do, so a failure is never the same shrug for every cause.
+ */
+export function nativeFailureMessage(reason: number | null | undefined): string {
+  switch (reason) {
+    case 6: // ERROR_INSUFFICIENT_SPACE
+      return 'There is not enough free storage for this download. Free up space, then tap retry.';
+    case 2: // ERROR_UNHANDLED_HTTP_CODE
+    case 4: // ERROR_HTTP_DATA_ERROR
+      return 'The server refused this download. Tap retry to get a fresh link.';
+    case 5: // ERROR_TOO_MANY_REDIRECTS
+      return 'The download link kept redirecting. Tap retry to get a fresh link.';
+    case 8: // ERROR_CANNOT_RESUME
+      return 'Android could not resume this download. Tap retry to start it again.';
+    case 9: // ERROR_FILE_ALREADY_EXISTS
+    case 1: // ERROR_FILE_ERROR
+    case 7: // ERROR_DEVICE_NOT_FOUND
+      return 'This device could not save the file. Tap retry, or free up space first.';
+    case 10: // ERROR_BLOCKED
+      return 'Android blocked this download. Connect to Wi-Fi or mobile data, then tap retry.';
+    default:
+      return 'The download stopped. Tap retry to start it again.';
+  }
+}
+
 /** Drops opaque Expo resume state from legacy persisted records; it may contain a signed URL. */
 export function withoutPersistedResumeData<T extends { resumeData?: unknown }>(entry: T): Omit<T, 'resumeData'> {
   const { resumeData: _legacy, ...safe } = entry;

@@ -1,10 +1,5 @@
-• Titles now open in 360p by default, so they start faster and use less data. Your own quality choice is remembered for the title you made it on, and Auto (360p) always brings the data-saving default back.
-• Play and Download now sit side by side on a title, and you can keep two qualities of the same episode at once. Choosing a second quality no longer replaces the first one you saved.
-• If a stream stalls, the player now says so plainly and offers Try again, instead of showing a spinner that never ends. When a title has nothing full-length to play, it says that too, without offering a retry that cannot work.
-• Watch remembers your place, your rows and your downloads without checking the server every few seconds, so it uses less battery and less data.
-• Long seasons scroll smoothly instead of showing every episode number at once.
-• Downloads now shows each quality you have saved as its own item, with its own size and its own Remove button, and you can see the app's real load timings under Show load timings.
-• On the web, an unreachable backend no longer replaces the whole site: the public page loads and you can continue as a guest.
-• A download is now checked before it is marked finished. A file that is incomplete or damaged is removed and shown as failed, so it can no longer appear as ready and then refuse to play. Short clips are no longer rejected just for being short.
-• Subtitles: when a title has captions, Watch turns them on automatically. Tap the subtitle button in the player to switch captions or turn them off.
-• Watch titles now load from a new source. Playback starts at 360p by default so it opens faster, and you can pick a higher quality from the chips.
+• Downloads on Android now ask the video server for the file the same way playback does, so a title that plays can also be saved. Before this, the system downloader introduced itself as a different client and was turned away.
+• A download that stops now tells you why — no free space, the server refused it, the link kept redirecting, or Android blocked it on your network — and what to do next, instead of the same message every time.
+• A finished download is no longer copied a second time inside the app, so saving a title needs only its own size in storage and cannot fail for lack of space after the file has already arrived.
+• Downloads are allowed on mobile data as well as Wi-Fi. Switching to another app or closing the screen keeps them running.
+• Saving two qualities of the same episode still keeps both files, and each one still plays offline from the Downloads tab.

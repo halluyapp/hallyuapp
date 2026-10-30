@@ -24,7 +24,10 @@ import {
   formatEta,
   formatSpeed,
   MAX_CONCURRENT_TRANSFERS,
+  MEDIA_REFERER,
+  MEDIA_USER_AGENT,
   MIN_PLAYABLE_BYTES,
+  nativeFailureMessage,
   validateMp4Layout,
   repairTransfer,
   qualityDownloadKey,
@@ -449,8 +452,8 @@ export function probeLength(url: string): Promise<number | null> {
     };
     xhr.open('GET', url);
     xhr.setRequestHeader('Range', 'bytes=0-0');
-    xhr.setRequestHeader('Referer', 'https://moviebox.ph/');
-    xhr.setRequestHeader('User-Agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1');
+    xhr.setRequestHeader('Referer', MEDIA_REFERER);
+    xhr.setRequestHeader('User-Agent', MEDIA_USER_AGENT);
     xhr.timeout = 20000;
     xhr.onreadystatechange = () => {
       if (xhr.readyState !== 2) return; // HEADERS_RECEIVED
@@ -539,8 +542,13 @@ async function pollNative(): Promise<void> {
         await settleNativeSuccess(t.key, q.localPath);
         void pumpQueue();
       } else {
+        const reason = typeof q.reason === 'number' && q.reason >= 0 ? q.reason : null;
         await mod.remove(t.key).catch(() => {});
-        await failTransfer(t.key, 'unknown', q.status === 'missing' ? 'The download was removed. Tap retry.' : 'The download stopped. Tap retry.');
+        await failTransfer(
+          t.key,
+          reason === 6 ? 'insufficient_storage' : 'unknown',
+          q.status === 'missing' ? 'The download was removed. Tap retry.' : nativeFailureMessage(reason),
+        );
         void pumpQueue();
       }
     }
@@ -561,24 +569,10 @@ async function settleNativeSuccess(key: string, localPath: string | null): Promi
     return failTransfer(key, 'unknown', 'The download finished but its file was empty or missing. Tap retry.');
   }
 
-  // Ensure file is safely placed inside the app's private document directory (sandboxed, never in gallery)
-  await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true }).catch(() => {});
-  const dest = t.fileUri;
-  let finalUri = from;
-
-  if (from !== dest) {
-    try {
-      await FileSystem.copyAsync({ from, to: dest });
-      const destBytes = await bytesOnDisk(dest);
-      if (destBytes >= MIN_PLAYABLE_BYTES) {
-        await FileSystem.deleteAsync(from, { idempotent: true }).catch(() => {});
-        finalUri = dest;
-      }
-    } catch {
-      // If cross-device partition copy is constrained, keep 'from' (it is already in the app-scoped directory)
-      finalUri = from;
-    }
-  }
+  // The file stays where DownloadManager wrote it: getExternalFilesDir is app-private, never in the gallery,
+  // and playable in place. Copying it into documentDirectory used to need a second full copy of the video —
+  // double the storage, and a failure that could strike after a download had already succeeded.
+  const finalUri = from;
 
   const savedBytes = await bytesOnDisk(finalUri);
   if (savedBytes === 0 || savedBytes < MIN_PLAYABLE_BYTES) {
@@ -647,8 +641,8 @@ function makeResumable(key: string, url: string, onBytes: (written: number, tota
     fileUriFor(key),
     {
       headers: {
-        Referer: 'https://moviebox.ph/',
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+        Referer: MEDIA_REFERER,
+        'User-Agent': MEDIA_USER_AGENT,
       },
     },
     (p) => {

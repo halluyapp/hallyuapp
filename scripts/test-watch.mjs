@@ -363,6 +363,35 @@ test('state: completed transfers cannot be paused; failed ones can only be retri
   assert.equal(R.canTransition('failed', 'downloading'), true);
 });
 
+/* ---------- Downloads: the Android engine must send the identity the media host accepts ---------- */
+{
+  const rules = await load('lib/watchRules.ts');
+  const generator = await import(pathToFileURL(path.join(ROOT, 'scripts/ci/android-downloader-module.mjs')).href);
+  const { moduleKt } = generator.buildDownloaderSources();
+
+  test('android downloader sends the same Referer and User-Agent as playback, so a playable title is downloadable', () => {
+    // One source of truth: the Kotlin module embeds copies, and this fails if either copy drifts.
+    assert.equal(generator.MEDIA_REFERER, rules.MEDIA_REFERER);
+    assert.equal(generator.MEDIA_USER_AGENT, rules.MEDIA_USER_AGENT);
+    assert.ok(moduleKt.includes(`.addRequestHeader("Referer", "${rules.MEDIA_REFERER}")`), 'Referer header is missing');
+    assert.ok(moduleKt.includes(`.setUserAgent("${rules.MEDIA_USER_AGENT}")`), 'User agent is missing');
+  });
+
+  test('android downloader is allowed on mobile data and reports the system failure reason', () => {
+    assert.ok(moduleKt.includes('.setAllowedOverMetered(true)'));
+    assert.ok(moduleKt.includes('COLUMN_REASON'));
+    assert.ok(moduleKt.includes('putDouble("reason"'));
+  });
+
+  test('a native failure is translated into one plain sentence per cause', () => {
+    assert.match(rules.nativeFailureMessage(6), /not enough free storage/i);
+    assert.match(rules.nativeFailureMessage(2), /server refused/i);
+    assert.match(rules.nativeFailureMessage(5), /redirect/i);
+    assert.match(rules.nativeFailureMessage(10), /blocked/i);
+    assert.match(rules.nativeFailureMessage(undefined), /download stopped/i);
+  });
+}
+
 /* ---------- Interrupted download continuation (decideAfterTransfer) ---------- */
 
 test('a short transfer continues from the bytes on disk, not from zero', () => {

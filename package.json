@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "ios": "expo run:ios",
-    "check": "npm run typecheck && npm run lint && npm run test:fandoms && npm run test:audit && npm run test:prerelease && npm run test:recognition && npm run test:upgrade && npm run test:sql && npm run test:db-types && npm run test:signatures && npm run test:apply && npm run test:backend-surface && npm run test:secrets && npm run test:tracker && npm run test:home-render && npm run test:book-diary && npm run test:timezone && npm run test:realtime && npm run test:vibe && npm run test:watch",
+    "check": "npm run typecheck && npm run lint && npm run test:fandoms && npm run test:audit && npm run test:prerelease && npm run test:recognition && npm run test:upgrade && npm run test:sql && npm run test:db-types && npm run test:signatures && npm run test:apply && npm run test:backend-surface && npm run test:secrets && npm run test:tracker && npm run test:home-render && npm run test:book-diary && npm run test:timezone && npm run test:realtime && npm run test:vibe && npm run test:watch && npm run test:downloads",
     "test:recognition": "node --test scripts/test-recognition-and-admin.mjs",
     "test:prerelease": "node --test scripts/test-prerelease-regressions.mjs",
     "test:prerelease:live": "node scripts/verify-prerelease-live.mjs",
@@ -34,7 +34,8 @@
     "test:realtime": "node --test scripts/test-realtime-teardown.mjs",
     "test:vibe": "node --test scripts/test-vibe-finder.mjs",
     "test:watch": "node --test scripts/test-watch.mjs scripts/test-subtitles.mjs scripts/test-watch-subtitles.mjs scripts/test-moviebox-edge.mjs",
-    "test:watch-live": "node scripts/ci/watch-live-check.mjs"
+    "test:watch-live": "node scripts/ci/watch-live-check.mjs",
+    "test:downloads": "node --test scripts/ci/downloads-check.mjs"
   },
   "dependencies": {
     "@expo/cli": "^0.18.31",

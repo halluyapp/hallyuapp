@@ -18,6 +18,8 @@ import {
   BUFFER_STALL_MS,
   CONTROLS_AUTO_HIDE_MS,
   DOUBLE_TAP_WINDOW_MS,
+  MEDIA_REFERER,
+  MEDIA_USER_AGENT,
   SAVE_PROGRESS_EVERY_MS,
   SKIP_MS,
   fractionAt,
@@ -675,8 +677,8 @@ export default function WatchPlayer() {
           source={{
             uri: source.uri,
             headers: {
-              Referer: 'https://moviebox.ph/',
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+              Referer: MEDIA_REFERER,
+              'User-Agent': MEDIA_USER_AGENT,
             },
           }}
           style={StyleSheet.absoluteFill}
