@@ -47,6 +47,42 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Intercept offline media downloads stored in CacheStorage 'hallyu-offline-v1'
+  if (url.pathname.startsWith('/offline/')) {
+    event.respondWith(
+      caches.open('hallyu-offline-v1').then((cache) =>
+        cache.match(req).then((hit) => {
+          if (!hit) {
+            return new Response('Not found in offline storage', { status: 404 });
+          }
+          const rangeHeader = req.headers.get('range');
+          if (!rangeHeader) {
+            return hit;
+          }
+          return hit.arrayBuffer().then((buffer) => {
+            const bytes = new Uint8Array(buffer);
+            const match = /bytes=(\d+)-(\d+)?/.exec(rangeHeader);
+            if (!match) return hit;
+            const start = parseInt(match[1], 10);
+            const end = match[2] ? parseInt(match[2], 10) : bytes.length - 1;
+            const chunk = bytes.subarray(start, end + 1);
+            return new Response(chunk, {
+              status: 206,
+              statusText: 'Partial Content',
+              headers: {
+                'Content-Type': hit.headers.get('Content-Type') || 'video/mp4',
+                'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
+                'Content-Length': String(chunk.length),
+                'Accept-Ranges': 'bytes',
+              },
+            });
+          });
+        }),
+      ),
+    );
+    return;
+  }
+
   // Never intercept cross-origin API calls (Supabase REST/Auth/Storage/TMDB) or APK downloads
   if (url.origin !== self.location.origin || url.pathname.endsWith('.apk')) {
     return;

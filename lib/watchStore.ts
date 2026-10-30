@@ -143,7 +143,10 @@ export async function saveProgress(ref: WatchEpisodeRef, positionMs: number, dur
 /* ---------- Completed downloads ---------- */
 
 export function downloadsSupported(): boolean {
-  return Platform.OS !== 'web' && !!FileSystem.documentDirectory;
+  if (Platform.OS === 'web') {
+    return typeof window !== 'undefined' && 'caches' in window;
+  }
+  return !!FileSystem.documentDirectory;
 }
 
 let completedCache: DownloadEntry[] | null = null;
@@ -153,7 +156,19 @@ export async function listDownloads(forceRefresh = false): Promise<DownloadEntry
   if (!forceRefresh && completedCache !== null) return completedCache;
   const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
   const checked = await Promise.all(
-    all.map(async (d) => ((await FileSystem.getInfoAsync(d.fileUri).catch(() => ({ exists: false }))).exists ? d : null)),
+    all.map(async (d) => {
+      if (d.fileUri.startsWith('/offline/')) {
+        if (typeof window === 'undefined' || !('caches' in window)) return null;
+        try {
+          const cache = await caches.open('hallyu-offline-v1');
+          const hit = await cache.match(d.fileUri);
+          return hit ? d : null;
+        } catch {
+          return null;
+        }
+      }
+      return (await FileSystem.getInfoAsync(d.fileUri).catch(() => ({ exists: false }))).exists ? d : null;
+    }),
   );
   const alive = checked.filter((d): d is DownloadEntry => d !== null);
   if (alive.length !== all.length) await writeJson(DOWNLOADS_KEY, alive);
@@ -168,7 +183,18 @@ export async function findDownload(subjectId: string, season: number | null, epi
 }
 
 export async function removeDownload(entry: DownloadEntry): Promise<void> {
-  await FileSystem.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => {});
+  if (entry.fileUri.startsWith('/offline/')) {
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      try {
+        const cache = await caches.open('hallyu-offline-v1');
+        await cache.delete(entry.fileUri);
+      } catch {
+        // Ignore cache delete failures
+      }
+    }
+  } else {
+    await FileSystem.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => {});
+  }
   await deleteLocalSubtitle(entry.fileUri).catch(() => {});
   const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
   const next = all.filter((d) => d.key !== entry.key);
