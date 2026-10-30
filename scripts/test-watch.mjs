@@ -374,7 +374,9 @@ test('state: completed transfers cannot be paused; failed ones can only be retri
     assert.equal(generator.MEDIA_REFERER, rules.MEDIA_REFERER);
     assert.equal(generator.MEDIA_USER_AGENT, rules.MEDIA_USER_AGENT);
     assert.ok(moduleKt.includes(`.addRequestHeader("Referer", "${rules.MEDIA_REFERER}")`), 'Referer header is missing');
-    assert.ok(moduleKt.includes(`.setUserAgent("${rules.MEDIA_USER_AGENT}")`), 'User agent is missing');
+    assert.ok(moduleKt.includes(`.addRequestHeader("User-Agent", "${rules.MEDIA_USER_AGENT}")`), 'User agent header is missing');
+    // DownloadManager.Request has no setUserAgent method: calling it is a compile error.
+    assert.ok(!moduleKt.includes('.setUserAgent('), 'setUserAgent does not exist on DownloadManager.Request');
   });
 
   test('android downloader is allowed on mobile data and reports the system failure reason', () => {

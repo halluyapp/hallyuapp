@@ -73,7 +73,9 @@ class HallyuDownloaderModule(private val reactContext: ReactApplicationContext) 
                 .setMimeType("video/mp4")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setAllowedOverRoaming(false)
-                .setUserAgent("${MEDIA_USER_AGENT}")
+                // DownloadManager.Request has no setUserAgent; header injection is the only way to send
+                // the identity the media host accepts. Referer is the decisive one.
+                .addRequestHeader("User-Agent", "${MEDIA_USER_AGENT}")
                 .addRequestHeader("Referer", "${MEDIA_REFERER}")
                 .setDestinationInExternalFilesDir(reactContext, null, relativePath(key))
             // setAllowedOverMetered exists from API 24; the app supports API 23, where mobile data is
