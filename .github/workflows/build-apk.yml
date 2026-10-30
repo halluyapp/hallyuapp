@@ -202,7 +202,13 @@ jobs:
             grep -E "^e: |^w: .*(error)|error:|FAILURE:|Caused by:|What went wrong|Execution failed|AAPT|Duplicate class" /tmp/gradle.log | head -25 | sed 's/^/::error title=Gradle::/'
             # The first real error also becomes a commit status description later, so it is readable
             # without repository admin rights (the job log itself is not).
-            echo "GRADLE_ERR=$(grep -E '^e: |error:|FAILURE:|Execution failed' /tmp/gradle.log | head -1 | tr -d '\r' | cut -c1-90)" >> "$GITHUB_ENV"
+            if [ -s /tmp/gradle.log ]; then
+              ERR=$(grep -E '^e: |error:|FAILURE:|Execution failed' /tmp/gradle.log | head -1 | tr -d '\r' | cut -c1-70)
+              TAIL=$(tail -2 /tmp/gradle.log | tr '\n' ' ' | tr -s ' ' | cut -c1-70)
+              echo "GRADLE_ERR=${ERR:-$TAIL}" >> "$GITHUB_ENV"
+            else
+              echo "GRADLE_ERR=no-gradle-log" >> "$GITHUB_ENV"
+            fi
             echo "::group::Last 80 lines of the Gradle log"
             tail -80 /tmp/gradle.log
             echo "::endgroup::"
