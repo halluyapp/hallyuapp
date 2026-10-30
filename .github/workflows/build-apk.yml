@@ -184,9 +184,20 @@ jobs:
             -Dorg.gradle.caching=true
             -Dfile.encoding=UTF-8
         run: |
-          set -euo pipefail
+          set -uo pipefail
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          # Gradle output is kept so a failure can be published as annotations. The job log needs
+          # repository admin rights to read, an annotation does not, so a build error is never invisible.
+          ./gradlew assembleRelease --no-daemon --stacktrace > /tmp/gradle.log 2>&1
+          gradle_status=$?
+          if [ "$gradle_status" -ne 0 ]; then
+            grep -E "^e: |^w: .*(error)|error:|FAILURE:|Caused by:|What went wrong|Execution failed|AAPT|Duplicate class" /tmp/gradle.log | head -25 | sed 's/^/::error title=Gradle::/'
+            echo "::group::Last 80 lines of the Gradle log"
+            tail -80 /tmp/gradle.log
+            echo "::endgroup::"
+            exit "$gradle_status"
+          fi
+          set -e
 
           BT="${ANDROID_SDK_ROOT}/build-tools/35.0.0"
           REL="app/build/outputs/apk/release"
