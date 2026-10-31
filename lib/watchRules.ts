@@ -123,6 +123,52 @@ export function qualityDownloadKey(subjectId: string, season: number | null, epi
   return `${subjectId}:${season ?? 0}:${episode ?? 0}:q:${encodedQuality}`;
 }
 
+/* ---------- Downloads in a browser ---------- */
+
+/** Cache Storage bucket for downloads saved in a browser. Deliberately not named `hallyu-assets-*`, so the
+ * service worker's activate sweep never deletes a saved episode. */
+export const WEB_OFFLINE_CACHE = 'hallyu-offline-v1';
+
+/**
+ * The Cache Storage key one download is stored under: the same identity as a local file name, so one title,
+ * episode, and quality always map to exactly one stored episode and two qualities never collide.
+ */
+export function offlineCachePath(key: string): string {
+  return `/offline/${key.replace(/[^A-Za-z0-9_-]/g, '_')}.mp4`;
+}
+
+/** True when a saved download lives in the browser's Cache Storage instead of a file on disk. */
+export function isWebOfflinePath(uri: string | null | undefined): boolean {
+  return typeof uri === 'string' && uri.startsWith('/offline/');
+}
+
+/**
+ * Free bytes a browser reports for this site: its quota minus what is already stored. Null when the browser
+ * does not say, which is never read as "no space": an unknown limit must not refuse a download.
+ */
+export function webFreeBytes(estimate: { quota?: number; usage?: number } | null | undefined): number | null {
+  if (!estimate || typeof estimate.quota !== 'number' || !Number.isFinite(estimate.quota)) return null;
+  const used = typeof estimate.usage === 'number' && Number.isFinite(estimate.usage) ? estimate.usage : 0;
+  return Math.max(0, estimate.quota - used);
+}
+
+/** Whether a download of a known length fits, keeping the same reserve a phone download keeps. */
+export function webDownloadFits(totalBytes: number | null, freeBytes: number | null, reserveBytes: number): boolean {
+  if (totalBytes === null || freeBytes === null) return true;
+  return freeBytes >= totalBytes + reserveBytes;
+}
+
+/**
+ * The full length of a browser download, read from the response headers. A cross-origin page can read
+ * Content-Length (a safelisted header) but not Content-Range, so only a whole-file 200 states the size of
+ * the episode: a 206's single byte, or an error body, is never mistaken for it.
+ */
+export function totalFromLengthHeader(status: number, contentLength: string | null | undefined): number | null {
+  if (status !== 200) return null;
+  const n = Number(contentLength);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 export type TransferStatus = 'queued' | 'downloading' | 'paused' | 'failed' | 'completed';
 
 export interface TransferSnapshot {

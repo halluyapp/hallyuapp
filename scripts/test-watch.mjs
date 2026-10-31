@@ -606,3 +606,59 @@ test('the failure message states how far the transfer got', () => {
     assert.equal(rules.downloadTargets({ ...input, qualities: ['480p', '480p'] }).length, 1);
   });
 }
+
+/* ---------- Downloads in a browser (Cache Storage instead of a file on disk) ---------- */
+{
+  const rules = await load('lib/watchRules.ts');
+  const MB = 1024 * 1024;
+
+  test('web: one Cache Storage entry per title, episode and quality, so two qualities never collide', () => {
+    const a = rules.offlineCachePath(rules.qualityDownloadKey('536473933005177184', 1, 2, '360p'));
+    const b = rules.offlineCachePath(rules.qualityDownloadKey('536473933005177184', 1, 2, '720p'));
+    assert.notEqual(a, b);
+    assert.match(a, /^\/offline\/[A-Za-z0-9_-]+\.mp4$/);
+    assert.equal(a, rules.offlineCachePath(rules.qualityDownloadKey('536473933005177184', 1, 2, '360p')));
+    // The bucket is not named like the asset caches, so the service worker's sweep never deletes an episode.
+    assert.equal(rules.WEB_OFFLINE_CACHE.startsWith('hallyu-assets-'), false);
+  });
+
+  test('web: a cache key is recognised, a file path is not', () => {
+    assert.equal(rules.isWebOfflinePath('/offline/watch_x.mp4'), true);
+    assert.equal(rules.isWebOfflinePath('file:///data/user/0/watch-downloads/x.mp4'), false);
+    assert.equal(rules.isWebOfflinePath(null), false);
+    assert.equal(rules.isWebOfflinePath(undefined), false);
+  });
+
+  test('web: the length comes from a whole-file response, never from a range or an error body', () => {
+    // Content-Length is the only length a cross-origin page may read; a 206 states one byte, not the episode.
+    assert.equal(rules.totalFromLengthHeader(200, '41943040'), 41943040);
+    assert.equal(rules.totalFromLengthHeader(206, '1'), null);
+    assert.equal(rules.totalFromLengthHeader(200, null), null);
+    assert.equal(rules.totalFromLengthHeader(200, '0'), null);
+    assert.equal(rules.totalFromLengthHeader(404, '512'), null);
+  });
+
+  test('web: an unknown space or length never refuses a download; a known shortfall does', () => {
+    assert.equal(rules.webDownloadFits(300 * MB, null, 200 * MB), true);
+    assert.equal(rules.webDownloadFits(null, 0, 200 * MB), true);
+    assert.equal(rules.webDownloadFits(300 * MB, 600 * MB, 200 * MB), true);
+    assert.equal(rules.webDownloadFits(300 * MB, 400 * MB, 200 * MB), false);
+    assert.equal(rules.webDownloadFits(300 * MB, 499 * MB, 200 * MB), false);
+  });
+
+  test('web: free space is the browser quota minus what is stored, and unknown stays unknown', () => {
+    assert.equal(rules.webFreeBytes({ quota: 1000 * MB, usage: 400 * MB }), 600 * MB);
+    assert.equal(rules.webFreeBytes({ quota: 500, usage: 900 }), 0);
+    assert.equal(rules.webFreeBytes({ usage: 10 }), null);
+    assert.equal(rules.webFreeBytes(null), null);
+    assert.equal(rules.webFreeBytes({ quota: Number.NaN }), null);
+  });
+
+  test('web: a stored episode must match the stated length, and an unknown length is still checked for video', () => {
+    // The same completeness rule as a phone download: a short body is never a finished episode.
+    assert.equal(rules.transferComplete(83 * MB, 84 * MB), false);
+    assert.equal(rules.transferComplete(84 * MB, 84 * MB), true);
+    assert.equal(rules.transferComplete(84 * MB, null), true);
+    assert.equal(rules.transferComplete(0, 84 * MB), false);
+  });
+}

@@ -442,7 +442,7 @@ export default function WatchTitleScreen() {
 
             {sameQualityActive ? <Text variant="caption" tone="tertiary">This quality is already downloading. Open Downloads to manage it.</Text> : null}
             {message ? <InlineNotice tone="warning" text={message} /> : null}
-            {!downloadsSupported() && watchable ? <Text variant="caption" tone="tertiary">Downloads are available in the Android and iOS apps.</Text> : null}
+            {!downloadsSupported() && watchable ? <Text variant="caption" tone="tertiary">Downloads are available in the Hallyu apps, and in a browser that allows offline storage.</Text> : null}
             <Pressable onPress={() => router.push('/watch/downloads')} accessibilityRole="button" style={styles.ghost}>
               <Text variant="caption" tone="accent">Open Downloads</Text>
             </Pressable>

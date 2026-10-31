@@ -12,7 +12,7 @@ import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchPlayback } from '../../lib/api/moviebox';
 import { fetchCaptionCues, fetchMovieboxCaptions, type MovieboxCaption } from '../../lib/api/subtitles';
 import { cueTextAt, type SubtitleCue } from '../../lib/subtitles';
-import { getProgress, listDownloads, saveProgress, setTitleQuality, type DownloadEntry, type WatchEpisodeRef } from '../../lib/watchStore';
+import { getProgress, listDownloads, resolveLocalSource, saveProgress, setTitleQuality, type DownloadEntry, type WatchEpisodeRef } from '../../lib/watchStore';
 import { readLocalSubtitle } from '../../lib/watchSubtitleDownload';
 import {
   BUFFER_STALL_MS,
@@ -92,6 +92,8 @@ export default function WatchPlayer() {
   /** When the player last made forward progress; the watchdog measures stalls against this. */
   const lastProgressAt = useRef(Date.now());
   const mountedAt = useRef(Date.now());
+  /** Releases the object URL a download stored in the browser is played from. */
+  const localRelease = useRef<(() => void) | null>(null);
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [source, setSource] = useState<{ uri: string } | null>(null);
@@ -168,11 +170,34 @@ export default function WatchPlayer() {
     return true;
   };
 
+  /**
+   * Opens a saved download. A browser keeps its downloads in Cache Storage, which a <video> element cannot
+   * open by path, so it arrives as an object URL; a file on a phone is playable by its own path. When the
+   * download's file is gone, the player says so instead of waiting forever.
+   */
+  const openLocal = async (saved: string): Promise<void> => {
+    try {
+      const opened = await resolveLocalSource(saved);
+      if (!opened) {
+        setErrorMessage('This download is no longer on this device. Download it again.');
+        setPhase('error');
+        return;
+      }
+      const previous = localRelease.current;
+      localRelease.current = opened.release;
+      previous?.();
+      setSource({ uri: opened.uri });
+    } catch {
+      setErrorMessage('This download could not be opened. Remove it and download it again.');
+      setPhase('error');
+    }
+  };
+
   useEffect(() => {
     if (isLocal) {
-      setSource({ uri: String(params.local) });
       setPlayingQuality(params.quality ? String(params.quality) : null);
       setQualities(params.quality ? [String(params.quality)] : []);
+      void openLocal(String(params.local));
       return;
     }
     const requested = params.quality ? String(params.quality) : null;
@@ -180,6 +205,15 @@ export default function WatchPlayer() {
     // One initial load per mounted player. Later loads go through the handlers below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // An object URL outlives the video unless it is released, so the player releases it when it leaves.
+  useEffect(
+    () => () => {
+      localRelease.current?.();
+      localRelease.current = null;
+    },
+    [],
+  );
 
   const [nextDownloaded, setNextDownloaded] = useState<DownloadEntry | null>(null);
 
@@ -438,7 +472,7 @@ export default function WatchPlayer() {
     if (isLocal) {
       setPhase('loading');
       setErrorMessage(null);
-      setSource({ uri: String(params.local) });
+      void openLocal(String(params.local));
       return;
     }
     void loadRemote(playingQuality, latest.current.positionMs > RESUME_MIN_MS ? latest.current.positionMs : null, true);

@@ -27,13 +27,20 @@ import {
   MEDIA_REFERER,
   MEDIA_USER_AGENT,
   MIN_PLAYABLE_BYTES,
+  isWebOfflinePath,
   nativeFailureMessage,
+  offlineCachePath,
   validateMp4Layout,
   repairTransfer,
   qualityDownloadKey,
   stoppedMessage,
   totalFromContentRange,
+  totalFromLengthHeader,
+  transferComplete,
+  webDownloadFits,
+  webFreeBytes,
   withoutPersistedResumeData,
+  WEB_OFFLINE_CACHE,
   type TransferStatus,
 } from './watchRules';
 
@@ -85,8 +92,9 @@ export interface TransferEntry extends WatchEpisodeRef {
   totalBytes: number | null;
   error: string | null;
   updatedAt: number;
-  /** 'native': Android DownloadManager runs it (survives the app closing). 'expo': foreground transfer. */
-  engine?: 'native' | 'expo';
+  /** 'native': Android DownloadManager runs it (survives the app closing). 'expo': foreground transfer.
+   * 'web': the browser fetches into Cache Storage, so the tab must stay open. */
+  engine?: 'native' | 'expo' | 'web';
   /** Android DownloadManager is waiting on network/power constraints; still owned by the system. */
   nativeWaiting?: boolean;
   /** Live smoothed download speed in bytes per second. */
@@ -142,8 +150,14 @@ export async function saveProgress(ref: WatchEpisodeRef, positionMs: number, dur
 
 /* ---------- Completed downloads ---------- */
 
+/**
+ * Where a download can be saved. A phone saves a private file inside the app sandbox. A browser saves into
+ * Cache Storage instead: the same storage it already uses for offline caches, private to this origin, and
+ * the only place a page can keep a few hundred megabytes without asking for a file-system permission.
+ */
 export function downloadsSupported(): boolean {
-  return Platform.OS !== 'web' && !!FileSystem.documentDirectory;
+  if (Platform.OS === 'web') return browserCaches() !== null && typeof Blob !== 'undefined' && typeof fetch === 'function';
+  return !!FileSystem.documentDirectory;
 }
 
 let completedCache: DownloadEntry[] | null = null;
@@ -152,9 +166,7 @@ const completedListeners = new Set<Listener>();
 export async function listDownloads(forceRefresh = false): Promise<DownloadEntry[]> {
   if (!forceRefresh && completedCache !== null) return completedCache;
   const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
-  const checked = await Promise.all(
-    all.map(async (d) => ((await FileSystem.getInfoAsync(d.fileUri).catch(() => ({ exists: false }))).exists ? d : null)),
-  );
+  const checked = await Promise.all(all.map(async (d) => ((await downloadStillExists(d.fileUri)) ? d : null)));
   const alive = checked.filter((d): d is DownloadEntry => d !== null);
   if (alive.length !== all.length) await writeJson(DOWNLOADS_KEY, alive);
   const sorted = alive.sort((a, b) => b.savedAt - a.savedAt);
@@ -168,7 +180,7 @@ export async function findDownload(subjectId: string, season: number | null, epi
 }
 
 export async function removeDownload(entry: DownloadEntry): Promise<void> {
-  await FileSystem.deleteAsync(entry.fileUri, { idempotent: true }).catch(() => {});
+  await removeSavedMedia(entry.fileUri);
   await deleteLocalSubtitle(entry.fileUri).catch(() => {});
   const all = await readJson<DownloadEntry[]>(DOWNLOADS_KEY, []);
   const next = all.filter((d) => d.key !== entry.key);
@@ -220,7 +232,9 @@ export async function listTransfers(): Promise<TransferEntry[]> {
   if (overlaid.some((t) => t.engine === 'native' && t.status === 'downloading')) ensureNativePoll();
   // A download that was "downloading" when the app closed is interrupted now, not still running.
   const repaired = overlaid.map((t) =>
-    repairTransfer(t, { running: active.has(t.key) || t.engine === 'native', queued: queuedKeys.has(t.key) }),
+    // A native download is owned by Android and outlives the app; a browser download is owned by this
+    // tab's live fetch. Anything else that still says "downloading" was interrupted when the app closed.
+    repairTransfer(t, { running: active.has(t.key) || activeWeb.has(t.key) || t.engine === 'native', queued: queuedKeys.has(t.key) }),
   );
   if (JSON.stringify(repaired) !== JSON.stringify(raw)) await writeJson(TRANSFERS_KEY, repaired);
   return repaired.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -287,12 +301,229 @@ function fileUriFor(key: string): string {
   return `${DOWNLOAD_DIR}${key.replace(/[^A-Za-z0-9_-]/g, '_')}.mp4`;
 }
 
+/* ---------- Web downloads (browser Cache Storage) ---------- */
+
+/** How often a browser transfer writes byte progress to the store. */
+const WEB_PROGRESS_REPORT_MS = 1000;
+/** Free space kept in reserve before a browser download, matching the reserve a phone download keeps. */
+const WEB_STORAGE_RESERVE_BYTES = 200 * 1024 * 1024;
+
+/** Cache Storage, or null when this browser has none (private browsing, an older browser, a phone build). */
+function browserCaches(): CacheStorage | null {
+  if (Platform.OS !== 'web') return null;
+  const store = (globalThis as { caches?: CacheStorage }).caches;
+  return store && typeof store.open === 'function' ? store : null;
+}
+
+async function webMediaStore(): Promise<Cache | null> {
+  const store = browserCaches();
+  if (!store) return null;
+  return store.open(WEB_OFFLINE_CACHE).catch(() => null);
+}
+
+/** Deletes one saved download: an offline cache entry in a browser, a private file on a phone. */
+async function removeSavedMedia(fileUri: string): Promise<void> {
+  if (isWebOfflinePath(fileUri)) {
+    const store = await webMediaStore();
+    if (store) await store.delete(fileUri).catch(() => false);
+    return;
+  }
+  await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
+}
+
+/** A saved download still exists: a file on disk, or an entry in the browser's offline cache. */
+async function downloadStillExists(fileUri: string): Promise<boolean> {
+  if (isWebOfflinePath(fileUri)) {
+    const store = await webMediaStore();
+    if (!store) return false;
+    return !!(await store.match(fileUri).catch(() => undefined));
+  }
+  return !!(await FileSystem.getInfoAsync(fileUri).catch(() => ({ exists: false }))).exists;
+}
+
+/** The space a browser is willing to give this site, in bytes, or null when it does not say. */
+async function webFreeBytesNow(): Promise<number | null> {
+  if (Platform.OS !== 'web' || typeof navigator === 'undefined') return null;
+  const storage = navigator.storage;
+  if (!storage || typeof storage.estimate !== 'function') return null;
+  return webFreeBytes(await storage.estimate().catch(() => null));
+}
+
+/** Asks the browser to keep this site's storage out of routine eviction. Best effort and never fatal. */
+function requestPersistentStorage(): void {
+  if (Platform.OS !== 'web' || typeof navigator === 'undefined') return;
+  const persist = navigator.storage?.persist;
+  if (typeof persist === 'function') void persist.call(navigator.storage).catch(() => false);
+}
+
+interface WebTransfer {
+  controller: AbortController;
+  /** Set by pause and cancel, so an aborted fetch is not reported as a failure. */
+  stopped: boolean;
+}
+const activeWeb = new Map<string, WebTransfer>();
+
+/** Fails a browser transfer and removes anything it managed to store. */
+async function webFailTransfer(key: string, path: string, reason: TransferFailure, message: string): Promise<void> {
+  activeWeb.delete(key);
+  await removeSavedMedia(path);
+  await failTransfer(key, reason, message);
+}
+
+/**
+ * Runs one browser download: fetches the sealed link, streams it into Cache Storage while counting the
+ * bytes for progress, then validates the stored episode the same way a phone download is validated.
+ *
+ * Nothing is held in memory: the response stream is piped straight into the cache, and Cache Storage
+ * commits an entry only when the stream ends. So a cancelled or interrupted transfer leaves no half
+ * episode behind, and a restart can never append to one.
+ */
+async function driveWeb(key: string, url: string, path: string): Promise<void> {
+  const controller = new AbortController();
+  const transfer: WebTransfer = { controller, stopped: false };
+  activeWeb.set(key, transfer);
+  /** True once the server has answered with a real body, so a later drop is a recoverable interruption. */
+  let started = false;
+  try {
+    const record = await getTransfer(key);
+    if (!record) {
+      activeWeb.delete(key);
+      return;
+    }
+    const response = await fetch(url, { signal: controller.signal, cache: 'no-store', headers: { Accept: '*/*' } });
+    const body = response.body;
+    if (!response.ok || !body) {
+      const expired = response.status === 401 || response.status === 403;
+      await response.body?.cancel().catch(() => {});
+      await webFailTransfer(
+        key,
+        path,
+        expired ? 'link_expired' : 'http_error',
+        expired
+          ? 'The download link has expired. Tap retry to get a new one.'
+          : `The server returned an error (${response.status}). Tap retry.`,
+      );
+      return;
+    }
+    started = true;
+    const total = totalFromLengthHeader(response.status, response.headers.get('content-length'));
+    if (total !== null && total < MIN_PLAYABLE_BYTES) {
+      controller.abort();
+      await webFailTransfer(key, path, 'invalid_file', 'The server returned an empty or error response instead of a video.');
+      return;
+    }
+    if (!webDownloadFits(total, await webFreeBytesNow(), WEB_STORAGE_RESERVE_BYTES)) {
+      controller.abort();
+      await webFailTransfer(key, path, 'insufficient_storage', 'Not enough free storage for this download. Free up space and try again.');
+      return;
+    }
+    const store = await webMediaStore();
+    if (!store) {
+      controller.abort();
+      await webFailTransfer(key, path, 'unknown', 'This browser cannot store downloads. Turn off private browsing and try again.');
+      return;
+    }
+
+    await putTransfer({ ...record, status: 'downloading', bytesWritten: 0, totalBytes: total, error: null, updatedAt: Date.now() });
+
+    let written = 0;
+    let reportedAt = 0;
+    const counting = new TransformStream<Uint8Array, Uint8Array>({
+      transform: (chunk, sink) => {
+        written += chunk.byteLength;
+        const now = Date.now();
+        if (now - reportedAt >= WEB_PROGRESS_REPORT_MS) {
+          reportedAt = now;
+          void updateBytes(key, written, total);
+        }
+        sink.enqueue(chunk);
+      },
+    });
+    const headers = new Headers({ 'Content-Type': 'video/mp4' });
+    if (total !== null) headers.set('Content-Length', String(total));
+    await store.put(path, new Response(body.pipeThrough(counting), { status: 200, headers }));
+
+    const stored = await store.match(path).catch(() => undefined);
+    const blob = stored ? await stored.blob().catch(() => null) : null;
+    const current = await getTransfer(key);
+    if (!blob || !current) {
+      await webFailTransfer(key, path, 'unknown', 'The download finished but could not be saved. Tap retry.');
+      return;
+    }
+    if (!transferComplete(blob.size, total)) {
+      await webFailTransfer(key, path, 'network', stoppedMessage(blob.size, total, 200));
+      return;
+    }
+    // The same rule as a phone download: the whole file must parse as MP4 boxes, begin with "ftyp", and hold
+    // its movie index. A browser has the stored file, so the check reads it back rather than trusting a stream.
+    const verdict = await validateMp4Layout(
+      async (position, length) => new Uint8Array(await blob.slice(position, position + length).arrayBuffer()),
+      blob.size,
+      total,
+    );
+    if (!verdict.ok) {
+      await webFailTransfer(key, path, 'invalid_file', INVALID_FILE_MESSAGES[verdict.reason]);
+      return;
+    }
+    activeWeb.delete(key);
+    requestPersistentStorage();
+    await recordCompleted(key, current, blob.size, path);
+  } catch {
+    activeWeb.delete(key);
+    if (transfer.stopped) return; // paused or cancelled: the stored record already says so
+    const record = await getTransfer(key);
+    if (!record || record.status !== 'downloading' || record.engine !== 'web') return;
+    await removeSavedMedia(path);
+    if (!started) {
+      // The request itself was refused, so nothing was ever transferred. Saying "will auto-resume" here would
+      // promise a recovery this browser may never manage, so this is a plain failure with a retry.
+      await failTransfer(
+        key,
+        'network',
+        'Could not reach the video server from this browser. Tap retry, or save this episode in the Hallyu app.',
+      );
+      return;
+    }
+    // A dropped connection is recoverable in a browser too: the transfer waits to be retried, or resumes when
+    // the network returns, instead of showing a dead end.
+    await putTransfer({
+      ...record,
+      status: 'paused',
+      bytesWritten: 0,
+      totalBytes: null,
+      error: 'Network interrupted. Will auto-resume when online.',
+      updatedAt: Date.now(),
+    });
+  }
+}
+
+/** A saved download prepared for the player, and how to release it when the player leaves. */
+export interface LocalSource {
+  uri: string;
+  release: () => void;
+}
+
+/**
+ * Prepares a saved download for playback. A browser download lives in Cache Storage, which a <video>
+ * element cannot open by path, so it is handed over as an object URL and released when the player leaves.
+ * Returns null when the download's file is gone, so the player can say so plainly instead of spinning.
+ */
+export async function resolveLocalSource(fileUri: string): Promise<LocalSource | null> {
+  if (!isWebOfflinePath(fileUri)) return { uri: fileUri, release: () => {} };
+  const store = await webMediaStore();
+  const hit = store ? await store.match(fileUri).catch(() => undefined) : undefined;
+  const blob = hit ? await hit.blob().catch(() => null) : null;
+  if (!blob || blob.size === 0) return null;
+  const url = URL.createObjectURL(blob);
+  return { uri: url, release: () => URL.revokeObjectURL(url) };
+}
+
 async function failTransfer(key: string, reason: TransferFailure, message: string): Promise<void> {
   const t = await getTransfer(key);
   if (!t) return;
   await putTransfer({ ...t, status: 'failed', error: message, updatedAt: Date.now() });
   if (reason === 'invalid_file' || reason === 'insufficient_storage') {
-    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+    await removeSavedMedia(t.fileUri);
   }
 }
 
@@ -321,9 +552,17 @@ async function finalize(key: string, t: TransferEntry, bytes: number): Promise<v
   // begin with "ftyp", and contain "moov". Any HTML, JSON, truncated or expired-link body fails here.
   const verdict = await validateMp4Layout((p, n) => readFileRange(t.fileUri, p, n), bytes, bytes);
   if (!verdict.ok) {
-    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+    await removeSavedMedia(t.fileUri);
     return failTransfer(key, 'invalid_file', INVALID_FILE_MESSAGES[verdict.reason]);
   }
+  await recordCompleted(key, t, bytes, t.fileUri);
+}
+
+/**
+ * Records a finished download and where it lives, then clears its transfer. Shared by the phone engine
+ * (a private file inside the app sandbox) and the browser engine (an entry in Cache Storage).
+ */
+async function recordCompleted(key: string, t: TransferEntry, bytes: number, fileUri: string): Promise<void> {
   const entry: DownloadEntry = {
     subjectId: t.subjectId,
     title: t.title,
@@ -332,7 +571,7 @@ async function finalize(key: string, t: TransferEntry, bytes: number): Promise<v
     season: t.season,
     episode: t.episode,
     key,
-    fileUri: t.fileUri,
+    fileUri,
     bytes,
     quality: t.quality,
     savedAt: Date.now(),
@@ -343,7 +582,8 @@ async function finalize(key: string, t: TransferEntry, bytes: number): Promise<v
   completedCache = updatedDone.sort((a, b) => b.savedAt - a.savedAt);
   await dropTransfer(key);
   notifyDownloads();
-  void saveSubtitleForDownload(t, t.fileUri).catch(() => {});
+  // Offline subtitles are written next to a file on disk; a browser download has no such side file.
+  if (!isWebOfflinePath(fileUri)) void saveSubtitleForDownload(t, fileUri).catch(() => {});
   if (t.engine !== 'native') void reportDownload(key, noticeTitle(t), 'done', bytes, bytes);
 }
 
@@ -606,6 +846,14 @@ async function pumpQueue(): Promise<void> {
       await failTransfer(next, 'link_expired', 'Could not get a fresh download link. Check your connection and tap retry.');
       return;
     }
+    if (Platform.OS === 'web') {
+      // A browser learns the length from the response itself, and writes into Cache Storage rather than a file.
+      const path = t.fileUri;
+      await removeSavedMedia(path);
+      await putTransfer({ ...t, status: 'downloading', bytesWritten: 0, error: null, updatedAt: Date.now() });
+      void driveWeb(next, url, path);
+      return;
+    }
     const total = await probeLength(url);
     if (!total) {
       await failTransfer(next, 'unknown', 'Could not confirm the file size from the server. Tap retry later.');
@@ -621,7 +869,7 @@ async function pumpQueue(): Promise<void> {
       return;
     }
     await putTransfer({ ...t, status: 'downloading', error: null, totalBytes: total, updatedAt: Date.now() });
-    await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+    await removeSavedMedia(t.fileUri);
     await beginFresh(next, url);
   } finally {
     queuePumping = false;
@@ -729,7 +977,9 @@ let activeStartReservation: string | null = null;
 let queuePumping = false;
 
 export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource, _expectedBytes: number | null): Promise<StartResult> {
-  if (!downloadsSupported()) return { ok: false, reason: 'unknown', message: 'Downloads are available in the Android and iOS apps.' };
+  if (!downloadsSupported()) {
+    return { ok: false, reason: 'unknown', message: 'Downloads are available in the Hallyu apps, and in a browser that allows offline storage.' };
+  }
   const key = downloadKey(ref.subjectId, ref.season, ref.episode, source.quality);
   if (startingDownloads.has(key)) return { ok: false, reason: 'already_downloading', message: 'This download is already starting.' };
   const hadOtherStart = startingDownloads.size > 0;
@@ -745,21 +995,27 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
       : { ok: false, reason: check.reason, message: 'This download is already in progress.' };
   }
 
-  await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true });
+  const web = Platform.OS === 'web';
   const downloadingCount = transfers.filter((t) => t.status === 'downloading').length;
   const queueNow = downloadingCount >= MAX_CONCURRENT_TRANSFERS || activeStartReservation !== key || queuedKeys.size > 0;
-  const total = await probeLength(source.downloadUrl);
-  if (!total) {
-    return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server, so the download was not started. Try again later.' };
-  }
-  if (total < MIN_PLAYABLE_BYTES) return { ok: false, reason: 'invalid_file', message: 'The server returned an empty or error response instead of a video.' };
-  const free = await FileSystem.getFreeDiskStorageAsync().catch(() => Number.POSITIVE_INFINITY);
-  if (free < total + STORAGE_RESERVE_BYTES) {
-    return { ok: false, reason: 'insufficient_storage', message: 'Not enough free storage for this download. Free up space and try again.' };
+  let total: number | null = null;
+  if (!web) {
+    await FileSystem.makeDirectoryAsync(DOWNLOAD_DIR, { intermediates: true });
+    total = await probeLength(source.downloadUrl);
+    if (!total) {
+      return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server, so the download was not started. Try again later.' };
+    }
+    if (total < MIN_PLAYABLE_BYTES) return { ok: false, reason: 'invalid_file', message: 'The server returned an empty or error response instead of a video.' };
+    const free = await FileSystem.getFreeDiskStorageAsync().catch(() => Number.POSITIVE_INFINITY);
+    if (free < total + STORAGE_RESERVE_BYTES) {
+      return { ok: false, reason: 'insufficient_storage', message: 'Not enough free storage for this download. Free up space and try again.' };
+    }
   }
 
-  const fileUri = fileUriFor(key);
-  await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
+  // A phone keeps a private file; a browser keeps a Cache Storage entry. Both use one location per title,
+  // episode, and quality, so two qualities of one episode are two downloads that never collide.
+  const fileUri = web ? offlineCachePath(key) : fileUriFor(key);
+  await removeSavedMedia(fileUri);
   if (queueNow) queuedKeys.add(key); // reserve its place before subscribers reconcile persisted state.
   const record: TransferEntry = {
     ...ref,
@@ -767,10 +1023,11 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
     quality: source.quality,
     fileUri,
     status: queueNow ? 'queued' : 'downloading',
-    engine: nativeDownloader() ? 'native' : 'expo',
+    engine: web ? 'web' : nativeDownloader() ? 'native' : 'expo',
     nativeWaiting: false,
     bytesWritten: 0,
-    // The server's full length, from the probe. The provider's size estimate is never used to judge completion.
+    // The server's full length on a phone, from the probe. A browser states it in the response instead.
+    // The provider's size estimate is never used to judge completion.
     totalBytes: total,
     error: null,
     updatedAt: Date.now(),
@@ -780,6 +1037,10 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
   if (queueNow) {
     void pumpQueue();
     return { ok: true, message: 'Queued. It starts when the current download finishes.' };
+  }
+  if (web) {
+    void driveWeb(key, source.downloadUrl, fileUri);
+    return { ok: true };
   }
   await beginFresh(key, source.downloadUrl);
   return { ok: true };
@@ -794,8 +1055,20 @@ export async function startDownload(ref: WatchEpisodeRef, source: DownloadSource
 export async function pauseDownload(key: string): Promise<boolean> {
   // DownloadManager cannot pause. Background downloads run until they finish, fail, or are cancelled.
   if ((await getTransfer(key))?.engine === 'native') return false;
-  const a = active.get(key);
   const t = await getTransfer(key);
+  // A browser transfer is one fetch, so pausing aborts it. Nothing is stored from a partial transfer, and a
+  // restart fetches a fresh link and begins from zero, exactly as an interrupted phone transfer does.
+  if (t?.engine === 'web') {
+    const w = activeWeb.get(key);
+    if (!w || !canTransition(t.status, 'paused')) return false;
+    w.stopped = true;
+    w.controller.abort();
+    activeWeb.delete(key);
+    await removeSavedMedia(t.fileUri);
+    await putTransfer({ ...t, status: 'paused', error: null, bytesWritten: 0, updatedAt: Date.now() });
+    return true;
+  }
+  const a = active.get(key);
   if (!a || !t || !canTransition(t.status, 'paused')) return false;
   a.paused = true;
   try {
@@ -828,6 +1101,14 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
   }
   const url = await getFreshUrl();
   if (!url) return { ok: false, reason: 'link_expired', message: 'Could not get a fresh link. Check your connection and try again.' };
+  if (Platform.OS === 'web') {
+    // A fresh link and a fresh cache entry. The old entry is removed first, so a restart never appends to a
+    // partial download; the length is learned from the response as it arrives.
+    await removeSavedMedia(t.fileUri);
+    await putTransfer({ ...t, status: 'downloading', bytesWritten: 0, totalBytes: null, error: null, updatedAt: Date.now() });
+    void driveWeb(key, url, t.fileUri);
+    return { ok: true };
+  }
   const total = await probeLength(url);
   if (!total) return { ok: false, reason: 'unknown', message: 'Could not confirm the full file size from the server. Try again later.' };
   if (total < MIN_PLAYABLE_BYTES) return { ok: false, reason: 'invalid_file', message: 'The server returned an empty or error response instead of a video.' };
@@ -843,7 +1124,7 @@ export async function resumeDownload(key: string, getFreshUrl: () => Promise<str
     active.delete(key);
     await oldActive.resumable.cancelAsync().catch(() => {});
   }
-  await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+  await removeSavedMedia(t.fileUri);
   await putTransfer({ ...t, status: 'downloading', bytesWritten: 0, totalBytes: total, error: null, updatedAt: Date.now() });
   await beginFresh(key, url);
   return { ok: true };
@@ -861,6 +1142,12 @@ export async function cancelDownload(key: string): Promise<void> {
   const before = await getTransfer(key);
   const wasNative = before?.engine === 'native' && before.status === 'downloading';
   if (wasNative) await nativeDownloader()?.remove(key).catch(() => {});
+  const web = activeWeb.get(key);
+  if (web) {
+    web.stopped = true;
+    web.controller.abort();
+    activeWeb.delete(key);
+  }
   const a = active.get(key);
   if (a) {
     a.cancelled = true;
@@ -868,7 +1155,7 @@ export async function cancelDownload(key: string): Promise<void> {
     await a.resumable.cancelAsync().catch(() => {});
   }
   const t = await getTransfer(key);
-  if (t) await FileSystem.deleteAsync(t.fileUri, { idempotent: true }).catch(() => {});
+  if (t) await removeSavedMedia(t.fileUri);
   await dropTransfer(key);
   if (wasNative) void pumpQueue();
 }

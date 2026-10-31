@@ -3,3 +3,4 @@
 • A finished download is no longer copied a second time inside the app, so saving a title needs only its own size in storage and cannot fail for lack of space after the file has already arrived.
 • Downloads are allowed on mobile data as well as Wi-Fi. Switching to another app or closing the screen keeps them running.
 • Saving two qualities of the same episode still keeps both files, and each one still plays offline from the Downloads tab.
+• Downloads now work in the browser as well as in the app. Hallyu saves the episode in the browser's own offline storage, shows the same progress, and plays it back with no connection. A browser download stops if you close the tab, so on a phone or tablet the app is still the better place to save a long series. Two qualities of one episode are still kept apart, and nothing is saved twice.
