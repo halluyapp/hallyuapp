@@ -79,7 +79,11 @@ export async function ensureBackendSessionToken(): Promise<string | null> {
   if (!supabase) return null;
   try {
     const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token ?? null;
+    let token = data.session?.access_token ?? null;
+    if (!token) {
+      const { data: anonData } = await supabase.auth.signInAnonymously();
+      token = anonData.session?.access_token ?? null;
+    }
     if (token) currentToken = token;
     return token;
   } catch {
@@ -186,8 +190,17 @@ export async function probeBackend(timeoutMs = 6000, online = true): Promise<Con
 
   publish({ status: 'connecting', at: Date.now() });
   try {
-    const session = await withTimeout(supabase.auth.getSession(), timeoutMs);
-    const probe = session.data.session
+    // A saved session may need a token refresh before getSession() returns. If that refresh is slow
+    // (common on web after a long idle), it must not decide the gate: the backend is still reachable.
+    // So the session lookup gets a short bound, and any failure there falls back to the anonymous probe.
+    let signedIn = false;
+    try {
+      const session = await withTimeout(supabase.auth.getSession(), Math.min(2000, timeoutMs));
+      signedIn = !!session.data.session;
+    } catch {
+      signedIn = false;
+    }
+    const probe = signedIn
       ? supabase.rpc('get_bootstrap')
       : supabase.rpc('handle_is_available', { p_handle: 'hallyu-probe' });
     const { error } = await withTimeout(probe, timeoutMs);

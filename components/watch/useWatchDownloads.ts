@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { listDownloads, listTransfers, subscribeTransfers, type DownloadEntry, type TransferEntry } from '../../lib/watchStore';
+import { listDownloads, listTransfers, subscribeCompletedDownloads, subscribeTransfers, type DownloadEntry, type TransferEntry } from '../../lib/watchStore';
 
 /** Live list of unfinished transfers (downloading, paused, failed). Refreshes on every store change. */
 export function useTransfers(): TransferEntry[] {
@@ -17,14 +17,14 @@ export function useTransfers(): TransferEntry[] {
   return list;
 }
 
-/** Live list of completed, playable downloads. */
+/** Live list of completed, playable downloads. Only reloads when downloads are added or removed. */
 export function useCompletedDownloads(): DownloadEntry[] {
   const [list, setList] = useState<DownloadEntry[]>([]);
   useEffect(() => {
     let alive = true;
     const load = () => void listDownloads().then((d) => alive && setList(d));
     load();
-    const unsub = subscribeTransfers(load);
+    const unsub = subscribeCompletedDownloads(load);
     return () => {
       alive = false;
       unsub();
@@ -32,3 +32,4 @@ export function useCompletedDownloads(): DownloadEntry[] {
   }, []);
   return list;
 }
+

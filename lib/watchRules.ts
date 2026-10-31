@@ -8,8 +8,50 @@ export const SKIP_MS = 10_000;
 export const DOUBLE_TAP_WINDOW_MS = 300;
 export const CONTROLS_AUTO_HIDE_MS = 3_500;
 export const SAVE_PROGRESS_EVERY_MS = 10_000;
-/** Lowest-data option we will pick automatically, and the default preference order. */
-export const AUTO_QUALITY_ORDER = ['480p', '360p'];
+/** A transfer with no forward progress for this long is reported as an error, never an endless spinner. */
+export const BUFFER_STALL_MS = 20_000;
+/**
+ * The one data-conscious quality rule, in step with `DEFAULT_QUALITIES` in lib/watchModel.ts:
+ * 360p first, else the lowest quality the title actually offers.
+ */
+export const DEFAULT_QUALITY_ORDER = ['360p'];
+
+/**
+ * The identity the media host accepts. Playback, the size probe, the foreground transfer and the generated
+ * Android downloader all send exactly these two values. A request without them, or with a different user
+ * agent, is refused — which is why a title could stream in the app and still fail to download. The Kotlin
+ * module in scripts/ci/android-downloader-module.mjs embeds copies; scripts/test-watch.mjs fails if they
+ * ever drift apart.
+ */
+export const MEDIA_REFERER = 'https://moviebox.ph/';
+export const MEDIA_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
+
+/**
+ * Android's DownloadManager reports a numeric COLUMN_REASON and no HTTP status. Each known reason becomes one
+ * plain sentence that says what happened and what to do, so a failure is never the same shrug for every cause.
+ */
+export function nativeFailureMessage(reason: number | null | undefined): string {
+  switch (reason) {
+    case 6: // ERROR_INSUFFICIENT_SPACE
+      return 'There is not enough free storage for this download. Free up space, then tap retry.';
+    case 2: // ERROR_UNHANDLED_HTTP_CODE
+    case 4: // ERROR_HTTP_DATA_ERROR
+      return 'The server refused this download. Tap retry to get a fresh link.';
+    case 5: // ERROR_TOO_MANY_REDIRECTS
+      return 'The download link kept redirecting. Tap retry to get a fresh link.';
+    case 8: // ERROR_CANNOT_RESUME
+      return 'Android could not resume this download. Tap retry to start it again.';
+    case 9: // ERROR_FILE_ALREADY_EXISTS
+    case 1: // ERROR_FILE_ERROR
+    case 7: // ERROR_DEVICE_NOT_FOUND
+      return 'This device could not save the file. Tap retry, or free up space first.';
+    case 10: // ERROR_BLOCKED
+      return 'Android blocked this download. Connect to Wi-Fi or mobile data, then tap retry.';
+    default:
+      return 'The download stopped. Tap retry to start it again.';
+  }
+}
 
 /** Drops opaque Expo resume state from legacy persisted records; it may contain a signed URL. */
 export function withoutPersistedResumeData<T extends { resumeData?: unknown }>(entry: T): Omit<T, 'resumeData'> {
@@ -48,15 +90,15 @@ export function tapZone(x: number, width: number): 'left' | 'centre' | 'right' {
 }
 
 /**
- * Picks the quality to play. A requested quality is used only when the title offers it. Otherwise the
- * preferred one, then the data-conscious defaults (480p, 360p), then the best offered. Never invents a
- * quality that is not in `available`.
+ * Picks the quality to play. A requested quality is used only when the title offers it. Otherwise 360p,
+ * then the lowest quality offered. Never invents a quality that is not in `available`, and never picks
+ * a higher quality than the viewer asked for.
  */
 export function chooseQuality(available: string[], preferred?: string | null): string | null {
   if (available.length === 0) return null;
   if (preferred && available.includes(preferred)) return preferred;
-  for (const q of AUTO_QUALITY_ORDER) if (available.includes(q)) return q;
-  return available[0];
+  for (const q of DEFAULT_QUALITY_ORDER) if (available.includes(q)) return q;
+  return [...available].sort((a, b) => (qualityRank(a) ?? Number.MAX_SAFE_INTEGER) - (qualityRank(b) ?? Number.MAX_SAFE_INTEGER))[0];
 }
 
 /** Parses "1080p" → 1080. Unknown labels return null rather than a guessed number. */
@@ -81,6 +123,52 @@ export function qualityDownloadKey(subjectId: string, season: number | null, epi
   return `${subjectId}:${season ?? 0}:${episode ?? 0}:q:${encodedQuality}`;
 }
 
+/* ---------- Downloads in a browser ---------- */
+
+/** Cache Storage bucket for downloads saved in a browser. Deliberately not named `hallyu-assets-*`, so the
+ * service worker's activate sweep never deletes a saved episode. */
+export const WEB_OFFLINE_CACHE = 'hallyu-offline-v1';
+
+/**
+ * The Cache Storage key one download is stored under: the same identity as a local file name, so one title,
+ * episode, and quality always map to exactly one stored episode and two qualities never collide.
+ */
+export function offlineCachePath(key: string): string {
+  return `/offline/${key.replace(/[^A-Za-z0-9_-]/g, '_')}.mp4`;
+}
+
+/** True when a saved download lives in the browser's Cache Storage instead of a file on disk. */
+export function isWebOfflinePath(uri: string | null | undefined): boolean {
+  return typeof uri === 'string' && uri.startsWith('/offline/');
+}
+
+/**
+ * Free bytes a browser reports for this site: its quota minus what is already stored. Null when the browser
+ * does not say, which is never read as "no space": an unknown limit must not refuse a download.
+ */
+export function webFreeBytes(estimate: { quota?: number; usage?: number } | null | undefined): number | null {
+  if (!estimate || typeof estimate.quota !== 'number' || !Number.isFinite(estimate.quota)) return null;
+  const used = typeof estimate.usage === 'number' && Number.isFinite(estimate.usage) ? estimate.usage : 0;
+  return Math.max(0, estimate.quota - used);
+}
+
+/** Whether a download of a known length fits, keeping the same reserve a phone download keeps. */
+export function webDownloadFits(totalBytes: number | null, freeBytes: number | null, reserveBytes: number): boolean {
+  if (totalBytes === null || freeBytes === null) return true;
+  return freeBytes >= totalBytes + reserveBytes;
+}
+
+/**
+ * The full length of a browser download, read from the response headers. A cross-origin page can read
+ * Content-Length (a safelisted header) but not Content-Range, so only a whole-file 200 states the size of
+ * the episode: a 206's single byte, or an error body, is never mistaken for it.
+ */
+export function totalFromLengthHeader(status: number, contentLength: string | null | undefined): number | null {
+  if (status !== 200) return null;
+  const n = Number(contentLength);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 export type TransferStatus = 'queued' | 'downloading' | 'paused' | 'failed' | 'completed';
 
 export interface TransferSnapshot {
@@ -103,6 +191,70 @@ export function transferComplete(bytesOnDisk: number, expectedBytes: number | nu
 export function isMp4Header(bytes: Uint8Array): boolean {
   if (bytes.length < 12) return false;
   return bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70; // "ftyp"
+}
+
+/**
+ * Smallest file that can be a real video. This is a sanity floor for empty and error bodies only, not a
+ * "full-length" rule: a short clip or a trailer is still a legitimate download.
+ */
+export const MIN_PLAYABLE_BYTES = 64 * 1024;
+
+export interface Mp4Box {
+  type: string;
+  offset: number;
+  size: number;
+}
+
+/**
+ * Walks the top-level ISO BMFF boxes of a file. `readAt(position, length)` must return the bytes at that
+ * position (fewer at end of file). Returns null when the structure is not a valid box chain.
+ */
+export async function readTopLevelMp4Boxes(
+  readAt: (position: number, length: number) => Promise<Uint8Array>,
+  fileSize: number,
+): Promise<Mp4Box[] | null> {
+  const boxes: Mp4Box[] = [];
+  let offset = 0;
+  while (offset < fileSize) {
+    if (boxes.length >= 64) return null;
+    const head = await readAt(offset, 16);
+    if (head.length < 8) return null;
+    const view = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    let size = view.getUint32(0);
+    const type = String.fromCharCode(head[4], head[5], head[6], head[7]);
+    let headerLen = 8;
+    if (size === 1) {
+      if (head.length < 16) return null;
+      const large = view.getBigUint64(8);
+      if (large > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      size = Number(large);
+      headerLen = 16;
+    } else if (size === 0) {
+      size = fileSize - offset; // box runs to the end of the file
+    }
+    if (size < headerLen || offset + size > fileSize) return null;
+    boxes.push({ type, offset, size });
+    offset += size;
+  }
+  return boxes;
+}
+
+/**
+ * A download is accepted only when the whole file parses as ISO BMFF boxes, begins with "ftyp", contains
+ * "moov" (without it the player cannot start), and matches the byte count the server promised when known.
+ * Any HTML page, JSON error, truncated body or expired-link response fails here.
+ */
+export async function validateMp4Layout(
+  readAt: (position: number, length: number) => Promise<Uint8Array>,
+  fileSize: number,
+  expectedBytes: number | null,
+): Promise<{ ok: true } | { ok: false; reason: 'too_small' | 'not_mp4' | 'no_movie_box' | 'size_mismatch' }> {
+  if (fileSize < MIN_PLAYABLE_BYTES) return { ok: false, reason: 'too_small' };
+  if (expectedBytes !== null && expectedBytes > 0 && fileSize !== expectedBytes) return { ok: false, reason: 'size_mismatch' };
+  const boxes = await readTopLevelMp4Boxes(readAt, fileSize);
+  if (!boxes || boxes.length === 0 || boxes[0].type !== 'ftyp') return { ok: false, reason: 'not_mp4' };
+  if (!boxes.some((b) => b.type === 'moov')) return { ok: false, reason: 'no_movie_box' };
+  return { ok: true };
 }
 
 /** Human size. Returns "Size unavailable" for null, negative, or NaN values. Never guesses a size. */
@@ -147,6 +299,9 @@ export function canTransition(from: TransferStatus, to: TransferStatus): boolean
 
 /** Largest number of automatic continuations for one transfer before it is reported as failed. */
 export const MAX_AUTO_CONTINUES = 6;
+
+/** Maximum concurrent active downloads allowed before queueing additional transfers. */
+export const MAX_CONCURRENT_TRANSFERS = 3;
 
 export type AfterTransfer =
   | { action: 'complete' }
@@ -220,15 +375,42 @@ export function stoppedMessage(bytes: number, total: number | null, status: numb
   return `Stopped at ${where} (server status ${status}). Tap retry to restart safely.`;
 }
 
+/** Human-readable transfer speed (e.g. 3.4 MB/s, 450 KB/s). Empty for unknown/zero speed. */
+export function formatSpeed(bytesPerSec: number | null | undefined): string {
+  if (!bytesPerSec || bytesPerSec <= 0 || !Number.isFinite(bytesPerSec)) return '';
+  if (bytesPerSec < 1024 * 1024) return `${Math.max(1, Math.round(bytesPerSec / 1024))} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+/** Human-readable remaining transfer time (e.g. 45s left, 2m 10s left). */
+export function formatEta(seconds: number | null | undefined): string {
+  if (!seconds || seconds <= 0 || !Number.isFinite(seconds)) return '';
+  if (seconds < 60) return `${Math.round(seconds)}s left`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (mins < 60) return secs > 0 ? `${mins}m ${secs}s left` : `${mins}m left`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `${hours}h ${remMins}m left`;
+}
+
 /** Text for a download notification. Progress shows a percentage; failures and pauses show the reason. */
 export type NoticeKind = 'progress' | 'paused' | 'failed' | 'done';
 
-export function progressNotice(kind: NoticeKind, title: string, percent: number, message: string | null): { title: string; body: string } {
+export function progressNotice(
+  kind: NoticeKind,
+  title: string,
+  percent: number,
+  message: string | null,
+  speed?: string | null,
+  eta?: string | null,
+): { title: string; body: string } {
   const name = title.trim() || 'Download';
   if (kind === 'done') return { title: 'Download complete', body: `${name} is saved on this device.` };
   if (kind === 'failed') return { title: 'Download stopped', body: message ?? `${name} stopped. Open Downloads to retry.` };
   if (kind === 'paused') return { title: 'Download paused', body: `${name} · ${percent}%` };
-  return { title: 'Downloading', body: `${name} · ${percent}%` };
+  const extra = [speed, eta].filter(Boolean).join(' · ');
+  return { title: 'Downloading', body: extra ? `${name} · ${percent}% · ${extra}` : `${name} · ${percent}%` };
 }
 
 /**
@@ -258,4 +440,137 @@ export function repairTransfer<T extends { status: TransferStatus; error: string
     return { ...t, status: 'failed', error: 'This download was waiting in the queue when the app closed. Tap retry to start it.' };
   }
   return t;
+}
+
+/* ---------- Deterministic player states ---------- */
+
+/**
+ * The six states the player can be in, and exactly one is displayed:
+ *   loading      a stream link is being fetched, or the video has not reported a frame yet
+ *   buffering    the player is running but has no data to show yet (bounded by BUFFER_STALL_MS)
+ *   playing      frames are advancing
+ *   paused       ready, not advancing
+ *   error        something recoverable broke (a stall, a dropped link, a failed load) — retry applies
+ *   unavailable  there is nothing to play at all (no full-length stream, not signed in, not configured)
+ * `unavailable` is deliberately separate from `error`: it is never retried, because retrying cannot help.
+ */
+export type PlayerState = 'loading' | 'buffering' | 'playing' | 'paused' | 'error' | 'unavailable';
+
+/** Milliseconds without forward progress while buffering. Always 0 when the player is not buffering. */
+export function stalledForMs(nowMs: number, lastProgressAtMs: number, isBuffering: boolean): number {
+  if (!isBuffering || !Number.isFinite(nowMs) || !Number.isFinite(lastProgressAtMs)) return 0;
+  return Math.max(0, nowMs - lastProgressAtMs);
+}
+
+/** Resolves exactly one player state from what the player reported. No I/O, and no guessing. */
+export function playerState(input: {
+  hasSource: boolean;
+  loading: boolean;
+  unavailable: boolean;
+  failed: boolean;
+  isPlaying: boolean;
+  isBuffering: boolean;
+  /** Milliseconds without progress. A long stall is an error, never a silent spinner. */
+  stalledMs?: number | null;
+}): PlayerState {
+  if (input.unavailable) return 'unavailable';
+  if (input.failed) return 'error';
+  if (input.loading || !input.hasSource) return 'loading';
+  if (input.isBuffering) return (input.stalledMs ?? 0) >= BUFFER_STALL_MS ? 'error' : 'buffering';
+  return input.isPlaying ? 'playing' : 'paused';
+}
+
+/** True for the reasons retrying can never fix: the title has nothing playable for this viewer. */
+export function isUnavailableReason(reason: string | null | undefined): boolean {
+  return reason === 'no_full_stream' || reason === 'not_configured' || reason === 'signed_out';
+}
+
+/** The one line of copy per failure reason, so every Watch surface says the same thing. */
+export function watchErrorMessage(reason: string | null | undefined, quality?: string | null): string {
+  if (reason === 'no_full_stream') {
+    return quality ? `No full-length stream is available at ${quality} right now.` : 'No full-length stream is available for this title right now.';
+  }
+  if (reason === 'signed_out') return 'Sign in to watch Hallyu TV.';
+  if (reason === 'offline') return 'You are offline. Connect to stream, or play a downloaded copy.';
+  if (reason === 'not_configured') return 'Hallyu TV is not set up yet.';
+  if (reason === 'stalled') return 'Playback stalled and did not recover. Check your connection, then tap Try again.';
+  return 'This stream could not be loaded. Check your connection and try again.';
+}
+
+/* ---------- TTL cache (shared by the Watch client) ---------- */
+
+export interface TtlEntry<T> {
+  value: T;
+  until: number;
+}
+
+/**
+ * Stores a bounded, expiring cache entry. A non-positive TTL stores nothing, which is how a caller
+ * says "never remember this". Oldest entry is evicted once the map is full.
+ */
+export function ttlPut<T>(map: Map<string, TtlEntry<T>>, key: string, value: T, ttlMs: number, nowMs = Date.now(), maxEntries = 128): void {
+  if (!(ttlMs > 0)) {
+    map.delete(key);
+    return;
+  }
+  if (maxEntries > 0 && map.size >= maxEntries && !map.has(key)) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, { value, until: nowMs + ttlMs });
+}
+
+/** The cached value while it is inside its window, else null (and the expired entry is dropped). */
+export function ttlGet<T>(map: Map<string, TtlEntry<T>>, key: string, nowMs = Date.now()): T | null {
+  const hit = map.get(key);
+  if (!hit) return null;
+  if (hit.until <= nowMs) {
+    map.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+/* ---------- Download targets (Play and Download beside each other) ---------- */
+
+export interface DownloadTarget {
+  key: string;
+  quality: string | null;
+  /** Bytes of a finished file for this exact title/season/episode/quality, or null. */
+  savedBytes: number | null;
+  /** The state of a transfer for this exact title/quality, or null. */
+  transferStatus: TransferStatus | null;
+  /** A new transfer may be started for this quality right now. */
+  canStart: boolean;
+}
+
+/**
+ * One entry per quality the title offers. Qualities are independent: a saved or running 360p copy never
+ * blocks a 480p download, and the two files never share a key or a path.
+ */
+export function downloadTargets(input: {
+  subjectId: string;
+  season: number | null;
+  episode: number | null;
+  qualities: (string | null)[];
+  saved: { key: string; quality: string | null; bytes: number }[];
+  transfers: { key: string; quality: string | null; status: TransferStatus }[];
+}): DownloadTarget[] {
+  const seen = new Set<string>();
+  const out: DownloadTarget[] = [];
+  for (const quality of input.qualities) {
+    const key = qualityDownloadKey(input.subjectId, input.season, input.episode, quality);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const saved = input.saved.find((d) => d.key === key && d.quality === quality) ?? null;
+    const active = input.transfers.find((t) => t.key === key && t.quality === quality) ?? null;
+    out.push({
+      key,
+      quality,
+      savedBytes: saved ? saved.bytes : null,
+      transferStatus: active ? active.status : null,
+      canStart: !saved && (active === null || active.status === 'failed'),
+    });
+  }
+  return out;
 }

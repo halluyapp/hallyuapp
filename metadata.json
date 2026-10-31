@@ -1,0 +1,8 @@
+{
+  "name": "Hallyu — Every Episode Night. Together.",
+  "description": "Social timeline, live synchronized Watch Parties, DMs & spoiler-safe threads across K-Dramas, C-Dramas, Anime & Cinema.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ],
+  "permissions": []
+}

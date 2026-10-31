@@ -77,6 +77,7 @@ function feedEqual(a: FeedItem[], b: FeedItem[]): boolean {
 }
 
 const UNIVERSE_TINT: Partial<Record<FandomId, string>> = {
+  kdrama: '#FF2D55',
   cdrama: '#10B981',
   anime: '#8B5CF6',
   hollywood: '#F59E0B',
@@ -529,6 +530,19 @@ function Home() {
         </View>
       }
     >
+      {universe !== 'all' && UNIVERSE_TINT[universe] ? (
+        <View
+          pointerEvents="none"
+          style={[
+            StyleSheet.absoluteFillObject,
+            {
+              backgroundColor: UNIVERSE_TINT[universe],
+              opacity: 0.045,
+              zIndex: 0,
+            },
+          ]}
+        />
+      ) : null}
       <Segmented
         items={[
           { key: 'forYou', label: t('home.forYou') },

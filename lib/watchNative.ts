@@ -9,6 +9,8 @@ export interface NativeDownloadStatus {
   status: 'running' | 'paused' | 'successful' | 'failed' | 'missing';
   bytes: number;
   total: number;
+  /** DownloadManager COLUMN_REASON for a failure: no space, an HTTP error, too many redirects, a blocked network. */
+  reason: number | null;
   localPath: string | null;
 }
 

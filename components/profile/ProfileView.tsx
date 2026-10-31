@@ -1,8 +1,9 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { FlatList, Pressable, RefreshControl, StyleSheet, View } from 'react-native';
+import { FlatList, Pressable, RefreshControl, StyleSheet, TextInput, View } from 'react-native';
 import { colors, radius, sizes, space } from '../../constants/theme';
 import { Fandom, fandomById, isFandomId } from '../../lib/fandoms';
 import { compact } from '../../lib/format';
@@ -47,6 +48,23 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
   const blocked = state.blockedUsers.includes(user.id);
   const followingThem = state.follows.users.includes(user.id);
   const isPrivate = !!user.isPrivate && !isMe && !followingThem;
+
+  const [bias, setBias] = useState<string | null>(null);
+  const [biasModal, setBiasModal] = useState(false);
+  const [customBias, setCustomBias] = useState('');
+
+  useEffect(() => {
+    AsyncStorage.getItem(`@hallyu/user_bias_${user.id}`).then((val) => {
+      if (val) setBias(val);
+    }).catch(() => {});
+  }, [user.id]);
+
+  const handleSelectBias = (name: string) => {
+    setBias(name);
+    AsyncStorage.setItem(`@hallyu/user_bias_${user.id}`, name).catch(() => {});
+    setBiasModal(false);
+    toast.show({ message: `Bias set to ${name} 💖`, aboveTabBar: false });
+  };
 
   const syncProfile = useCallback(async () => {
     const syncCb = {
@@ -338,6 +356,50 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
             </View>
           ) : null}
 
+          {/* Ultimate Bias Showcase Card */}
+          <View style={styles.biasCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="sparkles" size={14} color="#FF6584" />
+                <Text variant="overline" style={{ color: '#FF6584', letterSpacing: 1 }}>
+                  ULTIMATE BIAS
+                </Text>
+              </View>
+              {isMe && (
+                <Pressable onPress={() => setBiasModal(true)} hitSlop={8} accessibilityRole="button">
+                  <Text variant="caption" tone="accent">
+                    {bias ? 'Change' : '+ Select'}
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+            {bias ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x3, marginTop: space.x3 }}>
+                <View style={styles.biasAvatarCircle}>
+                  <Text style={{ fontSize: 18 }}>💖</Text>
+                </View>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text variant="titleSmall" style={{ color: colors.textPrimary }}>
+                    {bias}
+                  </Text>
+                  <Text variant="caption" tone="secondary">
+                    #1 on Stan Radar · Infinite Affinity
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <Pressable
+                onPress={() => isMe && setBiasModal(true)}
+                style={{ marginTop: space.x2, flexDirection: 'row', alignItems: 'center', gap: space.x2 }}
+              >
+                <Text variant="bodySmall" tone="secondary" style={{ flex: 1 }}>
+                  {isMe ? 'Choose your ultimate bias to feature them on your Hallyu profile card.' : 'No bias chosen yet.'}
+                </Text>
+                {isMe && <Button label="Pick Bias" size="sm" variant="secondary" onPress={() => setBiasModal(true)} />}
+              </Pressable>
+            )}
+          </View>
+
           {/* Top 4 All-Time Favorites Showcase right near top (Letterboxd style) */}
           {favorites.length || isMe ? (
             <Shelf title="Top 4 All-Time" onSeeAll={isMe ? () => router.push('/edit-profile') : undefined} actionLabel={isMe ? 'Pin Top 4' : undefined}>
@@ -576,6 +638,63 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
           }}
         />
       </Sheet>
+
+      <Sheet visible={biasModal} onClose={() => setBiasModal(false)} title="Choose Your Bias">
+        <View style={{ paddingHorizontal: space.margin, paddingBottom: space.x6, gap: space.x3 }}>
+          <Text variant="bodySmall" tone="secondary">
+            Select your favorite star to feature them proudly on your Hallyu profile.
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: space.x2 }}>
+            {[
+              'Song Kang',
+              'Kim Soo-hyun',
+              'IU (Lee Ji-eun)',
+              'Cha Eun-woo',
+              'Park Eun-bin',
+              'Hyun Bin',
+              'Son Ye-jin',
+              'Lee Min-ho',
+              'Bae Suzy',
+              'Park Seo-jun',
+              'V (BTS)',
+              'Jungkook (BTS)',
+              'Lisa (BLACKPINK)',
+              'Jennie (BLACKPINK)',
+            ].map((name) => (
+              <Pressable
+                key={name}
+                onPress={() => handleSelectBias(name)}
+                style={[
+                  styles.biasOptionPill,
+                  bias === name && { borderColor: '#FF6584', backgroundColor: 'rgba(255,101,132,0.18)' },
+                ]}
+              >
+                <Text variant="label" style={{ color: bias === name ? '#FF6584' : colors.textPrimary }}>
+                  {name}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <View style={{ flexDirection: 'row', gap: space.x2, marginTop: space.x2 }}>
+            <TextInput
+              value={customBias}
+              onChangeText={setCustomBias}
+              placeholder="Or type custom idol / actor name…"
+              placeholderTextColor={colors.textTertiary}
+              style={styles.customBiasInput}
+            />
+            <Button
+              label="Set"
+              size="sm"
+              disabled={!customBias.trim()}
+              onPress={() => {
+                if (customBias.trim()) handleSelectBias(customBias.trim());
+              }}
+            />
+          </View>
+        </View>
+      </Sheet>
+
       <ShareCardModal visible={shareOpen} onClose={() => setShareOpen(false)} profileUser={user} drama={heroDrama} />
     </>
   );
@@ -665,5 +784,43 @@ const styles = StyleSheet.create({
     padding: space.x3,
     backgroundColor: colors.surface1,
     borderRadius: radius.md,
+  },
+  biasCard: {
+    marginHorizontal: space.margin,
+    marginTop: space.x3,
+    padding: space.x4,
+    borderRadius: radius.md,
+    backgroundColor: 'rgba(255,101,132,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,101,132,0.28)',
+  },
+  biasAvatarCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,101,132,0.14)',
+    borderWidth: 1,
+    borderColor: '#FF6584',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  biasOptionPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.surface2,
+  },
+  customBiasInput: {
+    flex: 1,
+    height: 38,
+    paddingHorizontal: 12,
+    borderRadius: radius.full,
+    backgroundColor: colors.surface2,
+    color: colors.textPrimary,
+    fontSize: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
   },
 });

@@ -1,16 +1,17 @@
 import { usePathname, useRouter, useRootNavigationState } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Animated, Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Animated, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Text } from '../components/ui/Text';
 import { colors, motion } from '../constants/theme';
 import { lastCrash } from '../lib/crash';
 import { bootTrail, markBoot } from '../lib/boot';
 import { useAuth } from '../lib/auth';
-import { isBackendConfigured, probeBackend, type ConnectionStatus } from '../lib/api/client';
+import { getBackendHealth, isBackendConfigured, probeBackend, type ConnectionStatus } from '../lib/api/client';
 import { useNetwork } from '../lib/hooks';
 import { GUEST_ID, useStore } from '../lib/store';
+import { listDownloads } from '../lib/watchStore';
 
 /**
  * Splash → route gate.
@@ -34,8 +35,13 @@ import { GUEST_ID, useStore } from '../lib/store';
  * shown on screen, so a stalled release build reports exactly where it stopped.
  */
 const AUTO_BAILOUT_MS = 6000;
-/** The gate probe must settle inside the bailout window so it can never fight the failsafe. */
-const GATE_PROBE_MS = 5000;
+/**
+ * One gate probe attempt. Mobile cold starts can take several seconds for a healthy backend, so
+ * the bound is generous. A probe that comes back "unavailable" is retried once before the gate
+ * blocks; a timeout on a slow network must not look like a server that cannot be reached.
+ */
+const GATE_PROBE_MS = 10000;
+const GATE_RETRY_DELAY_MS = 1000;
 
 /** The one honest line the splash shows about the backend connection. */
 function gateLine(conn: ConnectionStatus | null): string {
@@ -47,7 +53,7 @@ function gateLine(conn: ConnectionStatus | null): string {
     case 'connected':
       return '';
     case 'offline':
-      return 'You’re offline — Hallyu needs the backend to load your account';
+      return 'You’re offline · Watch downloads or continue offline';
     case 'unavailable':
       return 'Hallyu’s backend could not be reached';
     case 'misconfigured':
@@ -59,7 +65,7 @@ function gateLine(conn: ConnectionStatus | null): string {
 function gateDetail(conn: ConnectionStatus | null): string {
   switch (conn) {
     case 'offline':
-      return 'This device has no network connection. Hallyu needs the backend to load your account, so it will not open with local data instead. Turn on a network and retry.';
+      return 'No network connection detected. You can watch your downloaded movies and series right now, or continue into the app in offline mode.';
     case 'unavailable':
       return 'The backend did not answer the connection check. This is usually a network or server problem. Nothing has been changed and no local data will be shown — retry in a moment.';
     case 'misconfigured':
@@ -103,27 +109,78 @@ export default function Index() {
   // prove, so it resolves immediately to the local-mode path.
   const gateSatisfied = configured ? conn === 'connected' : conn !== null;
   const ready = coreReady && gateSatisfied;
-  // A configured build that could not connect is blocked on screen, not routed into the app.
-  const blocked = configured && coreReady && conn !== null && conn !== 'connected';
+  // A configured build that could not connect is blocked on screen in the app shells. On web the gate
+  // never blocks: the public landing page must load even when the backend does not answer, so visitors
+  // see the product instead of an "unavailable" wall.
+  const blocked = configured && coreReady && conn !== null && conn !== 'connected' && Platform.OS !== 'web';
+  const webLanding = configured && conn !== null && conn !== 'connected' && Platform.OS === 'web';
   const fade = useRef(new Animated.Value(0)).current;
   const hasNavigated = useRef(false);
   const [stuck, setStuck] = useState(false);
   // Bumped by Retry; the probe effect keys off it so retrying is a plain state change.
   const [attempt, setAttempt] = useState(0);
+  const [downloadCount, setDownloadCount] = useState<number>(0);
+
+  useEffect(() => {
+    void listDownloads().then((d) => setDownloadCount(d.length)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!coreReady || !isBackendConfigured()) return;
     let cancelled = false;
     markBoot('gate:probe');
-    void probeBackend(GATE_PROBE_MS, online).then((s) => {
+    const settle = async () => {
+      let s = await probeBackend(GATE_PROBE_MS, online);
+      if (s === 'unavailable' && !cancelled) {
+        markBoot('gate:unavailable-retry');
+        await new Promise((r) => setTimeout(r, GATE_RETRY_DELAY_MS));
+        if (!cancelled) s = await probeBackend(GATE_PROBE_MS, online);
+      }
       if (cancelled) return;
       setConn(s);
       markBoot(`gate:${s}`);
-    });
+    };
+    void settle();
     return () => {
       cancelled = true;
     };
   }, [coreReady, online, attempt]);
+
+  // Web: an unreachable backend goes to the public landing page rather than an unavailable wall. The
+  // landing page (sign in, create account, browse as a guest, install the app) needs no backend.
+  useEffect(() => {
+    if (!webLanding || !navReady || hasNavigated.current) return;
+    hasNavigated.current = true;
+    markBoot('index:web-landing');
+    router.replace('/(auth)/welcome' as never);
+  }, [webLanding, navReady, router]);
+
+  // Anonymous access is always available: a probe that cannot reach the backend must never be a dead end.
+  const continueAsGuest = () => {
+    markBoot('index:guest-fallback');
+    void auth.continueAsGuest();
+    if (!hasNavigated.current && navReady) {
+      hasNavigated.current = true;
+      router.replace('/(tabs)' as never);
+    }
+  };
+
+  const continueOffline = () => {
+    markBoot('index:offline-continue');
+    if (!hasNavigated.current && navReady) {
+      hasNavigated.current = true;
+      const dest = auth.status === 'signedIn' && !state.onboarding.done ? '/(onboarding)/fandoms' : '/(tabs)';
+      router.replace(dest as never);
+    }
+  };
+
+  const goToDownloads = () => {
+    markBoot('index:offline-downloads');
+    if (!hasNavigated.current && navReady) {
+      hasNavigated.current = true;
+      router.replace('/watch/downloads' as never);
+    }
+  };
 
   const retry = () => {
     markBoot('gate:retry');
@@ -223,16 +280,63 @@ export default function Index() {
       {blocked ? (
         <View style={styles.blocked} accessibilityLiveRegion="polite">
           <Text variant="body" tone="primary" style={styles.blockedTitle}>
-            {conn === 'offline' ? 'No connection' : conn === 'misconfigured' ? 'Backend not configured' : 'Cannot reach Hallyu'}
+            {conn === 'offline' ? 'Offline Mode' : conn === 'misconfigured' ? 'Backend not configured' : 'Cannot reach Hallyu'}
           </Text>
           <Text variant="caption" tone="secondary" style={styles.blockedBody}>
             {gateDetail(conn)}
           </Text>
-          <Pressable onPress={retry} style={styles.retry} accessibilityRole="button" accessibilityLabel="Retry connection">
-            <Text variant="label" tone="primary">
-              Retry
-            </Text>
-          </Pressable>
+          {conn === 'offline' ? (
+            <View style={styles.buttonGroup}>
+              <Pressable
+                onPress={goToDownloads}
+                style={[styles.retry, styles.retryPrimary]}
+                accessibilityRole="button"
+                accessibilityLabel="Watch downloaded titles offline"
+              >
+                <Text variant="label" tone="onAccent">
+                  {downloadCount > 0 ? `Watch Offline (${downloadCount} saved)` : 'Watch Offline (Downloads)'}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={continueOffline}
+                style={styles.retry}
+                accessibilityRole="button"
+                accessibilityLabel="Continue into app in offline mode"
+              >
+                <Text variant="label" tone="primary">
+                  Continue to App Offline
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={retry}
+                style={styles.retryGhost}
+                accessibilityRole="button"
+                accessibilityLabel="Retry connection"
+              >
+                <Text variant="caption" tone="secondary">
+                  Retry connection
+                </Text>
+              </Pressable>
+            </View>
+          ) : (
+            <>
+              {getBackendHealth().message ? (
+                <Text variant="caption" tone="tertiary" style={styles.blockedBody} accessibilityLabel="Connection detail">
+                  Technical detail: {getBackendHealth().message?.slice(0, 160)}
+                </Text>
+              ) : null}
+              <Pressable onPress={retry} style={styles.retry} accessibilityRole="button" accessibilityLabel="Retry connection">
+                <Text variant="label" tone="primary">
+                  Retry
+                </Text>
+              </Pressable>
+              <Pressable onPress={continueAsGuest} style={styles.retry} accessibilityRole="button" accessibilityLabel="Continue as a guest">
+                <Text variant="caption" tone="secondary">
+                  Continue as a guest
+                </Text>
+              </Pressable>
+            </>
+          )}
         </View>
       ) : null}
       <Pressable
@@ -258,15 +362,25 @@ const styles = StyleSheet.create({
   gate: { position: 'absolute', bottom: 120, paddingHorizontal: 32, textAlign: 'center' },
   stuck: { position: 'absolute', bottom: 84 },
   foot: { position: 'absolute', bottom: 48 },
-  blocked: { position: 'absolute', left: 32, right: 32, bottom: 150, alignItems: 'center', gap: 12 },
+  blocked: { position: 'absolute', left: 32, right: 32, bottom: 140, alignItems: 'center', gap: 12 },
   blockedTitle: { textAlign: 'center' },
   blockedBody: { textAlign: 'center' },
+  buttonGroup: { width: '100%', alignItems: 'center', gap: 8, marginTop: 4 },
   retry: {
-    marginTop: 4,
+    minWidth: 220,
+    alignItems: 'center',
     paddingHorizontal: 28,
     paddingVertical: 12,
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,
+  },
+  retryPrimary: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  retryGhost: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
   },
 });

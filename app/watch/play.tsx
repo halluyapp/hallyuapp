@@ -10,18 +10,29 @@ import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchPlayback } from '../../lib/api/moviebox';
-import { getProgress, saveProgress, setPreferredQuality, type WatchEpisodeRef } from '../../lib/watchStore';
+import { fetchCaptionCues, fetchMovieboxCaptions, type MovieboxCaption } from '../../lib/api/subtitles';
+import { cueTextAt, type SubtitleCue } from '../../lib/subtitles';
+import { getProgress, listDownloads, resolveLocalSource, saveProgress, setTitleQuality, type DownloadEntry, type WatchEpisodeRef } from '../../lib/watchStore';
+import { readLocalSubtitle } from '../../lib/watchSubtitleDownload';
 import {
+  BUFFER_STALL_MS,
   CONTROLS_AUTO_HIDE_MS,
   DOUBLE_TAP_WINDOW_MS,
+  MEDIA_REFERER,
+  MEDIA_USER_AGENT,
   SAVE_PROGRESS_EVERY_MS,
   SKIP_MS,
   fractionAt,
   formatClock,
+  isUnavailableReason,
+  playerState,
   seekTarget,
   sortQualities,
+  stalledForMs,
   volumeAfterSwipe,
+  watchErrorMessage,
 } from '../../lib/watchRules';
+import { recordWatch } from '../../lib/watchPerf';
 
 const HOLD_STEP_MS = 2000;
 const HOLD_INTERVAL_MS = 250;
@@ -30,14 +41,6 @@ const RESUME_MIN_MS = 5000;
 
 type Phase = 'loading' | 'ready' | 'error';
 type Zone = 'left' | 'right';
-
-function messageFor(reason: string): string {
-  if (reason === 'no_full_stream') return 'No full-length stream is available for this episode at this quality right now.';
-  if (reason === 'signed_out') return 'Sign in to watch Hallyu TV.';
-  if (reason === 'offline') return 'You are offline. Connect to stream, or play a downloaded copy.';
-  if (reason === 'not_configured') return 'Hallyu TV is not set up yet.';
-  return 'This stream could not be loaded. Check your connection and try again.';
-}
 
 /**
  * Hallyu TV player. Plays a proxy stream (fetched fresh from `playback`) or a file saved on this device.
@@ -86,6 +89,11 @@ export default function WatchPlayer() {
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestSeq = useRef(0);
+  /** When the player last made forward progress; the watchdog measures stalls against this. */
+  const lastProgressAt = useRef(Date.now());
+  const mountedAt = useRef(Date.now());
+  /** Releases the object URL a download stored in the browser is played from. */
+  const localRelease = useRef<(() => void) | null>(null);
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [source, setSource] = useState<{ uri: string } | null>(null);
@@ -94,6 +102,9 @@ export default function WatchPlayer() {
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** Set only for reasons retrying can never fix; the player then shows "unavailable", never "error". */
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
+  const [stalled, setStalled] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
@@ -101,6 +112,13 @@ export default function WatchPlayer() {
   const [scrubFraction, setScrubFraction] = useState<number | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
+  // Subtitles come only from the MovieBox captions, loaded automatically for the title.
+  const [cues, setCues] = useState<SubtitleCue[]>([]);
+  const [cueLabel, setCueLabel] = useState<string | null>(null);
+  const [subsOpen, setSubsOpen] = useState(false);
+  const [subsBusy, setSubsBusy] = useState(false);
+  const [subsNote, setSubsNote] = useState<string | null>(null);
+  const [captionChoices, setCaptionChoices] = useState<MovieboxCaption[]>([]);
   const [immersive, setImmersive] = useState(false);
   const [dismissLandscape, setDismissLandscape] = useState(false);
   const [rate, setRate] = useState(1);
@@ -125,17 +143,24 @@ export default function WatchPlayer() {
     const seq = ++requestSeq.current;
     setPhase('loading');
     setErrorMessage(null);
+    setStalled(false);
+    setUnavailableReason(null);
+    lastProgressAt.current = Date.now();
     pendingSeek.current = resumeAt;
+    const startedAt = Date.now();
     const r = await fetchWatchPlayback(
       ref.subjectId,
       ref.season ?? undefined,
       ref.episode ?? undefined,
       quality,
       fresh,
+      ref.detailPath,
     );
+    recordWatch('play:link', Date.now() - startedAt);
     if (seq !== requestSeq.current) return false;
     if (!r.ok) {
-      setErrorMessage(messageFor(r.reason));
+      setUnavailableReason(isUnavailableReason(r.reason) ? r.reason : null);
+      setErrorMessage(watchErrorMessage(r.reason, quality));
       setPhase('error');
       return false;
     }
@@ -145,11 +170,34 @@ export default function WatchPlayer() {
     return true;
   };
 
+  /**
+   * Opens a saved download. A browser keeps its downloads in Cache Storage, which a <video> element cannot
+   * open by path, so it arrives as an object URL; a file on a phone is playable by its own path. When the
+   * download's file is gone, the player says so instead of waiting forever.
+   */
+  const openLocal = async (saved: string): Promise<void> => {
+    try {
+      const opened = await resolveLocalSource(saved);
+      if (!opened) {
+        setErrorMessage('This download is no longer on this device. Download it again.');
+        setPhase('error');
+        return;
+      }
+      const previous = localRelease.current;
+      localRelease.current = opened.release;
+      previous?.();
+      setSource({ uri: opened.uri });
+    } catch {
+      setErrorMessage('This download could not be opened. Remove it and download it again.');
+      setPhase('error');
+    }
+  };
+
   useEffect(() => {
     if (isLocal) {
-      setSource({ uri: String(params.local) });
       setPlayingQuality(params.quality ? String(params.quality) : null);
       setQualities(params.quality ? [String(params.quality)] : []);
+      void openLocal(String(params.local));
       return;
     }
     const requested = params.quality ? String(params.quality) : null;
@@ -157,6 +205,42 @@ export default function WatchPlayer() {
     // One initial load per mounted player. Later loads go through the handlers below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // An object URL outlives the video unless it is released, so the player releases it when it leaves.
+  useEffect(
+    () => () => {
+      localRelease.current?.();
+      localRelease.current = null;
+    },
+    [],
+  );
+
+  const [nextDownloaded, setNextDownloaded] = useState<DownloadEntry | null>(null);
+
+  useEffect(() => {
+    if (!isLocal || !ref.subjectId || ref.episode === null) return;
+    void listDownloads().then((all) => {
+      const next =
+        all.find((d) => d.subjectId === ref.subjectId && d.season === ref.season && d.episode === (ref.episode ?? 0) + 1) ??
+        all.find((d) => d.subjectId === ref.subjectId && (d.season ?? 0) === (ref.season ?? 0) + 1 && d.episode === 1);
+      if (next) setNextDownloaded(next);
+    });
+  }, [isLocal, ref.subjectId, ref.season, ref.episode]);
+
+  const playNextDownloaded = (next: DownloadEntry) => {
+    router.replace({
+      pathname: '/watch/play',
+      params: {
+        subjectId: next.subjectId,
+        title: next.title,
+        cover: next.cover ?? '',
+        season: next.season ?? '',
+        episode: next.episode ?? '',
+        quality: next.quality ?? '',
+        local: next.fileUri,
+      },
+    });
+  };
 
   useEffect(() => {
     if (phase !== 'loading' || !source?.uri) return;
@@ -171,6 +255,19 @@ export default function WatchPlayer() {
   }, [phase, source?.uri]);
 
   useEffect(() => () => { requestSeq.current += 1; }, []);
+
+  // A buffering player is never allowed to spin forever: no forward progress for BUFFER_STALL_MS turns
+  // into the error state, which shows the real reason and a working retry.
+  useEffect(() => {
+    if (!isBuffering || phase !== 'ready') {
+      setStalled(false);
+      return;
+    }
+    const id = setInterval(() => {
+      if (stalledForMs(Date.now(), lastProgressAt.current, true) >= BUFFER_STALL_MS) setStalled(true);
+    }, 2_000);
+    return () => clearInterval(id);
+  }, [isBuffering, phase]);
 
   /* ----- playback status ----- */
 
@@ -190,6 +287,76 @@ export default function WatchPlayer() {
     setPhase('error');
   };
 
+  // MovieBox captions first (or offline saved subtitles if playing a downloaded file).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (isLocal && params.local) {
+        const localSub = await readLocalSubtitle(String(params.local));
+        if (!cancelled && localSub) {
+          setCues(localSub.cues);
+          setCueLabel(`Downloaded · ${localSub.label}`);
+          return;
+        }
+      }
+      const r = await fetchMovieboxCaptions({ subjectId: ref.subjectId, detailPath: ref.detailPath, season: ref.season ?? undefined, episode: ref.episode ?? undefined });
+      if (cancelled || !r.ok) return;
+      setCaptionChoices(r.value);
+      const preferred = r.value.find((c) => /^en/i.test(c.language)) ?? r.value[0];
+      if (!preferred) {
+        setSubsNote('MovieBox has no captions for this title.');
+        return;
+      }
+      const got = await fetchCaptionCues(preferred.url);
+      if (cancelled) return;
+      if (got.ok) {
+        setCues(got.value.cues);
+        setCueLabel(`MovieBox · ${preferred.label}`);
+      } else {
+        setSubsNote('MovieBox captions could not be loaded.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // The title, episode, and local status identify the captions.
+  }, [ref.subjectId, ref.season, ref.episode, isLocal, params.local]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const subtitleReasonText = (reason: string): string => {
+    switch (reason) {
+      case 'signed_out':
+        return 'Sign in to load subtitles.';
+      case 'not_configured':
+        return 'Subtitles are not available right now.';
+      case 'quota':
+        return 'The subtitle service is busy. Try again later.';
+      case 'offline':
+        return 'No connection. Subtitles need a network connection.';
+      case 'timeout':
+        return 'The subtitle service took too long. Try again.';
+      case 'empty':
+        return 'That subtitle file has no readable lines. Pick another.';
+      default:
+        return 'Subtitles could not be loaded. Try again.';
+    }
+  };
+
+  const chooseCaption = async (c: MovieboxCaption) => {
+    setSubsBusy(true);
+    setSubsNote(null);
+    const got = await fetchCaptionCues(c.url);
+    setSubsBusy(false);
+    if (!got.ok) {
+      setSubsNote(subtitleReasonText(got.reason));
+      return;
+    }
+    setCues(got.value.cues);
+    setCueLabel(`MovieBox · ${c.label}`);
+    setSubsOpen(false);
+  };
+
+  const subtitleText = cues.length > 0 ? cueTextAt(cues, positionMs) : null;
+
   const onStatus = (status: AVPlaybackStatus) => {
     if (!status.isLoaded) {
       if (status.error) handleFailure();
@@ -197,6 +364,9 @@ export default function WatchPlayer() {
     }
     const pos = status.positionMillis;
     const dur = status.durationMillis ?? 0;
+    // Forward progress is what the stall watchdog measures; a rewind also counts as progress.
+    if (pos !== latest.current.positionMs) lastProgressAt.current = Date.now();
+    if (status.isPlaying && stalled) setStalled(false);
     latest.current = { positionMs: pos, durationMs: dur };
     setPositionMs(pos);
     setDurationMs(dur);
@@ -210,6 +380,9 @@ export default function WatchPlayer() {
       lastSaved.current = Date.now();
       void saveProgress(ref, pos, dur);
     }
+    if (status.didJustFinish && nextDownloaded) {
+      playNextDownloaded(nextDownloaded);
+    }
   };
 
   const applyRate = (value: number) => {
@@ -220,6 +393,9 @@ export default function WatchPlayer() {
 
   const onLoad = async () => {
     retries.current = 0;
+    lastProgressAt.current = Date.now();
+    setStalled(false);
+    recordWatch('play:start', Date.now() - mountedAt.current);
     setPhase('ready');
     void video.current?.setRateAsync(rateRef.current, true).catch(() => {});
     const seekTo = pendingSeek.current;
@@ -228,7 +404,7 @@ export default function WatchPlayer() {
       await video.current?.setPositionAsync(seekTo).catch(() => {});
       return;
     }
-    if (isLocal || ref.subjectId === '') return;
+    if (ref.subjectId === '') return;
     const p = await getProgress(`${ref.subjectId}:${ref.season ?? 0}:${ref.episode ?? 0}`);
     if (p && p.positionMs > RESUME_MIN_MS && p.durationMs > 0 && p.positionMs / p.durationMs < 0.95) {
       await video.current?.setPositionAsync(p.positionMs).catch(() => {});
@@ -268,7 +444,9 @@ export default function WatchPlayer() {
     const seq = ++requestSeq.current;
     setSwitchingTo(q);
     setNotice(null);
-    const r = await fetchWatchPlayback(ref.subjectId, ref.season ?? undefined, ref.episode ?? undefined, q);
+    setStalled(false);
+    lastProgressAt.current = Date.now();
+    const r = await fetchWatchPlayback(ref.subjectId, ref.season ?? undefined, ref.episode ?? undefined, q, false, ref.detailPath);
     if (seq !== requestSeq.current) return;
     if (!r.ok) {
       setSwitchingTo(null);
@@ -282,15 +460,19 @@ export default function WatchPlayer() {
     pendingSeek.current = resumeAt > RESUME_MIN_MS ? resumeAt : null;
     setSwitchingTo(null);
     setPhase('loading');
-    void setPreferredQuality(r.value.quality);
+    // Remembered for this title only, so a one-off higher quality never silently upgrades every other title.
+    void setTitleQuality(ref.subjectId, ref.season, ref.episode, r.value.quality);
   };
 
   const retry = () => {
     retries.current = 0;
+    setStalled(false);
+    setUnavailableReason(null);
+    lastProgressAt.current = Date.now();
     if (isLocal) {
       setPhase('loading');
       setErrorMessage(null);
-      setSource({ uri: String(params.local) });
+      void openLocal(String(params.local));
       return;
     }
     void loadRemote(playingQuality, latest.current.positionMs > RESUME_MIN_MS ? latest.current.positionMs : null, true);
@@ -400,6 +582,46 @@ export default function WatchPlayer() {
     return () => StatusBar.setHidden(false, 'fade');
   }, [fullScreen]);
 
+  const seekByRef = useRef(seekBy);
+  seekByRef.current = seekBy;
+  const togglePlayRef = useRef(togglePlay);
+  togglePlayRef.current = togglePlay;
+
+  // Web desktop keyboard controls: Space, Arrows, F, M
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        void togglePlayRef.current();
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        seekByRef.current(-SKIP_MS);
+        showFeedback(`−${SKIP_MS / 1000}s`);
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        seekByRef.current(SKIP_MS);
+        showFeedback(`+${SKIP_MS / 1000}s`);
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        if (fullScreen) exitFullScreen();
+        else enterFullScreen();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        setVolume((v) => {
+          const next = v > 0 ? 0 : 1;
+          volumeRef.current = next;
+          showFeedback(next === 0 ? 'Muted' : 'Unmuted');
+          return next;
+        });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullScreen]);
+
   // Controls hide themselves after a few seconds of playback, and show again on any touch.
   useEffect(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -468,14 +690,31 @@ export default function WatchPlayer() {
   const shownPosition = scrubFraction !== null && durationMs > 0 ? scrubFraction * durationMs : positionMs;
   const progress = durationMs > 0 ? Math.min(1, shownPosition / durationMs) : 0;
   const remaining = durationMs > 0 ? Math.max(0, durationMs - shownPosition) : 0;
-  const showControls = controlsVisible && phase !== 'error';
+  // One resolved state drives every overlay, so loading / playing / paused / error / unavailable can
+  // never be shown together and a stall can never present itself as an endless spinner.
+  const state = playerState({
+    hasSource: !!source,
+    loading: phase === 'loading',
+    unavailable: unavailableReason !== null,
+    failed: stalled || phase === 'error',
+    isPlaying,
+    isBuffering,
+    stalledMs: stalled ? BUFFER_STALL_MS : stalledForMs(Date.now(), lastProgressAt.current, isBuffering),
+  });
+  const showControls = controlsVisible && state !== 'error' && state !== 'unavailable';
 
   const stage = (
     <View style={fullScreen ? styles.stageFull : styles.stage}>
       {source && phase !== 'error' ? (
         <Video
           ref={video}
-          source={source}
+          source={{
+            uri: source.uri,
+            headers: {
+              Referer: MEDIA_REFERER,
+              'User-Agent': MEDIA_USER_AGENT,
+            },
+          }}
           style={StyleSheet.absoluteFill}
           resizeMode={ResizeMode.CONTAIN}
           useNativeControls={false}
@@ -489,7 +728,7 @@ export default function WatchPlayer() {
       ) : null}
 
       {/* Gesture layer. Left and right thirds seek, the centre toggles the controls. Sits under the controls. */}
-      {phase !== 'error' ? (
+      {state !== 'error' && state !== 'unavailable' ? (
         <View style={StyleSheet.absoluteFill} {...volumePan.panHandlers}>
           <Pressable
             accessibilityRole="button"
@@ -521,31 +760,135 @@ export default function WatchPlayer() {
         </View>
       ) : null}
 
+      {subtitleText ? (
+        <View style={styles.subtitleWrap} pointerEvents="none" accessibilityLiveRegion="polite">
+          <Text variant="body" tone="onAccent" align="center" style={styles.subtitleText}>
+            {subtitleText}
+          </Text>
+        </View>
+      ) : null}
+
       {feedback ? (
         <View style={styles.feedback} pointerEvents="none">
           <Text variant="label" tone="onAccent">{feedback}</Text>
         </View>
       ) : null}
 
-      {(phase === 'loading' || isBuffering) && phase !== 'error' ? (
+      {/* Modern Skip Intro button (first 2 minutes) */}
+      {shownPosition > 8000 && shownPosition < 120000 && durationMs > 180000 && state === 'playing' ? (
+        <Pressable
+          onPress={() => {
+            seekBy(85000);
+            showFeedback('Intro skipped (+85s)');
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Skip intro"
+          style={styles.skipIntroBtn}
+        >
+          <Ionicons name="play-forward" size={13} color="#fff" style={{ marginRight: 4 }} />
+          <Text variant="caption" tone="onAccent" style={{ fontWeight: '700' }}>Skip Intro</Text>
+        </Pressable>
+      ) : null}
+
+      {/* Up Next Episode Overlay (final 6% of video) */}
+      {durationMs > 60000 && shownPosition / durationMs >= 0.94 && state !== 'error' ? (
+        <View style={styles.nextPromptCard}>
+          <View style={{ flex: 1 }}>
+            <Text variant="caption" tone="secondary">Next up</Text>
+            <Text variant="label" tone="onAccent" numberOfLines={1}>
+              {nextDownloaded ? nextDownloaded.title : ref.episode !== null ? `Episode ${(ref.episode ?? 1) + 1}` : 'Next episode'}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => {
+              if (nextDownloaded) playNextDownloaded(nextDownloaded);
+              else if (ref.episode !== null) {
+                router.replace({
+                  pathname: '/watch/play',
+                  params: {
+                    ...params,
+                    episode: String((ref.episode ?? 1) + 1),
+                  },
+                });
+              }
+            }}
+            style={styles.nextPromptAction}
+            accessibilityRole="button"
+          >
+            <Ionicons name="play" size={13} color="#fff" style={{ marginRight: 4 }} />
+            <Text variant="caption" tone="onAccent" style={{ fontWeight: '700' }}>Play</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {state === 'loading' || state === 'buffering' ? (
         <View style={styles.center} pointerEvents="none">
           <ActivityIndicator color="#fff" />
           <Text variant="caption" tone="secondary" style={{ marginTop: space.x2 }}>
-            {switchingTo ? `Switching to ${switchingTo}…` : phase === 'loading' ? 'Loading…' : 'Buffering…'}
+            {switchingTo ? `Switching to ${switchingTo}…` : state === 'loading' ? 'Loading…' : 'Buffering…'}
           </Text>
         </View>
       ) : null}
 
-      {phase === 'error' ? (
+      {state === 'error' ? (
         <View style={styles.errorBox}>
-          <ErrorState kind="server" title="This stream could not be played" body={errorMessage ?? undefined} onRetry={retry} />
+          <ErrorState
+            kind={stalled ? 'timeout' : 'server'}
+            title={stalled ? 'Playback stalled' : 'This stream could not be played'}
+            body={stalled ? watchErrorMessage('stalled') : errorMessage ?? undefined}
+            onRetry={retry}
+          />
           <Pressable onPress={() => router.back()} accessibilityRole="button" style={styles.ghostBtn}>
             <Text variant="body" tone="secondary">Back</Text>
           </Pressable>
         </View>
       ) : null}
 
-      {locked && phase !== 'error' ? (
+      {state === 'unavailable' ? (
+        <View style={styles.errorBox} accessibilityRole="alert">
+          <Text variant="title" tone="onAccent" align="center">Not available</Text>
+          <Text variant="bodySmall" tone="secondary" align="center">{errorMessage ?? watchErrorMessage(unavailableReason)}</Text>
+          <Text variant="caption" tone="tertiary" align="center">Trying again will not change this. Pick another title, another episode, or another quality.</Text>
+          <Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Go back" style={styles.ghostBtn}>
+            <Text variant="body" tone="secondary">Back</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {subsOpen && state !== 'error' && state !== 'unavailable' ? (
+        <View style={styles.subsPanel} accessibilityLabel="Subtitle choices">
+          <View style={styles.subsHeader}>
+            <Text variant="label" tone="onAccent">Subtitles</Text>
+            <Pressable onPress={() => setSubsOpen(false)} accessibilityRole="button" accessibilityLabel="Close subtitles" hitSlop={8}>
+              <Ionicons name="close" size={22} color="#fff" />
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() => {
+              setCues([]);
+              setCueLabel(null);
+              setSubsOpen(false);
+            }}
+            accessibilityRole="button"
+            style={styles.subsRow}
+          >
+            <Text variant="bodySmall" tone="onAccent">Off</Text>
+          </Pressable>
+          {captionChoices.map((c) => (
+            <Pressable key={c.url} onPress={() => void chooseCaption(c)} accessibilityRole="button" style={styles.subsRow}>
+              <Text variant="bodySmall" tone="onAccent">MovieBox · {c.label}</Text>
+            </Pressable>
+          ))}
+          {subsBusy ? <ActivityIndicator color="#fff" /> : null}
+          {subsNote ? (
+            <Text variant="caption" tone="secondary" accessibilityLiveRegion="polite">
+              {subsNote}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      {locked && state !== 'error' && state !== 'unavailable' ? (
         <View style={styles.overlay} pointerEvents="box-none">
           <Pressable onPress={() => { setLocked(false); touch(); }} accessibilityRole="button" accessibilityLabel="Unlock controls" style={styles.lockBtn} hitSlop={8}>
             <Ionicons name="lock-closed" size={18} color="#fff" />
@@ -562,6 +905,18 @@ export default function WatchPlayer() {
             <Text variant="label" tone="onAccent" numberOfLines={1} style={{ flex: 1, marginHorizontal: space.x2 }}>
               {ref.title || 'Hallyu TV'}
             </Text>
+            <Pressable
+              onPress={() => {
+                touch();
+                setSubsOpen((v) => !v);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={cues.length > 0 ? `Subtitles on: ${cueLabel ?? ''}. Change subtitles` : 'Subtitles off. Choose subtitles'}
+              style={styles.iconBtn}
+              hitSlop={8}
+            >
+              <Ionicons name={cues.length > 0 ? 'text' : 'text-outline'} size={22} color="#fff" />
+            </Pressable>
           </View>
 
           <Pressable onPress={togglePlay} accessibilityRole="button" accessibilityLabel={isPlaying ? 'Pause' : 'Play'} style={styles.playBtn} disabled={phase !== 'ready'}>
@@ -597,8 +952,24 @@ export default function WatchPlayer() {
                     );
                   })}
                 </View>
+              ) : isLocal ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text variant="caption" tone="onAccent">Downloaded</Text>
+                  {nextDownloaded ? (
+                    <Pressable
+                      onPress={() => playNextDownloaded(nextDownloaded)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Play next episode, S${nextDownloaded.season ?? 1} E${nextDownloaded.episode ?? 1}`}
+                      style={styles.nextEpBtn}
+                      hitSlop={6}
+                    >
+                      <Ionicons name="play-skip-forward" size={11} color="#fff" style={{ marginRight: 3 }} />
+                      <Text variant="caption" tone="onAccent" style={{ fontSize: 11, fontWeight: '600' }}>Next Ep</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               ) : (
-                <Text variant="caption" tone="onAccent">{isLocal ? 'Downloaded' : ''}</Text>
+                <View />
               )}
               <Pressable onPress={() => applyRate(PLAYBACK_RATES[(PLAYBACK_RATES.indexOf(rate) + 1) % PLAYBACK_RATES.length] ?? 1)} accessibilityRole="button" accessibilityLabel={`Playback speed ${rate}x`} style={styles.speedBtn} hitSlop={8}>
                 <Text variant="caption" tone="onAccent">{`${rate}×`}</Text>
@@ -649,6 +1020,11 @@ const styles = StyleSheet.create({
   centreZone: { position: 'absolute', top: 0, bottom: 0, left: '35%', right: '35%' },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   feedback: { position: 'absolute', top: '42%', alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: space.x3, paddingVertical: space.x1, borderRadius: radius.md },
+  subtitleWrap: { position: 'absolute', left: space.x3, right: space.x3, bottom: 110, alignItems: 'center' },
+  subtitleText: { backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: space.x2, paddingVertical: space.x1, borderRadius: radius.sm },
+  subsPanel: { position: 'absolute', right: space.x3, top: 56, width: 300, maxHeight: '75%', backgroundColor: 'rgba(12,12,16,0.95)', borderRadius: radius.md, padding: space.x3, gap: space.x2 },
+  subsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  subsRow: { paddingVertical: space.x2, paddingHorizontal: space.x2, borderRadius: radius.sm, backgroundColor: 'rgba(255,255,255,0.06)' },
   overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', backgroundColor: 'rgba(0,0,0,0.35)' },
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.x3, paddingTop: space.x3 },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
@@ -664,4 +1040,59 @@ const styles = StyleSheet.create({
   qPillOn: { backgroundColor: colors.accent, borderColor: colors.accent },
   errorBox: { ...StyleSheet.absoluteFillObject, padding: space.x4, justifyContent: 'center', gap: space.x3, backgroundColor: '#000' },
   ghostBtn: { alignSelf: 'center', paddingVertical: space.x2 },
+  nextEpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.sm,
+    backgroundColor: colors.accent,
+  },
+  skipIntroBtn: {
+    position: 'absolute',
+    right: 18,
+    bottom: 96,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+    borderRadius: radius.full,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    zIndex: 25,
+  },
+  nextPromptCard: {
+    position: 'absolute',
+    left: 18,
+    right: 18,
+    bottom: 84,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(18,18,24,0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    borderRadius: radius.md,
+    padding: space.x3,
+    zIndex: 25,
+  },
+  nextPromptAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: radius.full,
+  },
+  rippleOverlay: {
+    position: 'absolute',
+    top: '38%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
 });

@@ -21,7 +21,7 @@ async function load(rel) {
   return import(pathToFileURL(file).href);
 }
 
-const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, normalisePlayback, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics, MIN_FULL_DOWNLOAD_BYTES } = await load('lib/watchModel.ts');
+const { normaliseHome, normaliseSearch, normaliseDetail, normaliseStreams, normalisePlayback, isDownloadable, isFullStream, pickStream, qualityOptions, normaliseDiagnostics, DEFAULT_QUALITIES } = await load('lib/watchModel.ts');
 
 const subject = (id, title, extra = {}) => ({
   subjectId: id,
@@ -104,8 +104,9 @@ test('downloads: only progressive MP4 is offered as a file; DASH never is', () =
   assert.equal(isDownloadable({ format: null }), false);
 });
 
-test('downloads: a full file must be at least 50 MB', () => {
-  assert.equal(MIN_FULL_DOWNLOAD_BYTES, 50 * 1024 * 1024);
+test('downloads: no arbitrary full-length floor; the sanity floor only rejects empty bodies', () => {
+  // Short clips and trailers are legitimate. The floor is 64 KB, for empty and error responses only.
+  assert.equal(R.MIN_PLAYABLE_BYTES, 64 * 1024);
 });
 
 const raw = (over) => ({ source: 'Web CDN', quality: '720p', quality_value: 720, format: 'MP4', size_mb: 900, duration_sec: 2700, ...over });
@@ -115,11 +116,18 @@ test('streams: rejects Mobile Native previews even when labelled 1080p', () => {
   assert.equal(r.streams.length, 0);
 });
 
-test('streams: rejects 300 seconds or less, unknown duration, and 50 MB or less', () => {
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 300, sizeMb: 900 }), false);
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: null, sizeMb: 900 }), false);
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 2700, sizeMb: 50 }), false);
-  assert.equal(isFullStream({ source: 'Web CDN', durationSec: 301, sizeMb: 51 }), true);
+test('streams: kept when over 5 minutes OR over 50 MB; dropped only when both checks fail', () => {
+  // A large file counts even when its duration is missing (zarhosting reports size reliably).
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 300, sizeMb: 900 }), true);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: null, sizeMb: 900 }), true);
+  // A long file counts even when it is small.
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 2700, sizeMb: 50 }), true);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 301, sizeMb: 51 }), true);
+  // A preview: short AND small, or unknown on both counts.
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: 300, sizeMb: 50 }), false);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: null, sizeMb: 50 }), false);
+  assert.equal(isFullStream({ source: 'Moviebox', durationSec: null, sizeMb: null }), false);
+  assert.equal(isFullStream({ source: 'Mobile Native preview', durationSec: 2700, sizeMb: 900 }), false);
 });
 
 test('streams: sorts MP4 before DASH, then higher quality first', () => {
@@ -177,9 +185,9 @@ test('playback: rejects missing links, plain http, and too-short or too-small fu
   assert.equal(normalisePlayback({ ...base, playback_url: undefined }), null);
   assert.equal(normalisePlayback({ ...base, download_url: undefined }), null);
   assert.equal(normalisePlayback({ ...base, playback_url: 'http://x.supabase.co/f?t=1' }), null);
-  assert.equal(normalisePlayback({ ...base, duration_sec: 300 }), null);
-  assert.equal(normalisePlayback({ ...base, duration_sec: null }), null);
-  assert.equal(normalisePlayback({ ...base, size_mb: 50 }), null);
+  assert.equal(normalisePlayback({ ...base, duration_sec: 300, size_mb: 50 }), null);
+  assert.equal(normalisePlayback({ ...base, duration_sec: null, size_mb: null }), null);
+  assert.notEqual(normalisePlayback({ ...base, duration_sec: 300 }), null, 'a large file is full-length even at 300 s');
   assert.equal(normalisePlayback(null), null);
 });
 
@@ -189,11 +197,13 @@ test('playback: a stream with no reported size still needs a full duration', () 
   assert.equal(normalisePlayback({ ...base, duration_sec: null }), null);
 });
 
-test('pickStream default: 480p, then 360p, then the best available', () => {
+test('pickStream default: 360p, else the lowest full-length quality the title has', () => {
   const mk = (qs) => normaliseStreams({ streams: qs.map((q) => raw({ quality: q, quality_value: parseInt(q, 10) })) }).streams;
-  assert.equal(pickStream(mk(['1080p', '480p', '360p']), null).quality, '480p');
+  assert.equal(pickStream(mk(['1080p', '480p', '360p']), null).quality, '360p');
   assert.equal(pickStream(mk(['1080p', '360p']), undefined).quality, '360p');
-  assert.equal(pickStream(mk(['1080p', '720p']), null).quality, '1080p');
+  assert.equal(pickStream(mk(['1080p', '720p', '480p']), null).quality, '480p');
+  assert.equal(pickStream(mk(['1080p', '720p']), null).quality, '720p');
+  assert.equal(pickStream(mk(['1080p', '480p']), '1080p').quality, '1080p');
 });
 
 /* ---------- Player and download rules (lib/watchRules.ts) ---------- */
@@ -222,10 +232,10 @@ test('tap zones: left and right thirds skip, the centre toggles controls', () =>
   assert.equal(R.fractionAt(10, 0), 0);
 });
 
-test('quality: only offered qualities are chosen; preference, then 480p, 360p, then best', () => {
+test('quality: only offered qualities are chosen; preference, then 360p, then the lowest offered', () => {
   assert.equal(R.chooseQuality(['1080p', '720p', '480p'], '720p'), '720p');
   assert.equal(R.chooseQuality(['1080p', '720p', '480p'], '360p'), '480p');
-  assert.equal(R.chooseQuality(['1080p', '720p'], null), '1080p');
+  assert.equal(R.chooseQuality(['1080p', '720p'], null), '720p');
   assert.equal(R.chooseQuality(['360p', '1080p'], null), '360p');
   assert.equal(R.chooseQuality([], '480p'), null);
 });
@@ -249,6 +259,65 @@ test('downloads: a valid MP4 has "ftyp" at byte 4; HTML and short data are rejec
   assert.equal(R.isMp4Header(mp4), true);
   assert.equal(R.isMp4Header(new TextEncoder().encode('<html><body>error</body></html>')), false);
   assert.equal(R.isMp4Header(new Uint8Array([0, 0, 0, 0x18])), false);
+});
+
+/** Builds a minimal ISO BMFF file from [type, payloadBytes] pairs, with a correct 32-bit size per box. */
+function boxFile(boxes) {
+  const parts = boxes.map(([type, payload]) => {
+    const size = 8 + payload;
+    const out = new Uint8Array(size);
+    new DataView(out.buffer).setUint32(0, size);
+    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    return out;
+  });
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const file = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    file.set(p, at);
+    at += p.length;
+  }
+  return file;
+}
+const readerOf = (bytes) => async (position, length) => bytes.slice(position, position + length);
+
+test('validation: a real MP4 layout (ftyp, mdat, moov) passes; the file size must match the server', async () => {
+  const file = boxFile([['ftyp', 100], ['mdat', 200 * 1024], ['moov', 500]]);
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, file.length), { ok: true });
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, null), { ok: true });
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, file.length + 1), { ok: false, reason: 'size_mismatch' });
+});
+
+test('validation: a short but complete clip is accepted (no full-length rule)', async () => {
+  const file = boxFile([['ftyp', 100], ['mdat', 70 * 1024], ['moov', 300]]);
+  assert.deepEqual(await R.validateMp4Layout(readerOf(file), file.length, null), { ok: true });
+});
+
+test('validation: HTML, JSON, empty, truncated and missing-moov files are rejected', async () => {
+  const html = new TextEncoder().encode('<html><body>' + 'x'.repeat(70 * 1024) + '</body></html>');
+  assert.equal((await R.validateMp4Layout(readerOf(html), html.length, null)).reason, 'not_mp4');
+  const json = new TextEncoder().encode('{"error":"expired"}' + ' '.repeat(70 * 1024));
+  assert.equal((await R.validateMp4Layout(readerOf(json), json.length, null)).reason, 'not_mp4');
+  const tiny = boxFile([['ftyp', 20], ['moov', 20]]);
+  assert.equal((await R.validateMp4Layout(readerOf(tiny), tiny.length, null)).reason, 'too_small');
+  const full = boxFile([['ftyp', 100], ['mdat', 200 * 1024], ['moov', 500]]);
+  const truncated = full.slice(0, full.length - 100);
+  assert.equal((await R.validateMp4Layout(readerOf(truncated), truncated.length, null)).reason, 'not_mp4');
+  const noMoov = boxFile([['ftyp', 100], ['mdat', 200 * 1024]]);
+  assert.equal((await R.validateMp4Layout(readerOf(noMoov), noMoov.length, null)).reason, 'no_movie_box');
+});
+
+test('validation: box walker reads 64-bit sizes and rejects impossible sizes', async () => {
+  const largeHeader = new Uint8Array(16 + 80000);
+  const dv = new DataView(largeHeader.buffer);
+  dv.setUint32(0, 1);
+  largeHeader.set([0x66, 0x74, 0x79, 0x70], 4); // ftyp
+  dv.setBigUint64(8, BigInt(largeHeader.length));
+  const boxes = await R.readTopLevelMp4Boxes(readerOf(largeHeader), largeHeader.length);
+  assert.deepEqual(boxes, [{ type: 'ftyp', offset: 0, size: largeHeader.length }]);
+  const bad = boxFile([['ftyp', 100]]);
+  new DataView(bad.buffer).setUint32(0, 9999999);
+  assert.equal(await R.readTopLevelMp4Boxes(readerOf(bad), bad.length), null);
 });
 
 test('sizes: MB and GB formatting; unknown is never guessed', () => {
@@ -293,6 +362,44 @@ test('state: completed transfers cannot be paused; failed ones can only be retri
   assert.equal(R.canTransition('failed', 'paused'), false);
   assert.equal(R.canTransition('failed', 'downloading'), true);
 });
+
+/* ---------- Downloads: the Android engine must send the identity the media host accepts ---------- */
+{
+  const rules = await load('lib/watchRules.ts');
+  const generator = await import(pathToFileURL(path.join(ROOT, 'scripts/ci/android-downloader-module.mjs')).href);
+  const { moduleKt } = generator.buildDownloaderSources();
+
+  test('android downloader sends the same Referer and User-Agent as playback, so a playable title is downloadable', () => {
+    // One source of truth: the Kotlin module embeds copies, and this fails if either copy drifts.
+    assert.equal(generator.MEDIA_REFERER, rules.MEDIA_REFERER);
+    assert.equal(generator.MEDIA_USER_AGENT, rules.MEDIA_USER_AGENT);
+    assert.ok(moduleKt.includes(`.addRequestHeader("Referer", "${rules.MEDIA_REFERER}")`), 'Referer header is missing');
+    assert.ok(moduleKt.includes(`.addRequestHeader("User-Agent", "${rules.MEDIA_USER_AGENT}")`), 'User agent header is missing');
+    // DownloadManager.Request has no setUserAgent method: calling it is a compile error.
+    assert.ok(!moduleKt.includes('.setUserAgent('), 'setUserAgent does not exist on DownloadManager.Request');
+  });
+
+  test('android downloader is allowed on mobile data and reports the system failure reason', () => {
+    assert.ok(moduleKt.includes('.setAllowedOverMetered(true)'));
+    assert.ok(moduleKt.includes('COLUMN_REASON'));
+    assert.ok(moduleKt.includes('putDouble("reason"'));
+  });
+
+  test('an API-24 call is guarded for the API-23 minimum instead of suppressed', () => {
+    // setAllowedOverMetered is API 24. With minSdk 23 an unguarded call fails lintVitalRelease (a
+    // fatal NewApi error) and would throw NoSuchMethodError on Android 6.
+    assert.ok(moduleKt.includes('Build.VERSION.SDK_INT >= 24'), 'setAllowedOverMetered must be API-guarded');
+    assert.ok(!moduleKt.includes('Suppress("NewApi")'), 'the call is guarded, not suppressed');
+  });
+
+  test('a native failure is translated into one plain sentence per cause', () => {
+    assert.match(rules.nativeFailureMessage(6), /not enough free storage/i);
+    assert.match(rules.nativeFailureMessage(2), /server refused/i);
+    assert.match(rules.nativeFailureMessage(5), /redirect/i);
+    assert.match(rules.nativeFailureMessage(10), /blocked/i);
+    assert.match(rules.nativeFailureMessage(undefined), /download stopped/i);
+  });
+}
 
 /* ---------- Interrupted download continuation (decideAfterTransfer) ---------- */
 
@@ -368,6 +475,25 @@ test('the failure message states how far the transfer got', () => {
   test('progress notice shows the percentage', () => {
     assert.deepEqual(rules.progressNotice('progress', 'Lupin', 42, null), { title: 'Downloading', body: 'Lupin · 42%' });
   });
+  test('progress notice includes live speed and ETA when available', () => {
+    assert.deepEqual(rules.progressNotice('progress', 'Lupin', 45, null, '3.5 MB/s', '1m left'), {
+      title: 'Downloading',
+      body: 'Lupin · 45% · 3.5 MB/s · 1m left',
+    });
+  });
+  test('formatSpeed formats KB/s and MB/s accurately', () => {
+    assert.equal(rules.formatSpeed(0), '');
+    assert.equal(rules.formatSpeed(null), '');
+    assert.equal(rules.formatSpeed(500 * 1024), '500 KB/s');
+    assert.equal(rules.formatSpeed(3.5 * 1024 * 1024), '3.5 MB/s');
+  });
+  test('formatEta formats seconds, minutes and hours', () => {
+    assert.equal(rules.formatEta(0), '');
+    assert.equal(rules.formatEta(null), '');
+    assert.equal(rules.formatEta(45), '45s left');
+    assert.equal(rules.formatEta(60), '1m left');
+    assert.equal(rules.formatEta(125), '2m 5s left');
+  });
   test('failed notice uses the reason, and falls back to a default', () => {
     assert.equal(rules.progressNotice('failed', 'Lupin', 0, 'Connection lost').body, 'Connection lost');
     assert.match(rules.progressNotice('failed', 'Lupin', 0, null).body, /Lupin stopped/);
@@ -386,5 +512,153 @@ test('the failure message states how far the transfer got', () => {
     assert.equal(rules.repairTransfer({ ...base, status: 'queued' }, { running: false, queued: false }).status, 'failed');
     assert.equal(rules.repairTransfer({ ...base, status: 'queued' }, { running: false, queued: true }).status, 'queued');
     assert.equal(rules.repairTransfer({ ...base, status: 'paused' }, { running: false, queued: false }).status, 'paused');
+  });
+}
+
+/* ---------- Deterministic player states, the stall watchdog, the TTL cache and download targets ---------- */
+{
+  const rules = await load('lib/watchRules.ts');
+
+  test('player: exactly one state is resolved, and the first decisive signal wins', () => {
+    const base = { hasSource: true, loading: false, unavailable: false, failed: false, isPlaying: false, isBuffering: false };
+    assert.equal(rules.playerState(base), 'paused');
+    assert.equal(rules.playerState({ ...base, isPlaying: true }), 'playing');
+    assert.equal(rules.playerState({ ...base, loading: true }), 'loading');
+    assert.equal(rules.playerState({ ...base, hasSource: false }), 'loading');
+    assert.equal(rules.playerState({ ...base, isBuffering: true }), 'buffering');
+    assert.equal(rules.playerState({ ...base, isPlaying: true, isBuffering: true }), 'buffering');
+    assert.equal(rules.playerState({ ...base, failed: true }), 'error');
+    assert.equal(rules.playerState({ ...base, unavailable: true }), 'unavailable');
+    // unavailable outranks error: it is never retried.
+    assert.equal(rules.playerState({ ...base, failed: true, unavailable: true }), 'unavailable');
+    // loading outranks buffering and playing.
+    assert.equal(rules.playerState({ ...base, loading: true, isBuffering: true, isPlaying: true }), 'loading');
+  });
+
+  test('player: a stall past the watchdog is an error, never an endless spinner', () => {
+    const base = { hasSource: true, loading: false, unavailable: false, failed: false, isPlaying: false, isBuffering: true };
+    assert.equal(rules.playerState({ ...base, stalledMs: 0 }), 'buffering');
+    assert.equal(rules.playerState({ ...base, stalledMs: rules.BUFFER_STALL_MS - 1 }), 'buffering');
+    assert.equal(rules.playerState({ ...base, stalledMs: rules.BUFFER_STALL_MS }), 'error');
+    assert.equal(rules.stalledForMs(10_000, 4_000, true), 6_000);
+    assert.equal(rules.stalledForMs(10_000, 4_000, false), 0);
+    assert.equal(rules.stalledForMs(1_000, 9_000, true), 0);
+  });
+
+  test('failures: only the unfixable reasons are unavailable, and each reason has one message', () => {
+    assert.equal(rules.isUnavailableReason('no_full_stream'), true);
+    assert.equal(rules.isUnavailableReason('not_configured'), true);
+    assert.equal(rules.isUnavailableReason('signed_out'), true);
+    assert.equal(rules.isUnavailableReason('offline'), false);
+    assert.equal(rules.isUnavailableReason('timeout'), false);
+    assert.equal(rules.isUnavailableReason(null), false);
+    assert.match(rules.watchErrorMessage('no_full_stream', '360p'), /at 360p/);
+    assert.match(rules.watchErrorMessage('offline'), /offline/i);
+    assert.match(rules.watchErrorMessage('stalled'), /stalled/i);
+    assert.match(rules.watchErrorMessage('anything-else'), /could not be loaded/);
+  });
+
+  test('quality default: one source of truth for 360p, shared with watchModel', () => {
+    assert.deepEqual(rules.DEFAULT_QUALITY_ORDER, ['360p']);
+    assert.deepEqual(rules.DEFAULT_QUALITY_ORDER, DEFAULT_QUALITIES);
+  });
+
+  test('cache: a fresh entry is reused, an expired one is not, and a non-positive TTL stores nothing', () => {
+    const map = new Map();
+    rules.ttlPut(map, 'k', 'v', 1_000, 1_000);
+    assert.equal(rules.ttlGet(map, 'k', 1_500), 'v');
+    assert.equal(rules.ttlGet(map, 'k', 2_000), null);
+    assert.equal(map.size, 0);
+    rules.ttlPut(map, 'never', 'v', 0, 1_000);
+    assert.equal(rules.ttlGet(map, 'never', 1_000), null);
+    assert.equal(map.size, 0);
+  });
+
+  test('cache: the map stays bounded', () => {
+    const map = new Map();
+    rules.ttlPut(map, 'a', 1, 1_000, 1_000, 2);
+    rules.ttlPut(map, 'b', 2, 1_000, 1_000, 2);
+    rules.ttlPut(map, 'c', 3, 1_000, 1_000, 2);
+    assert.equal(map.size, 2);
+    assert.equal(rules.ttlGet(map, 'a', 1_000), null);
+    assert.equal(rules.ttlGet(map, 'c', 1_000), 3);
+  });
+
+  test('downloads: two qualities of one episode are independent targets, each with its own file', () => {
+    const input = { subjectId: 's1', season: 1, episode: 2, qualities: ['1080p', '480p', '360p'], saved: [], transfers: [] };
+    const targets = rules.downloadTargets(input);
+    assert.deepEqual(targets.map((t) => t.quality), ['1080p', '480p', '360p']);
+    assert.deepEqual(targets.map((t) => t.canStart), [true, true, true]);
+    assert.equal(new Set(targets.map((t) => t.key)).size, 3);
+    // A finished 360p copy leaves 480p fully downloadable: two qualities never collide.
+    const saved360 = rules.qualityDownloadKey('s1', 1, 2, '360p');
+    const after = rules.downloadTargets({ ...input, saved: [{ key: saved360, quality: '360p', bytes: 90_000_000 }] });
+    assert.equal(after.find((t) => t.quality === '360p').savedBytes, 90_000_000);
+    assert.equal(after.find((t) => t.quality === '360p').canStart, false);
+    assert.equal(after.find((t) => t.quality === '480p').canStart, true);
+    // A running 480p transfer blocks only its own quality, and a failed one may be retried.
+    const running = rules.downloadTargets({ ...input, transfers: [{ key: rules.qualityDownloadKey('s1', 1, 2, '480p'), quality: '480p', status: 'downloading' }] });
+    assert.equal(running.find((t) => t.quality === '480p').canStart, false);
+    assert.equal(running.find((t) => t.quality === '1080p').canStart, true);
+    const failed = rules.downloadTargets({ ...input, transfers: [{ key: rules.qualityDownloadKey('s1', 1, 2, '480p'), quality: '480p', status: 'failed' }] });
+    assert.equal(failed.find((t) => t.quality === '480p').canStart, true);
+    // Duplicate quality labels never produce duplicate targets.
+    assert.equal(rules.downloadTargets({ ...input, qualities: ['480p', '480p'] }).length, 1);
+  });
+}
+
+/* ---------- Downloads in a browser (Cache Storage instead of a file on disk) ---------- */
+{
+  const rules = await load('lib/watchRules.ts');
+  const MB = 1024 * 1024;
+
+  test('web: one Cache Storage entry per title, episode and quality, so two qualities never collide', () => {
+    const a = rules.offlineCachePath(rules.qualityDownloadKey('536473933005177184', 1, 2, '360p'));
+    const b = rules.offlineCachePath(rules.qualityDownloadKey('536473933005177184', 1, 2, '720p'));
+    assert.notEqual(a, b);
+    assert.match(a, /^\/offline\/[A-Za-z0-9_-]+\.mp4$/);
+    assert.equal(a, rules.offlineCachePath(rules.qualityDownloadKey('536473933005177184', 1, 2, '360p')));
+    // The bucket is not named like the asset caches, so the service worker's sweep never deletes an episode.
+    assert.equal(rules.WEB_OFFLINE_CACHE.startsWith('hallyu-assets-'), false);
+  });
+
+  test('web: a cache key is recognised, a file path is not', () => {
+    assert.equal(rules.isWebOfflinePath('/offline/watch_x.mp4'), true);
+    assert.equal(rules.isWebOfflinePath('file:///data/user/0/watch-downloads/x.mp4'), false);
+    assert.equal(rules.isWebOfflinePath(null), false);
+    assert.equal(rules.isWebOfflinePath(undefined), false);
+  });
+
+  test('web: the length comes from a whole-file response, never from a range or an error body', () => {
+    // Content-Length is the only length a cross-origin page may read; a 206 states one byte, not the episode.
+    assert.equal(rules.totalFromLengthHeader(200, '41943040'), 41943040);
+    assert.equal(rules.totalFromLengthHeader(206, '1'), null);
+    assert.equal(rules.totalFromLengthHeader(200, null), null);
+    assert.equal(rules.totalFromLengthHeader(200, '0'), null);
+    assert.equal(rules.totalFromLengthHeader(404, '512'), null);
+  });
+
+  test('web: an unknown space or length never refuses a download; a known shortfall does', () => {
+    assert.equal(rules.webDownloadFits(300 * MB, null, 200 * MB), true);
+    assert.equal(rules.webDownloadFits(null, 0, 200 * MB), true);
+    assert.equal(rules.webDownloadFits(300 * MB, 600 * MB, 200 * MB), true);
+    assert.equal(rules.webDownloadFits(300 * MB, 400 * MB, 200 * MB), false);
+    assert.equal(rules.webDownloadFits(300 * MB, 499 * MB, 200 * MB), false);
+  });
+
+  test('web: free space is the browser quota minus what is stored, and unknown stays unknown', () => {
+    assert.equal(rules.webFreeBytes({ quota: 1000 * MB, usage: 400 * MB }), 600 * MB);
+    assert.equal(rules.webFreeBytes({ quota: 500, usage: 900 }), 0);
+    assert.equal(rules.webFreeBytes({ usage: 10 }), null);
+    assert.equal(rules.webFreeBytes(null), null);
+    assert.equal(rules.webFreeBytes({ quota: Number.NaN }), null);
+  });
+
+  test('web: a stored episode must match the stated length, and an unknown length is still checked for video', () => {
+    // The same completeness rule as a phone download: a short body is never a finished episode.
+    assert.equal(rules.transferComplete(83 * MB, 84 * MB), false);
+    assert.equal(rules.transferComplete(84 * MB, 84 * MB), true);
+    assert.equal(rules.transferComplete(84 * MB, null), true);
+    assert.equal(rules.transferComplete(0, 84 * MB), false);
   });
 }
