@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>Hallyu — Every Episode Night. Together.</title>
+    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <style id="expo-reset">
+      /* These styles make the body full-height */
+      html,
+      body {
+        height: 100%;
+      }
+      /* These styles disable body scrolling if you are using <ScrollView> */
+      body {
+        overflow: hidden;
+      }
+      /* These styles make the root element full-height */
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+    </style>
+  <link rel="shortcut icon" href="/hallyuapp/favicon.ico" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta name="hallyu-version" content="1.0.91" />
+    <meta name="hallyu-commit" content="da1e1ad9f8c213066c12829a0e52363c064629c6" />
+    <meta name="hallyu-built-at" content="2026-10-31T08:23:39Z" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Hallyu" />
+    <meta name="description" content="Every episode night. Together. Live Watch Parties, social reactions, DMs & spoiler-safe threads across K-Dramas, C-Dramas, Anime & Cinema." />
+    <meta property="og:site_name" content="Hallyu" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://halluyapp.github.io/hallyuapp/" />
+    <meta property="og:title" content="Hallyu — Every Episode Night. Together." />
+    <meta property="og:description" content="Join synchronized Watch Parties, vote in episode predictions, react live with friends & track K-Dramas, C-Dramas, Anime & Cinema." />
+    <meta property="og:image" content="https://halluyapp.github.io/hallyuapp/apple-touch-icon.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Hallyu — Every Episode Night. Together." />
+    <link rel="manifest" href="/hallyuapp/manifest.json" />
+    <link rel="apple-touch-icon" href="/hallyuapp/apple-touch-icon.png" />
+    <style>html, body, #root { background-color: #000000 !important; color: #F5F5F7; }</style>
+
+  </head>
+
+  <body>
+    <!-- Use static rendering with Expo Router to support running without JavaScript. -->
+    <noscript>
+      You need to enable JavaScript to run this app.
+    </noscript>
+    <!-- The root element for your Expo app. -->
+    <div id="root"></div>
+  <script src="/hallyuapp/_expo/static/js/web/index-fcbf7e5a82c99188947984f9cd77e011.js" defer></script>
+<script>
+(function(){
+var shown=false,bundleFailed=false,n=0;
+function root(){return document.getElementById("root");}
+function remove(){var e=document.getElementById("hallyu-startup-fallback");if(e&&e.parentNode)e.parentNode.removeChild(e);}
+/* The splash lives inside #root, so an empty root is not the only stall: it can also stay on screen. */
+function starting(){var r=root();return !!(r&&r.innerHTML.indexOf("Hallyu is starting")!==-1);}
+function show(){
+  if(shown)return;
+  var r=root();
+  if(r&&r.children.length&&!starting())return;
+  shown=true;
+  var host=document.body||document.documentElement;
+  var el=document.createElement("div");
+  el.id="hallyu-startup-fallback";
+  el.setAttribute("role","alert");
+  el.style.cssText="position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;background:#000;color:#F5F5F7;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;";
+  var t=document.createElement("div");
+  t.style.cssText="font-size:17px;font-weight:600;line-height:24px;max-width:420px;";
+  t.textContent="Hallyu could not start just now.";
+  var s=document.createElement("div");
+  s.style.cssText="font-size:14px;line-height:21px;color:#8E8E93;max-width:420px;";
+  s.textContent=bundleFailed?"A newer version of Hallyu was published while this page was open, and this copy of the app is no longer available. Tap Reload to get the new one.":"The app did not finish loading on this connection. Tap Reload to try again.";
+  var b=document.createElement("button");
+  b.type="button";
+  b.textContent="Reload";
+  b.style.cssText="margin-top:6px;padding:12px 28px;border:0;border-radius:999px;background:#E11D48;color:#fff;font-size:15px;font-weight:600;cursor:pointer;";
+  b.onclick=function(){
+    var go=function(){location.reload();};
+    if("serviceWorker" in navigator){
+      navigator.serviceWorker.getRegistrations().then(function(rs){return Promise.all(rs.map(function(r){return r.unregister();}));}).catch(function(){}).then(go,go);
+    }else{go();}
+  };
+  el.appendChild(t);el.appendChild(s);el.appendChild(b);
+  host.appendChild(el);
+}
+window.addEventListener("error",function(e){
+  var t=e&&e.target;
+  if(t&&t.tagName==="SCRIPT"&&t.src&&/\.js(\?|$)/.test(t.src)){bundleFailed=true;setTimeout(show,1200);}
+},true);
+var timer=setInterval(function(){
+  var r=root();
+  if(r&&r.children.length&&!starting()){clearInterval(timer);remove();return;}
+  n++;
+  if(!shown&&n>=50)show();
+},300);
+})();
+</script>
+  </body>
+</html>
