@@ -55,7 +55,7 @@ function gateLine(conn: ConnectionStatus | null): string {
     case 'offline':
       return 'You’re offline · Watch downloads or continue offline';
     case 'unavailable':
-      return 'Hallyu’s backend could not be reached';
+      return getBackendHealth().restricted ? 'Hallyu’s backend is over quota' : 'Hallyu’s backend could not be reached';
     case 'misconfigured':
       return 'Hallyu’s backend is not configured correctly';
   }
@@ -67,7 +67,12 @@ function gateDetail(conn: ConnectionStatus | null): string {
     case 'offline':
       return 'No network connection detected. You can watch your downloaded movies and series right now, or continue into the app in offline mode.';
     case 'unavailable':
-      return 'The backend did not answer the connection check. This is usually a network or server problem. Nothing has been changed and no local data will be shown — retry in a moment.';
+      // Supabase switches a project off once it goes past its quota and answers EVERY request —
+      // including this probe — with HTTP 402. That is repaired in the Supabase dashboard, so
+      // "retry in a moment" would send the member into a loop that cannot succeed.
+      return getBackendHealth().restricted
+        ? 'Hallyu’s backend has been suspended by Supabase because it went past its storage and data allowance. Nothing is broken in the app — the project owner needs to raise the plan or the spending limit in the Supabase dashboard, then retry here. Nothing has been changed and no local data will be shown.'
+        : 'The backend did not answer the connection check. This is usually a network or server problem. Nothing has been changed and no local data will be shown — retry in a moment.';
     case 'misconfigured':
       return 'The backend rejected the connection: the URL or key is missing or wrong, the database schema is not served, or access was denied. This is a build configuration problem, not something to work around.';
     default:

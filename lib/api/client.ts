@@ -117,6 +117,8 @@ export function normalizeMediaUrl(url?: string | null): string | undefined {
 export interface BackendHealth {
   status: ConnectionStatus;
   message?: string;
+  /** True when the failure was Supabase switching the project off for exceeded quota (HTTP 402). */
+  restricted?: boolean;
   at: number;
 }
 
@@ -148,11 +150,34 @@ function publish(next: BackendHealth): void {
 
 // ── Classification ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Failure text for any thrown value.
+ *
+ * Supabase's clients reject with plain objects (`{ message, code, hint }`) rather than `Error`
+ * instances, so `String(error)` on a failed RPC renders "[object Object]" — which is exactly what
+ * the startup screen printed instead of the real reason. Anything carrying a string `message` wins.
+ */
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const e = error as { message?: unknown; code?: unknown };
+    if (typeof e.message === 'string' && e.message) {
+      return typeof e.code === 'string' && e.code ? `${e.message} (${e.code})` : e.message;
+    }
+  }
+  return String(error ?? '');
+}
+
+/** True for the HTTP 402 Supabase answers with once a project exceeds its egress/storage quota. */
+function isQuotaRestriction(message: string): boolean {
+  return /exceed_[a-z_]*quota|restricted due to the following violations/i.test(message);
+}
+
 /** Classify any failure into exactly one of the five gate states. */
 export function classifyBackendError(error: unknown, online = true): ConnectionStatus {
   if (!backendConfigured) return 'misconfigured';
   if (!online) return 'offline';
-  const message = error instanceof Error ? error.message : String(error ?? '');
+  const message = errorMessage(error);
   if (/timeout|timed out|abort/i.test(message)) return 'unavailable';
   if (/network|fetch|connect|socket|offline/i.test(message)) return 'offline';
   if (/schema cache|could not find the (function|table)|relation .* does not exist|invalid api key|invalid jwt|row-level|permission denied|jwt/i.test(message)) {
@@ -209,7 +234,8 @@ export async function probeBackend(timeoutMs = 6000, online = true): Promise<Con
     return 'connected';
   } catch (e) {
     const status = classifyBackendError(e, online);
-    publish({ status, message: e instanceof Error ? e.message : String(e), at: Date.now() });
+    const message = errorMessage(e);
+    publish({ status, message, restricted: isQuotaRestriction(message), at: Date.now() });
     return status;
   }
 }
