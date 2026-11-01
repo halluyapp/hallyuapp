@@ -261,6 +261,59 @@ class PolyTextEncoder {
   }
 }
 
-const target = globalThis as EncodingGlobal;
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_LOOKUP = new Uint8Array(256);
+for (let i = 0; i < B64_CHARS.length; i++) {
+  B64_LOOKUP[B64_CHARS.charCodeAt(i)] = i;
+}
+
+export function decodeBase64(b64: string): Uint8Array {
+  const clean = b64.replace(/[^A-Za-z0-9+/]/g, '');
+  const len = clean.length;
+  if (len === 0) return new Uint8Array(0);
+  const placeHolders = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+  const byteLen = ((len * 3) >> 2) - placeHolders;
+  const bytes = new Uint8Array(byteLen);
+  let cur = 0;
+  for (let i = 0; i < len; i += 4) {
+    const a = B64_LOOKUP[clean.charCodeAt(i)];
+    const b = B64_LOOKUP[clean.charCodeAt(i + 1)];
+    const c = B64_LOOKUP[clean.charCodeAt(i + 2)];
+    const d = B64_LOOKUP[clean.charCodeAt(i + 3)];
+    bytes[cur++] = (a << 2) | (b >> 4);
+    if (cur < byteLen) bytes[cur++] = ((b & 15) << 4) | (c >> 2);
+    if (cur < byteLen) bytes[cur++] = ((c & 3) << 6) | (d & 63);
+  }
+  return bytes;
+}
+
+export function polyAtob(b64: string): string {
+  const bytes = decodeBase64(b64);
+  let str = '';
+  for (let i = 0; i < bytes.length; i++) {
+    str += String.fromCharCode(bytes[i]);
+  }
+  return str;
+}
+
+export function polyBtoa(bin: string): string {
+  const len = bin.length;
+  let res = '';
+  let i = 0;
+  while (i < len) {
+    const b1 = bin.charCodeAt(i++);
+    const b2 = i < len ? bin.charCodeAt(i++) : NaN;
+    const b3 = i < len ? bin.charCodeAt(i++) : NaN;
+    res += B64_CHARS.charAt(b1 >> 2);
+    res += B64_CHARS.charAt(((b1 & 3) << 4) | (Number.isNaN(b2) ? 0 : b2 >> 4));
+    res += Number.isNaN(b2) ? '=' : B64_CHARS.charAt(((b2 & 15) << 2) | (Number.isNaN(b3) ? 0 : b3 >> 6));
+    res += Number.isNaN(b3) ? '=' : B64_CHARS.charAt(b3 & 63);
+  }
+  return res;
+}
+
+const target = globalThis as EncodingGlobal & { atob?: unknown; btoa?: unknown };
 if (typeof target.TextEncoder === 'undefined') target.TextEncoder = PolyTextEncoder;
 if (typeof target.TextDecoder === 'undefined') target.TextDecoder = PolyTextDecoder;
+if (typeof target.atob === 'undefined') target.atob = polyAtob;
+if (typeof target.btoa === 'undefined') target.btoa = polyBtoa;

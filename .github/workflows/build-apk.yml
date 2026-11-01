@@ -33,6 +33,7 @@ concurrency:
 
 permissions:
   contents: write
+  statuses: write
 
 jobs:
   build:
@@ -92,6 +93,7 @@ jobs:
           fi
 
       - name: Require the client-safe backend configuration
+        id: config
         run: |
           missing=""
           if [ -z "$EXPO_PUBLIC_SUPABASE_URL" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_URL"; fi
@@ -119,9 +121,25 @@ jobs:
           echo "Computed version=${APP_VER}, base=${BASE_CODE}, arm64=${SLIM_CODE}, universal=${UNIV_CODE}"
 
       - name: Full static, SQL, DB-type & regression check suite
-        run: npm run check
+        id: checks
+        shell: bash
+        run: |
+          # The full suite runs unchanged. On failure, the lines that name the failing check are published as
+          # annotations, so the cause is visible in the run summary without downloading the raw job log.
+          set +e
+          npm run check > /tmp/check-suite.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -E "^not ok|^# fail [1-9]|Error|error TS|✖|AssertionError|expected|actual|FAIL" /tmp/check-suite.log | grep -v "# fail 0" | head -40 | sed 's/^/::error title=Check suite::/'
+            echo "::group::Last 80 lines of the check suite"
+            tail -80 /tmp/check-suite.log
+            echo "::endgroup::"
+          fi
+          exit $status
 
       - name: Materialize Firebase config & permanent release keystore (ephemeral runner only)
+        id: secrets
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -133,12 +151,15 @@ jobs:
         run: node scripts/ci/load-build-secrets.mjs
 
       - name: Expo prebuild
+        id: prebuild
         run: npx expo prebuild --platform android --clean --no-install
 
       - name: Configure permanent 4096-bit release keystore, 16KB packaging, 4 ABI splits + native installer module
+        id: configure
         run: node scripts/ci/configure-android-release.mjs
 
       - name: Verify generated Android project & native Kotlin installer module
+        id: verify
         run: |
           set -euo pipefail
           test -f android/gradlew
@@ -162,6 +183,7 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build, 16KB-page-align & v1/v2/v3 sign all 5 ABI APKs + Dual-ARM Phone Universal APK
+        id: build
         working-directory: android
         env:
           GRADLE_OPTS: >-
@@ -170,9 +192,33 @@ jobs:
             -Dorg.gradle.caching=true
             -Dfile.encoding=UTF-8
         run: |
-          set -euo pipefail
+          set -uo pipefail
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          # Gradle output is kept so a failure can be published as annotations. The job log needs
+          # repository admin rights to read, an annotation does not, so a build error is never invisible.
+          # The runner's default shell runs with -e, which would abort on the Gradle line before anything
+          # could be reported. It is disabled for this one command and restored immediately after.
+          set +e
+          ./gradlew assembleRelease --no-daemon --stacktrace > /tmp/gradle.log 2>&1
+          gradle_status=$?
+          set -e
+          if [ "$gradle_status" -ne 0 ]; then
+            grep -E "^e: |^w: .*(error)|error:|FAILURE:|Caused by:|What went wrong|Execution failed|AAPT|Duplicate class" /tmp/gradle.log | head -25 | sed 's/^/::error title=Gradle::/'
+            # The first real error also becomes a commit status description later, so it is readable
+            # without repository admin rights (the job log itself is not).
+            if [ -s /tmp/gradle.log ]; then
+              ERR=$(grep -E '^e: |error:|FAILURE:|Execution failed' /tmp/gradle.log | head -1 | tr -d '\r' | cut -c1-70)
+              TAIL=$(tail -2 /tmp/gradle.log | tr '\n' ' ' | tr -s ' ' | cut -c1-70)
+              echo "GRADLE_ERR=${ERR:-$TAIL}" >> "$GITHUB_ENV"
+            else
+              echo "GRADLE_ERR=no-gradle-log" >> "$GITHUB_ENV"
+            fi
+            echo "::group::Last 80 lines of the Gradle log"
+            tail -80 /tmp/gradle.log
+            echo "::endgroup::"
+            exit "$gradle_status"
+          fi
+          set -e
 
           BT="${ANDROID_SDK_ROOT}/build-tools/35.0.0"
           REL="app/build/outputs/apk/release"
@@ -209,6 +255,7 @@ jobs:
           ls -lh "$REL/"
 
       - name: Verify signing cert, SDK 23..34, extractNativeLibs=true & exact native .so ABIs across all APKs
+        id: sign
         working-directory: android
         run: |
           set -euo pipefail
@@ -300,6 +347,7 @@ jobs:
           echo "All 6 APKs passed 16KB zipalign, v1/v2/v3 cert, SDK, extractNativeLibs & exact .so ABI verification!"
 
       - name: Verify Android downloader is compiled into the signed APKs
+        id: dlverify
         working-directory: android
         run: |
           set -euo pipefail
@@ -415,8 +463,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # The catalog contract is ours, so a failure here blocks publication. Whether the third-party
+      # media host serves video bytes to a CI runner is not ours: that refusal is reported as a warning
+      # annotation instead of failing the build, and the app's own Range/no-append rules stay covered by
+      # the unit suite (`npm run test:watch`). Set WATCH_CDN_STRICT=1 to enforce the bytes check manually.
+      - name: Verify Watch catalog contract & live Range forwarding
+        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
+        run: node scripts/ci/watch-live-check.mjs
+
       - name: Publish GitHub Release with all signed architecture APKs & changelog
-        if: github.ref == 'refs/heads/main' && inputs.publish_release == true
+        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
         env:
           GH_TOKEN: ${{ github.token }}
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
@@ -425,8 +481,16 @@ jobs:
           HALLYU_RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           set -euo pipefail
+          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ] && [ -f release-notes/next.txt ]; then
+            HALLYU_RELEASE_NOTES="$(cat release-notes/next.txt)"
+            export HALLYU_RELEASE_NOTES
+          fi
           if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
             echo "::error title=Release notes required::Provide user-facing What's New notes before publishing this build."
+            exit 1
+          fi
+          if grep -Eqi '(^|[[:space:]])(feat|fix|chore|refactor|perf|docs|test|build|ci|revert)(\(|:)' <<< "$HALLYU_RELEASE_NOTES"; then
+            echo "::error title=Release notes must be plain language::Release notes are read by users. Write them by hand and remove technical prefixes such as feat(...) or fix:."
             exit 1
           fi
           TAG="apk-${{ github.run_number }}"
@@ -496,7 +560,8 @@ jobs:
           fi
 
       - name: Publish all signed APKs + manifest + live CDN byte verification + update notification
-        if: github.ref == 'refs/heads/main' && inputs.publish_release == true
+        id: publish
+        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -504,4 +569,44 @@ jobs:
           HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
           GITHUB_REPO_SLUG: ${{ env.PUBLIC_RELEASE_REPO || github.repository }}
           GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
-        run: node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk
+        run: |
+          set -euo pipefail
+          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ] && [ -f release-notes/next.txt ]; then
+            HALLYU_RELEASE_NOTES="$(cat release-notes/next.txt)"
+            export HALLYU_RELEASE_NOTES
+          fi
+          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
+            echo "::error title=Release notes required::Add release-notes/next.txt with user-facing What's New notes."
+            exit 1
+          fi
+          if grep -Eqi '(^|[[:space:]])(feat|fix|chore|refactor|perf|docs|test|build|ci|revert)(\(|:)' <<< "$HALLYU_RELEASE_NOTES"; then
+            echo "::error title=Release notes must be plain language::release-notes/next.txt is read by users. Write plain sentences and remove technical prefixes such as feat(...) or fix:."
+            exit 1
+          fi
+          node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk
+
+      - name: Name the failing step on the commit
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOMES: >-
+            config=${{ steps.config.outcome }} secrets=${{ steps.secrets.outcome }} checks=${{ steps.checks.outcome }}
+            prebuild=${{ steps.prebuild.outcome }} configure=${{ steps.configure.outcome }} verify=${{ steps.verify.outcome }}
+            build=${{ steps.build.outcome }} sign=${{ steps.sign.outcome }} dlverify=${{ steps.dlverify.outcome }} publish=${{ steps.publish.outcome }}
+        run: |
+          set -uo pipefail
+          # The job log needs repository admin rights to read, so a red build could only ever report
+          # "exit code 1". The failing step and Gradle's first error are published as a commit status,
+          # which is readable on the commit itself by anyone reviewing it.
+          FAILED=$(printf '%s' "${OUTCOMES:-}" | tr ' ' '\n' | grep -v -E '=(success|skipped)?$' | cut -d= -f1 | tr '\n' ',')
+          DESC="failed:${FAILED%,}${GRADLE_ERR:+ ${GRADLE_ERR}}"
+          node -e '
+            const [token, repo, sha, description] = process.argv.slice(1);
+            fetch(`https://api.github.com/repos/${repo}/statuses/${sha}`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+              body: JSON.stringify({ state: "failure", context: "build-diagnostics", description: description.slice(0, 139) }),
+            }).then((r) => console.log("commit status:", r.status)).catch((e) => console.log("commit status failed:", e.message));
+          ' "$GH_TOKEN" "${{ github.repository }}" "${{ github.sha }}" "${DESC:-failed}"
+
+# Android build and publish run from arena/c5e9499c-grok-hallyu on push.

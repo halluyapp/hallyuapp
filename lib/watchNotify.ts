@@ -35,6 +35,8 @@ export async function reportDownload(
   written: number,
   total: number | null,
   message?: string | null,
+  speed?: string | null,
+  eta?: string | null,
 ): Promise<void> {
   if (Platform.OS === 'web') return;
   const percent = total && total > 0 ? Math.min(100, Math.floor((written / total) * 100)) : 0;
@@ -42,7 +44,7 @@ export async function reportDownload(
   const now = Date.now();
   if (kind === 'progress' && prev && prev.kind === 'progress' && percent - prev.percent < 5 && now - prev.at < 4000) return;
   lastShown.set(key, { percent, at: now, kind });
-  const notice = progressNotice(kind, title, percent, message ?? null);
+  const notice = progressNotice(kind, title, percent, message ?? null, speed ?? null, eta ?? null);
   try {
     await ensureChannel();
     await Notifications.scheduleNotificationAsync({

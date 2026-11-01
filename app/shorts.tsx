@@ -3,8 +3,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { ResizeMode, Video } from 'expo-av';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Pressable, StatusBar, StyleSheet, TextInput, useWindowDimensions, View, ViewToken } from 'react-native';
+import { Animated, Easing, FlatList, PanResponder, Pressable, StatusBar, StyleSheet, TextInput, useWindowDimensions, View, ViewToken } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { formatClock } from '../lib/watchRules';
 import { ShareCardModal } from '../components/share/ShareCardModal';
 import { VideoAccessSheet } from '../components/video/VideoAccessSheet';
 import { normalizeMediaUrl } from '../lib/api/client';
@@ -118,7 +119,20 @@ export default function Shorts() {
         initialNumToRender={1}
         maxToRenderPerBatch={2}
         removeClippedSubviews
-        renderItem={({ item, index }) => <ShortItem post={item} height={itemH} width={width} active={index === active} muted={muted} paused={paused} onTogglePause={() => setPaused((p) => !p)} onToggleMute={() => setMuted((m) => !m)} position={`${index + 1}/${list.length}`} />}
+        renderItem={({ item, index }) => (
+          <ShortItem
+            post={item}
+            height={itemH}
+            width={width}
+            active={index === active}
+            nearActive={Math.abs(index - active) <= 1}
+            muted={muted}
+            paused={paused}
+            onTogglePause={() => setPaused((p) => !p)}
+            onToggleMute={() => setMuted((m) => !m)}
+            position={`${index + 1}/${list.length}`}
+          />
+        )}
       />
       <View style={[styles.top, { top: insets.top }]}>
         <IconButton icon="close" label="Close shorts" onPress={closeShorts} tone="onMedia" />
@@ -130,21 +144,7 @@ export default function Shorts() {
             icon="add-circle-outline"
             label="Post a short"
             tone="onMedia"
-            onPress={() =>
-              require('post a Short', async () => {
-                if (isStaff) {
-                  router.push('/create/short');
-                  return;
-                }
-                const access = await fetchVideoAccessStatus().catch(() => null);
-                if (access?.allowed) {
-                  router.push('/create/short');
-                } else {
-                  setAccessStatus(access);
-                  setAccessSheet(true);
-                }
-              })
-            }
+            onPress={() => require('post a Short', () => router.push('/create/short'))}
           />
           <IconButton icon={muted ? 'volume-mute' : 'volume-high'} label={muted ? 'Unmute' : 'Mute'} onPress={() => setMuted((m) => !m)} tone="onMedia" />
         </View>
@@ -159,7 +159,29 @@ export default function Shorts() {
   );
 }
 
-function ShortItem({ post, height, width, active, muted, paused, onTogglePause, onToggleMute, position }: { post: Post; height: number; width: number; active: boolean; muted: boolean; paused: boolean; onTogglePause: () => void; onToggleMute: () => void; position: string }) {
+function ShortItem({
+  post,
+  height,
+  width,
+  active,
+  nearActive,
+  muted,
+  paused,
+  onTogglePause,
+  onToggleMute,
+  position,
+}: {
+  post: Post;
+  height: number;
+  width: number;
+  active: boolean;
+  nearActive?: boolean;
+  muted: boolean;
+  paused: boolean;
+  onTogglePause: () => void;
+  onToggleMute: () => void;
+  position: string;
+}) {
   const router = useRouter();
   const toast = useToast();
   const insets = useSafeAreaInsets();
@@ -178,12 +200,37 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
   const [progress, setProgress] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [scrubRatio, setScrubRatio] = useState<number | null>(null);
+  const [heartCoords, setHeartCoords] = useState<{ x: number; y: number } | null>(null);
   const postComments = useMemo(() => commentsFor(state, post.id), [state, post.id]);
   const videoRef = useRef<Video>(null);
   const heart = useRef(new Animated.Value(0)).current;
   const lastTap = useRef(0);
+  const singleTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playing = active && !paused && !veiled;
   const reduce = useReduceMotion(state.prefs.reduceMotion);
+
+  // Rotating vinyl disc animation for soundtrack attribution
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (playing && !reduce) {
+      const anim = Animated.loop(
+        Animated.timing(spinAnim, {
+          toValue: 1,
+          duration: 5000,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+      );
+      anim.start();
+      return () => anim.stop();
+    }
+  }, [playing, reduce, spinAnim]);
+  const spinRotation = spinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
 
   useEffect(() => {
     setVideoUri(normalizeMediaUrl(post.video?.url));
@@ -221,29 +268,74 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
     }
     return () => {
       if (idle.current) clearTimeout(idle.current);
+      if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
     };
   }, [active, veiled, paused, wake, caption, chrome, reduce]);
 
-  const doubleTap = useCallback(() => {
+  const handleStageTap = (e: { nativeEvent: { locationX: number; locationY: number } }) => {
     wake();
     const t = Date.now();
+    const locX = e.nativeEvent.locationX;
+    const locY = e.nativeEvent.locationY;
     if (t - lastTap.current < 280) {
+      if (singleTapTimer.current) {
+        clearTimeout(singleTapTimer.current);
+        singleTapTimer.current = null;
+      }
+      lastTap.current = 0;
+      setHeartCoords({ x: locX, y: locY });
       require('react to shorts', () => {
         if (!state.reactions[post.id]) dispatch({ type: 'react', targetId: post.id, kind: 'loved' });
         haptic.light();
         heart.setValue(0);
-        Animated.sequence([Animated.spring(heart, { toValue: 1, useNativeDriver: true, damping: 8 }), Animated.timing(heart, { toValue: 0, duration: 400, delay: 300, useNativeDriver: true })]).start();
+        Animated.sequence([
+          Animated.spring(heart, { toValue: 1, useNativeDriver: true, damping: 7 }),
+          Animated.timing(heart, { toValue: 0, duration: 380, delay: 240, useNativeDriver: true }),
+        ]).start();
       });
-    } else onTogglePause();
-    lastTap.current = t;
-  }, [require, state.reactions, post.id, dispatch, heart, onTogglePause, wake]);
+    } else {
+      lastTap.current = t;
+      singleTapTimer.current = setTimeout(() => {
+        onTogglePause();
+      }, 280);
+    }
+  };
 
   const wl = drama ? watch(drama.id) : undefined;
   const bottomPad = insets.bottom + space.x4;
 
+  const scrubPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (evt) => {
+          setScrubbing(true);
+          const ratio = Math.max(0, Math.min(1, evt.nativeEvent.pageX / Math.max(1, width)));
+          setScrubRatio(ratio);
+        },
+        onPanResponderMove: (evt) => {
+          const ratio = Math.max(0, Math.min(1, evt.nativeEvent.pageX / Math.max(1, width)));
+          setScrubRatio(ratio);
+        },
+        onPanResponderRelease: (evt) => {
+          const ratio = Math.max(0, Math.min(1, evt.nativeEvent.pageX / Math.max(1, width)));
+          setScrubbing(false);
+          setScrubRatio(null);
+          setProgress(ratio);
+          if (durationMs > 0) {
+            videoRef.current?.setPositionAsync(Math.round(ratio * durationMs)).catch(() => {});
+          }
+        },
+      }),
+    [width, durationMs],
+  );
+
+  const displayProgress = scrubRatio !== null ? scrubRatio : progress;
+
   return (
     <View style={{ height, width, backgroundColor: drama?.tone ?? '#000' }}>
-      {!veiled && post.video && videoUri && !failed ? (
+      {!veiled && post.video && videoUri && !failed && (active || !!nearActive) ? (
         <Video
           ref={videoRef}
           source={{ uri: videoUri }}
@@ -270,16 +362,16 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
           onPlaybackStatusUpdate={(s) => {
             if (s.isLoaded && s.durationMillis) {
               setDurationMs(s.durationMillis);
-              setProgress(s.positionMillis / s.durationMillis);
+              if (!scrubbing) setProgress(s.positionMillis / s.durationMillis);
             }
           }}
-          progressUpdateIntervalMillis={180}
+          progressUpdateIntervalMillis={150}
           accessibilityLabel={`Video: ${post.body}`}
         />
       ) : drama ? (
         <Poster drama={drama} width={width} rounded={0} style={{ height, opacity: veiled ? 0.2 : 0.7 }} />
       ) : null}
-      <Pressable style={StyleSheet.absoluteFill} onPress={doubleTap} accessibilityRole="button" accessibilityLabel={paused ? 'Play' : 'Pause'} accessibilityHint="Double tap to react" />
+      <Pressable style={StyleSheet.absoluteFill} onPress={handleStageTap} accessibilityRole="button" accessibilityLabel={paused ? 'Play' : 'Pause'} accessibilityHint="Double tap to react" />
       <LinearGradient
         pointerEvents="none"
         colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.42)', 'rgba(0,0,0,0.88)']}
@@ -301,7 +393,17 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
           </Text>
         </View>
       ) : null}
-      <Animated.View pointerEvents="none" style={[styles.center, { transform: [{ scale: heart }], opacity: heart }]}>
+
+      {/* Dynamic heart popping at tap coordinates or center */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          heartCoords
+            ? { position: 'absolute', left: heartCoords.x - 48, top: heartCoords.y - 48, zIndex: 10 }
+            : styles.center,
+          { transform: [{ scale: heart }], opacity: heart },
+        ]}
+      >
         <Ionicons name="heart" size={96} color={colors.accent} />
       </Animated.View>
 
@@ -359,6 +461,13 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
         <Pressable onPress={() => setMenu(true)} style={styles.railItem} accessibilityRole="button" accessibilityLabel="More">
           <Ionicons name="ellipsis-horizontal" size={26} color={colors.onMedia} />
         </Pressable>
+
+        {/* Rotating Vinyl Disc Soundtrack Anchor */}
+        <Animated.View style={[styles.discWrap, { transform: [{ rotate: spinRotation }] }]}>
+          <View style={styles.discInner}>
+            <Ionicons name="disc" size={28} color={colors.onMedia} />
+          </View>
+        </Animated.View>
       </Animated.View>
 
       <Animated.View style={[styles.meta, { bottom: bottomPad, width: width - 84, opacity: Animated.multiply(chrome, caption), transform: [{ translateY: caption.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }] }]} pointerEvents={chromeVisible ? 'auto' : 'none'}>
@@ -383,26 +492,39 @@ function ShortItem({ post, height, width, active, muted, paused, onTogglePause, 
             <Ionicons name="chevron-forward" size={12} color={colors.onMedia} />
           </Pressable>
         ) : null}
+
+        {/* OST Audio Attribution Chip */}
+        <View style={styles.soundBadge}>
+          <Ionicons name="musical-notes" size={12} color={colors.accent} />
+          <Text variant="caption" style={{ color: colors.onMedia, opacity: 0.9 }} numberOfLines={1}>
+            {drama ? `${drama.title} · Original Soundtrack` : 'Original Sound · Hallyu Reels'}
+          </Text>
+        </View>
+
         <Text variant="caption" style={{ color: colors.textTertiary }}>
           {position}
           {post.video ? ` · ${post.video.duration}s` : ''}
         </Text>
       </Animated.View>
 
-      <Pressable
-        onPress={(e) => {
-          if (!durationMs) return;
-          const ratio = Math.max(0, Math.min(1, e.nativeEvent.locationX / Math.max(1, width)));
-          setProgress(ratio);
-          videoRef.current?.setPositionAsync(Math.round(ratio * durationMs)).catch(() => {});
-        }}
-        hitSlop={12}
-        style={[styles.progress, { bottom: insets.bottom }]}
+      {/* Interactive Draggable Scrubber with Live Timecode Bubble */}
+      <View
+        {...scrubPanResponder.panHandlers}
+        style={[styles.progressTouchZone, { bottom: insets.bottom }]}
         accessibilityRole="adjustable"
         accessibilityLabel="Scrub video timeline"
       >
-        <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]} />
-      </Pressable>
+        {scrubbing && durationMs > 0 && (
+          <View style={[styles.scrubBubble, { left: Math.max(12, Math.min(width - 70, displayProgress * width - 25)) }]}>
+            <Text variant="caption" style={{ color: '#fff', fontWeight: '700' }}>
+              {formatClock(Math.round(displayProgress * durationMs))}
+            </Text>
+          </View>
+        )}
+        <View style={[styles.progressTrack, scrubbing && styles.progressTrackActive]}>
+          <View style={[styles.progressFill, { width: `${Math.round(displayProgress * 100)}%` }]} />
+        </View>
+      </View>
 
       {/* Slide-Up In-Player Live Comments Drawer */}
       <Sheet visible={commentsOpen} onClose={() => setCommentsOpen(false)} title={`Comments · ${Math.max(post.commentCount, postComments.length)}`}>
@@ -502,10 +624,67 @@ const styles = StyleSheet.create({
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   playBadge: { width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', paddingLeft: 4 },
   veil: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.x8, backgroundColor: 'rgba(10,10,10,0.7)' },
-  rail: { position: 'absolute', right: space.x2, alignItems: 'center', gap: space.x4 },
+  rail: { position: 'absolute', right: space.x2, alignItems: 'center', gap: space.x3 },
   railItem: { alignItems: 'center', gap: 2, minWidth: 48 },
+  discWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(20,20,20,0.85)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: space.x1,
+  },
+  discInner: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   meta: { position: 'absolute', left: space.margin, gap: space.x2 },
   dramaChip: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingHorizontal: 8, height: 28, borderRadius: radius.full, backgroundColor: 'rgba(255,255,255,0.14)' },
-  progress: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.2)' },
-  progressFill: { height: 2, backgroundColor: colors.accent },
+  soundBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignSelf: 'flex-start',
+    maxWidth: '90%',
+  },
+  progressTouchZone: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 24,
+    justifyContent: 'flex-end',
+    zIndex: 20,
+  },
+  progressTrack: {
+    height: 3,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    width: '100%',
+  },
+  progressTrackActive: {
+    height: 6,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: colors.accent,
+  },
+  scrubBubble: {
+    position: 'absolute',
+    bottom: 14,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

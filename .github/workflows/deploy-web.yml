@@ -103,6 +103,151 @@ jobs:
           ! grep -q "__HALLYU_SW_BUILD_ID__" dist-pages/sw.js
           cat dist-pages/version.json
 
+      # Deploy-window protection. GitHub Pages serves HTML with `max-age=600` (and its edge ignores query
+      # strings), while this publish replaces the whole tree — so for up to ~10 minutes after a deploy a
+      # visitor can receive HTML that points at a bundle which no longer exists, and the page never starts.
+      # Nothing on the client can shorten that window, so we do the two things that make it harmless:
+      #   1. carry the build that is live right now into this artifact, so stale HTML starts the previous
+      #      build instead of a blank screen (only files this build does not already have are added);
+      #   2. give every published page a startup guard that says so and offers a Reload which clears the
+      #      service worker — a page that genuinely cannot start is never silently blank.
+      - name: Carry the live build forward & guard the blank screen
+        env:
+          SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: |
+          set -euo pipefail
+          node <<'HALLYU_EOF'
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const NOTICE = [
+            '<script>',
+            '(function(){',
+            'var shown=false,bundleFailed=false,n=0;',
+            'function root(){return document.getElementById("root");}',
+            'function remove(){var e=document.getElementById("hallyu-startup-fallback");if(e&&e.parentNode)e.parentNode.removeChild(e);}',
+            '/* The splash lives inside #root, so an empty root is not the only stall: it can also stay on screen. */',
+            'function starting(){var r=root();return !!(r&&r.innerHTML.indexOf(\"Hallyu is starting\")!==-1);}',
+            'function show(){',
+            '  if(shown)return;',
+            '  var r=root();',
+            '  if(r&&r.children.length&&!starting())return;',
+            '  shown=true;',
+            '  var host=document.body||document.documentElement;',
+            '  var el=document.createElement("div");',
+            '  el.id="hallyu-startup-fallback";',
+            '  el.setAttribute("role","alert");',
+            '  el.style.cssText="position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;background:#000;color:#F5F5F7;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;";',
+            '  var t=document.createElement("div");',
+            '  t.style.cssText="font-size:17px;font-weight:600;line-height:24px;max-width:420px;";',
+            '  t.textContent="Hallyu could not start just now.";',
+            '  var s=document.createElement("div");',
+            '  s.style.cssText="font-size:14px;line-height:21px;color:#8E8E93;max-width:420px;";',
+            '  s.textContent=bundleFailed?"A newer version of Hallyu was published while this page was open, and this copy of the app is no longer available. Tap Reload to get the new one.":"The app did not finish loading on this connection. Tap Reload to try again.";',
+            '  var b=document.createElement("button");',
+            '  b.type="button";',
+            '  b.textContent="Reload";',
+            '  b.style.cssText="margin-top:6px;padding:12px 28px;border:0;border-radius:999px;background:#E11D48;color:#fff;font-size:15px;font-weight:600;cursor:pointer;";',
+            '  b.onclick=function(){',
+            '    var go=function(){location.reload();};',
+            '    if("serviceWorker" in navigator){',
+            '      navigator.serviceWorker.getRegistrations().then(function(rs){return Promise.all(rs.map(function(r){return r.unregister();}));}).catch(function(){}).then(go,go);',
+            '    }else{go();}',
+            '  };',
+            '  el.appendChild(t);el.appendChild(s);el.appendChild(b);',
+            '  host.appendChild(el);',
+            '}',
+            'window.addEventListener("error",function(e){',
+            '  var t=e&&e.target;',
+            '  if(t&&t.tagName==="SCRIPT"&&t.src&&/\\.js(\\?|$)/.test(t.src)){bundleFailed=true;setTimeout(show,1200);}',
+            '},true);',
+            'var timer=setInterval(function(){',
+            '  var r=root();',
+            '  if(r&&r.children.length&&!starting()){clearInterval(timer);remove();return;}',
+            '  n++;',
+            '  if(!shown&&n>=50)show();',
+            '},300);',
+            '})();',
+            '</script>',
+          ].join('\n');
+
+          const guarded = [];
+          for (const dir of ['dist-pages', 'dist-root']) {
+            for (const name of ['index.html', '404.html']) {
+              const file = path.join(dir, name);
+              if (!fs.existsSync(file)) continue;
+              let html = fs.readFileSync(file, 'utf8');
+              if (html.indexOf('hallyu-startup-fallback') !== -1) {
+                guarded.push(file + ' (already guarded)');
+                continue;
+              }
+              if (html.indexOf('</body>') === -1) throw new Error(file + ' has no </body> to anchor the startup guard');
+              html = html.replace('</body>', NOTICE + '\n  </body>');
+              fs.writeFileSync(file, html, 'utf8');
+              guarded.push(file);
+            }
+          }
+          console.log('startup guard written to: ' + guarded.join(', '));
+          if (guarded.length === 0) throw new Error('no HTML file was guarded — refusing to publish an unguarded shell');
+
+          const DIST = 'dist-pages';
+          const SITE = (process.env.SITE_URL || '').replace(/\/?$/, '/');
+
+          function walk(dir, base, out) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(full, base, out);
+              else out.push(path.relative(base, full).split(path.sep).join('/'));
+            }
+            return out;
+          }
+
+          (async () => {
+            const own = walk(DIST, DIST, []).sort();
+            console.log('this build ships ' + own.length + ' file(s)');
+            let carried = 0;
+            try {
+              let previous = [];
+              const manifestRes = await fetch(SITE + 'file-manifest.json', { cache: 'no-store' });
+              if (manifestRes.ok) {
+                const manifest = await manifestRes.json();
+                previous = Array.isArray(manifest.files) ? manifest.files : [];
+                console.log('live manifest lists ' + previous.length + ' file(s) from the build in production');
+              } else {
+                const shell = await (await fetch(SITE, { cache: 'no-store' })).text();
+                const refs = [...shell.matchAll(/(?:src|href)="(\/[^"/]+\/(?:_expo\/static|assets)\/[^"]+)"/g)].map((m) => m[1]);
+                previous = [...new Set(refs)].map((u) => u.replace(/^\/[^/]+\//, ''));
+                console.log('no live manifest yet (first run) — carrying ' + previous.length + ' shell reference(s)');
+              }
+              for (const rel of previous) {
+                if (!rel || rel.indexOf('..') !== -1 || rel.charAt(0) === '/') continue;
+                if (own.indexOf(rel) !== -1 || fs.existsSync(path.join(DIST, rel))) continue;
+                const res = await fetch(SITE + rel);
+                if (!res.ok) {
+                  console.log('skip ' + rel + ' (HTTP ' + res.status + ')');
+                  continue;
+                }
+                const dest = path.join(DIST, rel);
+                fs.mkdirSync(path.dirname(dest), { recursive: true });
+                fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+                carried += 1;
+              }
+            } catch (err) {
+              console.log('::warning::could not carry the live build forward: ' + (err && err.message));
+            }
+            console.log('carried ' + carried + ' file(s) from the build that is live now');
+            fs.writeFileSync(
+              path.join(DIST, 'file-manifest.json'),
+              JSON.stringify({ app: 'hallyu-web', commit: process.env.GITHUB_SHA || '', files: own }, null, 2) + '\n',
+            );
+            console.log('wrote file-manifest.json so the next deploy can carry this build forward');
+          })();
+          HALLYU_EOF
+
+          grep -q "hallyu-startup-fallback" dist-pages/index.html
+          grep -q "hallyu-startup-fallback" dist-pages/404.html
+          test -f dist-pages/file-manifest.json
+
       # This authenticated browser audit creates/promotes and removes a temporary production account.
       # Run only when explicitly requested; ordinary main deployments remain data-nonmutating.
       - name: Pre-deploy Headless Chrome verification (Landing Page, SW, version.json & 360x800 routes)
@@ -285,7 +430,7 @@ jobs:
 
   deploy:
     name: Deploy & Verify Live Public Website
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu'
     needs: verify-and-build
     runs-on: ubuntu-22.04
     environment:
@@ -386,3 +531,5 @@ jobs:
               process.exit(1);
             });
           '
+
+# Publishing: runs from arena/c5e9499c-grok-hallyu on push (see the publish conditions below).

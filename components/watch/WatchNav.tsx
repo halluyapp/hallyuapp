@@ -33,7 +33,7 @@ export function WatchNav({ active }: { active: WatchSection }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flexDirection: 'row', alignSelf: 'flex-start', marginHorizontal: space.x4, marginTop: space.x3, padding: 3, gap: 3, borderRadius: radius.md, backgroundColor: colors.surface1 },
-  tab: { minHeight: 34, minWidth: 84, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.x3, borderRadius: radius.sm },
+  wrap: { flexDirection: 'row', alignSelf: 'stretch', marginHorizontal: space.x4, marginTop: space.x3, padding: 3, gap: 3, borderRadius: radius.md, backgroundColor: colors.surface1 },
+  tab: { flex: 1, minHeight: 38, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.x3, borderRadius: radius.sm },
   selected: { backgroundColor: colors.accent },
 });

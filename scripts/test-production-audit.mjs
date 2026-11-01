@@ -254,8 +254,8 @@ test('Live Supabase catalog rankings, world classification, and push notificatio
   const anonKey = process.env.SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!url || !anonKey) {
-    t.skip('SUPABASE_URL / SUPABASE_ANON_KEY not set in environment');
+  if (!url || !anonKey || url.includes('placeholder.supabase.co') || url.includes('example.invalid')) {
+    t.skip('SUPABASE_URL / SUPABASE_ANON_KEY not set to live backend in this environment');
     return;
   }
 

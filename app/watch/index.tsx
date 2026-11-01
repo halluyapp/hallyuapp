@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import { WatchCard, WatchRail } from '../../components/watch/WatchCard';
@@ -13,6 +13,7 @@ import { colors, radius, space } from '../../constants/theme';
 import { fetchWatchHome, readWatchHomeCache, searchWatch, type WatchResult, type WatchRow, type WatchTitle } from '../../lib/api/moviebox';
 import { useCompletedDownloads, useTransfers } from '../../components/watch/useWatchDownloads';
 import { listProgress, type ProgressEntry } from '../../lib/watchStore';
+import { beginWatch, endWatch } from '../../lib/watchPerf';
 import { PosterRowSkeleton } from '../../components/ui/Skeleton';
 
 function downloadsSummary(completed: number, active: number): string {
@@ -41,11 +42,13 @@ export default function WatchHome() {
     let alive = true;
     let networkFinished = false;
     setHomeError(null);
+    beginWatch('home:network');
     void readWatchHomeCache().then((cached) => {
       if (alive && !networkFinished && cached) setRows(cached);
     });
     fetchWatchHome().then((r: WatchResult<WatchRow[]>) => {
       networkFinished = true;
+      endWatch('home:network');
       if (!alive) return;
       if (r.ok) setRows(r.value);
       else setHomeError(r.reason);
@@ -55,18 +58,19 @@ export default function WatchHome() {
     };
   }, [reloadKey]);
 
-  useEffect(() => {
-    let alive = true;
-    const refresh = () => {
-      listProgress().then((p) => alive && setProgress(p));
-    };
-    refresh();
-    const timer = setInterval(refresh, 4000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
+  // Refreshes when the screen is focused again instead of polling every 4 seconds forever: the rail is
+  // re-read on return, and transfer changes still notify through the store subscription.
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      void listProgress().then((p) => {
+        if (alive) setProgress(p);
+      });
+      return () => {
+        alive = false;
+      };
+    }, []),
+  );
 
   useEffect(() => {
     const term = q.trim();
