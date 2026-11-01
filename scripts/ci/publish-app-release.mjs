@@ -19,6 +19,12 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { planRetention, retentionDryRun } from './release-retention.mjs';
+
+// Only the universal APK is stored in Supabase. Every ABI entry in the manifest points at it, and the
+// per-ABI APKs stay on GitHub Releases as the archive. This keeps the public bucket to one release copy.
+const SUPABASE_PUBLISHED_KEYS = new Set(['universal']);
+const SUPABASE_ABI_KEYS = ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'];
 
 const SUPABASE_URL = (process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL ?? '')
   .trim()
@@ -216,6 +222,10 @@ const publishedMeta = {};
 for (const key of ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'universal']) {
   const art = artifacts[key];
   if (!art) continue;
+  if (!SUPABASE_PUBLISHED_KEYS.has(key)) {
+    console.log(`Not publishing ${key} to Supabase (universal-only storage); it stays on GitHub Releases.`);
+    continue;
+  }
   const mb = (art.bytes / (1024 * 1024)).toFixed(2);
 
   if (art.bytes <= SUPABASE_MAX_UPLOAD_BYTES) {
@@ -320,6 +330,13 @@ for (const abi of ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'universal']) {
   };
 }
 
+// Universal-only: every ABI the app asks for resolves to the universal APK. Its ABI list is the full
+// 4-ABI build, so arm64, armeabi-v7a, x86_64 and x86 devices all install from this one URL.
+if (!perAbi.universal) throw new Error('Universal APK was not published; refusing to write the manifest.');
+for (const abi of SUPABASE_ABI_KEYS) {
+  if (!perAbi[abi]) perAbi[abi] = { ...perAbi.universal };
+}
+
 const legacyCompatAbis = {
   ...perAbi,
   'arm64-v8a': {
@@ -368,7 +385,10 @@ await uploadObject(
 );
 
 // Verify every single published URL returns HTTP 200/206 + valid ZIP `PK` magic bytes!
+const verifiedUrls = new Set();
 for (const [abi, entry] of Object.entries(perAbi)) {
+  if (verifiedUrls.has(entry.url)) continue;
+  verifiedUrls.add(entry.url);
   await verifyLiveApkUrl(abi, entry.url);
 }
 await verifyLiveApkUrl('legacy-arm64-bridge', legacyBridgeUrl);
@@ -387,7 +407,7 @@ const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/app_releases?on_conflict=
     git_commit: gitCommit.slice(0, 7),
     apk_url: legacyBridgeUrl,
     universal_apk_url: perAbi.universal.url,
-    file_size_bytes: perAbi['arm64-v8a'].sizeBytes,
+    file_size_bytes: perAbi.universal.sizeBytes,
     sha256: bridgeArt.sha256,
     release_notes: releaseNotes,
     is_mandatory: false,
@@ -426,3 +446,60 @@ if (!Number.isFinite(recipientsNotified) || recipientsNotified < 0) {
 console.log(
   `Queued update-available notifications for ${recipientsNotified} eligible members; full release notes are available at /settings/updates.`,
 );
+
+// ---------- retention: runs only after the release is live and recorded ----------
+// A cleanup failure never fails or rolls back the release. It is logged and the next run retries.
+async function applyRetention() {
+  const headers = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'Content-Type': 'application/json' };
+  const rowsRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/app_releases?select=version_name,version_code,apk_url,universal_apk_url&order=version_code.desc&limit=500`,
+    { headers },
+  );
+  if (!rowsRes.ok) throw new Error(`read app_releases failed (${rowsRes.status})`);
+  const releases = await rowsRes.json();
+
+  const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ prefix: 'releases', limit: 1000, offset: 0 }),
+  });
+  if (!listRes.ok) throw new Error(`list releases/ failed (${listRes.status})`);
+  const folders = ((await listRes.json()) ?? []).map((o) => o.name).filter(Boolean);
+
+  const plan = planRetention({ folders, currentVersion: versionName, releases });
+  if (plan.reason) {
+    console.log(`Retention skipped: ${plan.reason}`);
+    return;
+  }
+  console.log(`Retention keeps ${plan.keep.join(', ')}; removes ${plan.remove.length} old folder(s).`);
+  if (plan.remove.length === 0) return;
+  if (retentionDryRun()) {
+    console.log(`Retention dry run (HALLYU_RETENTION_DRY_RUN=1): would remove ${plan.remove.join(', ')}`);
+    return;
+  }
+
+  const prefixes = [];
+  for (const folder of plan.remove) {
+    const inner = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ prefix: `releases/${folder}`, limit: 1000, offset: 0 }),
+    });
+    if (!inner.ok) throw new Error(`list ${folder} failed (${inner.status})`);
+    for (const o of (await inner.json()) ?? []) prefixes.push(`releases/${folder}/${o.name}`);
+  }
+  if (prefixes.length === 0) return;
+  const delRes = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
+    method: 'DELETE',
+    headers,
+    body: JSON.stringify({ prefixes }),
+  });
+  if (!delRes.ok) throw new Error(`delete failed (${delRes.status})`);
+  console.log(`Retention removed ${prefixes.length} object(s) from ${plan.remove.join(', ')}.`);
+}
+
+try {
+  await applyRetention();
+} catch (err) {
+  console.warn(`Retention step failed; the release is unaffected: ${err instanceof Error ? err.message : String(err)}`);
+}
