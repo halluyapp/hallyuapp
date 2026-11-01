@@ -255,7 +255,10 @@ async function main() {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   main().catch((err) => {
-    console.error(`storage cleanup failed: ${err.message}`);
+    const msg = String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 500);
+    console.error(`storage cleanup failed: ${msg}`);
+    console.log(`::error title=storage cleanup failed::${msg}`);
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `FAILED: ${msg}\n`);
     process.exitCode = 1;
   });
 }
