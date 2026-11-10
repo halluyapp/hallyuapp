@@ -10,11 +10,13 @@
 # How it works without any GitHub secret: the job mints a short-lived GitHub OIDC token
 # (`permissions: id-token: write`) and the backend's `ci-gateway` edge function verifies it
 # against GitHub's public JWKS for this exact repository. The gateway serves the signing
-# material from the server-side `ci_build_vault` (seeding it on first run) and accepts the
-# finished APK for upload — the service-role key never leaves the platform.
+# material from the server-side `ci_build_vault` (seeding it on first run) and hands back a
+# short-lived STORAGE SIGNED UPLOAD URL — the ~38 MB APK goes from the runner straight to
+# storage (edge functions sit behind a platform proxy that cannot accept bodies that large),
+# and the service-role key never leaves the platform.
 #
-#
-# Optional repository secrets (not required): none.
+# Versioning note: GitHub Actions expressions have NO arithmetic operators, so the release
+# train math is done in shell and exported to $GITHUB_ENV.
 
 name: Build & Publish Universal APK
 
@@ -50,10 +52,6 @@ env:
   # CLIENT-SAFE build values (backend URL, anon key, Rork app key) after verifying the workflow's
   # GitHub OIDC token — nothing sensitive is stored in this repository.
   CI_GATEWAY_URL: https://ltyymanoidagwsapgiql.supabase.co/functions/v1/ci-gateway
-  # Monotonic versioning: universal APK versionCode = 20000 + run_number*10 + 5 (suffix 5 =
-  # universal in the ABI train; strictly newer than every legacy 12xxx build).
-  EXPO_PUBLIC_BUILD_NUMBER: ${{ 20000 + github.run_number * 10 }}
-  EXPO_PUBLIC_APP_VERSION: 1.1.${{ github.run_number }}
 
 jobs:
   build:
@@ -65,6 +63,15 @@ jobs:
         with:
           fetch-depth: 30
           fetch-tags: true
+
+      - name: Stamp version (release train math, in shell — no expression arithmetic)
+        run: |
+          BUILD_BASE=$(( 20000 + GITHUB_RUN_NUMBER * 10 ))
+          {
+            echo "EXPO_PUBLIC_BUILD_NUMBER=$BUILD_BASE"
+            echo "EXPO_PUBLIC_APP_VERSION=1.1.$GITHUB_RUN_NUMBER"
+          } >> "$GITHUB_ENV"
+          echo "Universal versionCode = $(( BUILD_BASE + 5 )), versionName = 1.1.$GITHUB_RUN_NUMBER"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -144,7 +151,7 @@ jobs:
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           echo "Universal APK v$VERSION_NAME ($VERSION_CODE) — sha256 $SHA256, $SIZE bytes"
 
-      - name: Publish to the backend (gateway uploads + registers the release)
+      - name: Publish to the backend (signed upload URL + registration through the gateway)
         env:
           VERSION_CODE: ${{ steps.meta.outputs.version_code }}
           VERSION_NAME: ${{ steps.meta.outputs.version_name }}
@@ -169,6 +176,17 @@ jobs:
           echo "public download: $CODE"
           [ "$CODE" = "200" ] || { echo "::error title=Public download not live::HTTP $CODE at $PUBLIC_URL"; exit 1; }
           echo "::notice title=Universal APK published::$PUBLIC_URL"
+
+      # No log access from here — surface the gradle failure lines as error annotations so
+      # they are readable through the check-runs API.
+      - name: Diagnose on failure
+        if: failure()
+        run: |
+          if [ -f /tmp/gradle.log ]; then
+            grep -nE 'FAILURE:|error:|Error:|FAILED|Execution failed' /tmp/gradle.log | tail -8 | while IFS= read -r line; do
+              echo "::error title=gradle-failure::${line:0:500}"
+            done
+          fi
 
       - name: Upload build artifact (kept 30 days for provenance)
         uses: actions/upload-artifact@v4

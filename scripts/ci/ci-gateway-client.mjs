@@ -14,7 +14,9 @@
 //       exports ANDROID_KEYSTORE_* to $GITHUB_ENV for configure-android-release.mjs.
 //   node ci-gateway-client.mjs publish <apk> --version-code N --version-name X --sha256 S
 //            --size N --notes "..." --commit SHA
-//       Uploads the universal APK and registers the release through the gateway.
+//       Asks the gateway for a short-lived STORAGE SIGNED UPLOAD URL (edge functions sit behind
+//       a platform proxy that cannot accept a ~38 MB request body, so the APK goes from the
+//       runner straight to storage), PUTs the APK, then registers the release through the gateway.
 
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -161,18 +163,31 @@ async function vaultEnsure() {
 async function publish(apkPath, meta) {
   const apk = fs.readFileSync(apkPath);
   if (apk.byteLength < 1_000_000) throw new Error(`${apkPath} is too small to be an APK`);
-  console.log(`Uploading ${apkPath} (${(apk.byteLength / 1024 / 1024).toFixed(1)} MB) via the CI gateway…`);
-  const result = await callGateway('release.publish', {
+  const { upload_url } = await callGateway('release.upload-url');
+  if (!upload_url) throw new Error('gateway did not return a signed upload URL');
+  console.log(`Uploading ${apkPath} (${(apk.byteLength / 1024 / 1024).toFixed(1)} MB) straight to storage via a signed upload URL…`);
+  const up = await fetch(upload_url, {
+    method: 'PUT',
     headers: {
       'Content-Type': 'application/vnd.android.package-archive',
-      'x-ci-version-code': meta.versionCode,
-      'x-ci-version-name': meta.versionName,
-      'x-ci-sha256': meta.sha256,
-      'x-ci-release-notes': meta.notes,
-      'x-ci-git-commit': meta.commit,
+      'x-upsert': 'true',
       'Content-Length': String(apk.byteLength),
     },
     body: apk,
+  });
+  if (!up.ok) {
+    throw new Error(`storage upload failed: HTTP ${up.status} ${await up.text().catch(() => '')}`);
+  }
+  const result = await callGateway('release.register', {
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      version_code: Number(meta.versionCode),
+      version_name: meta.versionName,
+      sha256: meta.sha256,
+      file_size_bytes: apk.byteLength,
+      release_notes: meta.notes,
+      git_commit: meta.commit,
+    }),
   });
   if (!result.published) throw new Error('gateway did not confirm the publish');
   console.log(`::notice title=Universal APK published::${result.apk_url}`);
