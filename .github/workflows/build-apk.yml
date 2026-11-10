@@ -1,23 +1,20 @@
-# Universal-only Android release pipeline.
+# Universal-only Android release pipeline — ZERO repository secrets.
 #
 # Builds ONE signed APK that installs on EVERY Android device (arm64-v8a, armeabi-v7a,
 # x86_64, x86) and publishes it to the backend's public `app-releases` storage bucket under
-# ONE stable object name (`hallyu-universal-latest.apk`). A database trigger on the bucket
-# (migration 59) deletes every other object on each new upload, so storage can never fill
-# again and no stale per-ABI split can ever be served. The release is registered through the
-# service-role-only `publish_app_release` RPC, which the in-app updater reads via
-# `get_latest_app_release`.
+# ONE stable object (`hallyu-universal-latest.apk`). A database trigger deletes every other
+# object on each upload, so storage can never fill again and a stale per-ABI split can never
+# be served. The release is registered through the service-role `publish_app_release` RPC,
+# which the in-app updater reads via `get_latest_app_release`.
 #
-# Required repository secrets (Settings → Secrets and variables → Actions):
-#   EXPO_PUBLIC_SUPABASE_URL        https://ltyymanoidagwsapgiql.supabase.co
-#   EXPO_PUBLIC_SUPABASE_ANON_KEY   backend anon key (client-safe, embedded in the APK)
-#   EXPO_PUBLIC_RORK_APP_KEY        Rork Auth app key (client-safe)
-#   EXPO_PUBLIC_TMDB_ACCESS_TOKEN   optional (TMDB metadata)
-#   EXPO_PUBLIC_TMDB_API_KEY        optional (TMDB metadata)
-#   EXPO_PUBLIC_MEDIA_BUCKET        optional (defaults to `media`)
-#   SUPABASE_SERVICE_ROLE_KEY       server-only: APK upload + release registration
-#   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
-#   GOOGLE_SERVICES_JSON_BASE64     optional (Firebase push config)
+# How it works without any GitHub secret: the job mints a short-lived GitHub OIDC token
+# (`permissions: id-token: write`) and the backend's `ci-gateway` edge function verifies it
+# against GitHub's public JWKS for this exact repository. The gateway serves the signing
+# material from the server-side `ci_build_vault` (seeding it on first run) and accepts the
+# finished APK for upload — the service-role key never leaves the platform.
+#
+#
+# Optional repository secrets (not required): none.
 
 name: Build & Publish Universal APK
 
@@ -28,11 +25,6 @@ on:
         description: User-facing What's New notes (one bullet per line, optional)
         required: false
         default: ''
-      publish:
-        description: Publish to the backend (unchecked = build only)
-        type: boolean
-        required: false
-        default: true
   push:
     branches: [main, master, 'arena/**']
     paths:
@@ -41,7 +33,7 @@ on:
       - 'constants/**'
       - 'lib/**'
       - 'assets/**'
-      - 'android/**'
+      - 'scripts/**'
       - 'package.json'
       - '.github/workflows/build-apk.yml'
 
@@ -51,77 +43,69 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
-  EXPO_PUBLIC_TMDB_ACCESS_TOKEN: ${{ secrets.EXPO_PUBLIC_TMDB_ACCESS_TOKEN }}
-  EXPO_PUBLIC_TMDB_API_KEY: ${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}
-  EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-  EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-  EXPO_PUBLIC_RORK_APP_KEY: ${{ secrets.EXPO_PUBLIC_RORK_APP_KEY }}
-  EXPO_PUBLIC_MEDIA_BUCKET: ${{ secrets.EXPO_PUBLIC_MEDIA_BUCKET }}
-  SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-  GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
-  ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-  ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-  ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+  # CI gateway (GitHub-OIDC-authenticated edge function on the backend). It hands the job the
+  # CLIENT-SAFE build values (backend URL, anon key, Rork app key) after verifying the workflow's
+  # GitHub OIDC token — nothing sensitive is stored in this repository.
+  CI_GATEWAY_URL: https://ltyymanoidagwsapgiql.supabase.co/functions/v1/ci-gateway
+  # Monotonic versioning: universal APK versionCode = 20000 + run_number*10 + 5 (suffix 5 =
+  # universal in the ABI train; strictly newer than every legacy 12xxx build).
+  EXPO_PUBLIC_BUILD_NUMBER: ${{ 20000 + github.run_number * 10 }}
+  EXPO_PUBLIC_APP_VERSION: 1.1.${{ github.run_number }}
 
 jobs:
   build:
     name: Universal APK
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 30
+          fetch-tags: true
 
-      - name: Require the secrets a releasable build needs
-        run: |
-          missing=""
-          if [ -z "$EXPO_PUBLIC_SUPABASE_URL" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_URL"; fi
-          if [ -z "$EXPO_PUBLIC_SUPABASE_ANON_KEY" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_ANON_KEY"; fi
-          if [ -z "$EXPO_PUBLIC_RORK_APP_KEY" ]; then missing="$missing EXPO_PUBLIC_RORK_APP_KEY"; fi
-          if [ -n "$missing" ]; then
-            echo "::error title=Missing secrets::$missing — add them under Settings → Secrets and variables → Actions."
-            exit 1
-          fi
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-      - uses: actions/setup-java@v4
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: oven-sh/setup-bun@v2
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 build-tools;35.0.0 ndk;26.1.10909125'
+
+      - name: Fetch client-safe backend values (GitHub-OIDC → gateway)
+        run: node scripts/ci/ci-gateway-client.mjs client-env
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile || bun install
-
-      - name: Materialize Firebase config & permanent release keystore (ephemeral runner only)
-        env:
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: node scripts/ci/load-build-secrets.mjs
-
-      - name: Configure universal-only packaging (disable every ABI split)
         run: |
-          python3 - <<'PY'
-          import re, pathlib
-          p = pathlib.Path('android/app/build.gradle')
-          s = p.read_text()
-          # One APK for every device: disable ABI splits (if present) and drop redundant
-          # universalApk inclusion, so `assembleRelease` emits a single multi-abi APK.
-          s = re.sub(r'(splits\s*\{)', r'\1 ', s)  # keep block; edits below neutralize it
-          s = re.sub(r'(\bsplits\s*\{[^{}]*)enable\s+true', r'\1enable false', s, flags=re.S)
-          s = re.sub(r'\buniversalApk\s+true', 'universalApk false', s)
-          s = re.sub(r'\babiFilters[^\n]*\n', '', s)
-          p.write_text(s)
-          print('splits disabled — assembleRelease now produces one universal APK')
-          PY
-          test -f android/gradlew && test -f android/settings.gradle
+          bun install --frozen-lockfile || bun install
+          if [ -d node_modules/schema-utils/node_modules/ajv ] && [ ! -e node_modules/ajv-keywords/node_modules/ajv ]; then
+            mkdir -p node_modules/ajv-keywords/node_modules
+            ln -s ../../schema-utils/node_modules/ajv node_modules/ajv-keywords/node_modules/ajv
+          fi
+
+      - name: Ensure release signing material (GitHub-OIDC → backend vault)
+        run: node scripts/ci/ci-gateway-client.mjs vault-ensure
+
+      - name: Expo prebuild (generates android/ from app.json)
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Configure universal APK + v1/v2/v3 signing + installer module
+        run: node scripts/ci/configure-android-release.mjs
 
       - name: Gradle cache
         uses: actions/cache@v4
@@ -139,7 +123,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace | tee /tmp/gradle.log
           cd ..
-          APK=$(ls android/app/build/outputs/apk/release/*release*.apk 2>/dev/null | head -1)
+          APK=$(ls android/app/build/outputs/apk/release/app-universal-release.apk 2>/dev/null || ls android/app/build/outputs/apk/release/*release*.apk 2>/dev/null | head -1)
           if [ -z "$APK" ]; then
             echo "::error title=No APK produced::android/app/build/outputs/apk/release/ is empty."
             exit 1
@@ -150,66 +134,37 @@ jobs:
       - name: Read version + fingerprint
         id: meta
         run: |
-          VERSION_CODE=$(grep -E '^\s*versionCode\s' android/app/build.gradle | head -1 | grep -oE '[0-9]+' | head -1)
-          VERSION_NAME=$(grep -E '^\s*versionName\s' android/app/build.gradle | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          VERSION_CODE=$(( ${EXPO_PUBLIC_BUILD_NUMBER} + 5 ))
+          VERSION_NAME="${EXPO_PUBLIC_APP_VERSION}"
           SHA256=$(sha256sum /tmp/hallyu-universal-latest.apk | cut -d' ' -f1)
           SIZE=$(stat -c%s /tmp/hallyu-universal-latest.apk)
-          [ -n "$VERSION_CODE" ] || { echo "::error title=versionCode missing::"; exit 1; }
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           echo "Universal APK v$VERSION_NAME ($VERSION_CODE) — sha256 $SHA256, $SIZE bytes"
 
-      - name: Publish to the backend (stable object — the trigger prunes every other file)
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
-        run: |
-          STATUS=$(curl -s -o /tmp/upload.json -w '%{http_code}' \
-            -X POST \
-            "${SUPABASE_URL}/storage/v1/object/app-releases/hallyu-universal-latest.apk" \
-            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
-            -H "x-upsert: true" \
-            -H "Content-Type: application/vnd.android.package-archive" \
-            --data-binary @/tmp/hallyu-universal-latest.apk)
-          echo "upload status: $STATUS"
-          cat /tmp/upload.json
-          case "$STATUS" in 200|201) ;; *) echo "::error title=APK upload failed::HTTP $STATUS"; exit 1 ;; esac
-
-      - name: Register the release (service-role RPC; in-app updater reads it)
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+      - name: Publish to the backend (gateway uploads + registers the release)
         env:
           VERSION_CODE: ${{ steps.meta.outputs.version_code }}
           VERSION_NAME: ${{ steps.meta.outputs.version_name }}
           SHA256: ${{ steps.meta.outputs.sha256 }}
           SIZE: ${{ steps.meta.outputs.size }}
           RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
-          GIT_SHA: ${{ github.sha }}
         run: |
-          BODY=$(jq -n \
-            --argjson vc "${VERSION_CODE:-0}" \
-            --arg vn "$VERSION_NAME" \
-            --arg sha "$SHA256" \
-            --argjson size "${SIZE:-0}" \
-            --arg notes "${RELEASE_NOTES:-Signed Hallyu update — faster feeds, stability fixes.}" \
-            --arg commit "$GIT_SHA" \
-            '{p_version_code: $vc, p_version_name: $vn, p_sha256: $sha, p_file_size_bytes: $size, p_release_notes: $notes, p_git_commit: $commit}')
-          STATUS=$(curl -s -o /tmp/rpc.json -w '%{http_code}' \
-            -X POST \
-            "${SUPABASE_URL}/rest/v1/rpc/publish_app_release" \
-            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "$BODY")
-          echo "register status: $STATUS"
-          cat /tmp/rpc.json
-          case "$STATUS" in 200|201|204) ;; *) echo "::error title=Release registration failed::HTTP $STATUS"; exit 1 ;; esac
+          NOTES="${RELEASE_NOTES:-Signed Hallyu update — one universal APK for every Android device.}"
+          node scripts/ci/ci-gateway-client.mjs publish /tmp/hallyu-universal-latest.apk \
+            --version-code "$VERSION_CODE" \
+            --version-name "$VERSION_NAME" \
+            --sha256 "$SHA256" \
+            --size "$SIZE" \
+            --notes "$NOTES" \
+            --commit "${{ github.sha }}"
 
       - name: Verify the public download is live
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         run: |
           sleep 3
-          PUBLIC_URL="${SUPABASE_URL}/storage/v1/object/public/app-releases/hallyu-universal-latest.apk"
+          PUBLIC_URL="${EXPO_PUBLIC_SUPABASE_URL}/storage/v1/object/public/app-releases/hallyu-universal-latest.apk"
           CODE=$(curl -s -o /dev/null -w '%{http_code}' -I "$PUBLIC_URL")
           echo "public download: $CODE"
           [ "$CODE" = "200" ] || { echo "::error title=Public download not live::HTTP $CODE at $PUBLIC_URL"; exit 1; }

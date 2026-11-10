@@ -4,13 +4,10 @@
 # are applied with `rork supabase migrate`; there is no CI migration job and no SUPABASE_DB_URL).
 # This workflow only verifies, honestly, that the deployed backend answers real API calls.
 #
-# Required repository secrets:
-#   EXPO_PUBLIC_SUPABASE_URL        https://ltyymanoidagwsapgiql.supabase.co
-#   EXPO_PUBLIC_SUPABASE_ANON_KEY   the client-safe anon key
-# Optional:
-#   RORK_TEST_REFRESH_TOKEN         a Rork Auth refresh token from a test account — when set,
-#                                   the workflow also verifies an authenticated (RLS-visible)
-#                                   round trip through `get_bootstrap`.
+# Needs NO repository secrets: the job authenticates to the backend's `ci-gateway` edge function
+# with its short-lived GitHub OIDC token, which hands over the client-safe connection values
+# (backend URL + anon key — the same values every shipped APK embeds). The probes then run from
+# the runner exactly as a phone would run them.
 
 name: Backend verification
 
@@ -23,12 +20,10 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
-  SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-  SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-  RORK_APP_KEY: ${{ secrets.EXPO_PUBLIC_RORK_APP_KEY }}
-  RORK_TEST_REFRESH_TOKEN: ${{ secrets.RORK_TEST_REFRESH_TOKEN }}
+  CI_GATEWAY_URL: https://ltyymanoidagwsapgiql.supabase.co/functions/v1/ci-gateway
 
 jobs:
   verify:
@@ -36,6 +31,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: No secrets in the repo (source scan)
         run: |
@@ -45,25 +45,20 @@ jobs:
             echo "::notice::scripts/verify-no-secrets.mjs not present — skipping."
           fi
 
-      - name: Require connection secrets
+      - name: Fetch connection values (GitHub-OIDC → gateway)
+        run: node scripts/ci/ci-gateway-client.mjs client-env
+
+      - name: Mask the client-safe credentials in logs
         run: |
-          echo "::add-mask::$SUPABASE_ANON_KEY"
-          echo "::add-mask::$RORK_APP_KEY"
-          echo "::add-mask::$RORK_TEST_REFRESH_TOKEN"
-          missing=""
-          if [ -z "$SUPABASE_URL" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_URL"; fi
-          if [ -z "$SUPABASE_ANON_KEY" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_ANON_KEY"; fi
-          if [ -n "$missing" ]; then
-            echo "::error title=Missing secrets::$missing — add them under Settings → Secrets and variables → Actions."
-            exit 1
-          fi
+          echo "::add-mask::$EXPO_PUBLIC_SUPABASE_ANON_KEY"
+          echo "::add-mask::$EXPO_PUBLIC_RORK_APP_KEY"
 
       - name: Anonymous RPC round trip (handle_is_available)
         run: |
           CODE=$(curl -s -o /tmp/probe1.json -w '%{http_code}' \
-            -X POST "${SUPABASE_URL}/rest/v1/rpc/handle_is_available" \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -X POST "${EXPO_PUBLIC_SUPABASE_URL}/rest/v1/rpc/handle_is_available" \
+            -H "apikey: ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
             -H "Content-Type: application/json" \
             -d '{"p_handle":"hallyu-probe"}')
           echo "handle_is_available → HTTP $CODE: $(cat /tmp/probe1.json)"
@@ -72,9 +67,9 @@ jobs:
       - name: Release channel answers (get_latest_app_release — universal-only shape)
         run: |
           CODE=$(curl -s -o /tmp/probe2.json -w '%{http_code}' \
-            -X POST "${SUPABASE_URL}/rest/v1/rpc/get_latest_app_release" \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -X POST "${EXPO_PUBLIC_SUPABASE_URL}/rest/v1/rpc/get_latest_app_release" \
+            -H "apikey: ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
             -H "Content-Type: application/json" \
             -d '{}')
           echo "get_latest_app_release → HTTP $CODE: $(cat /tmp/probe2.json)"
@@ -82,26 +77,5 @@ jobs:
           jq -e '.universal_only == true' /tmp/probe2.json >/dev/null \
             || { echo "::error title=Unexpected release shape::expected universal_only: true"; exit 1; }
 
-      - name: Authenticated round trip (get_bootstrap with a Rork session)
-        if: ${{ env.RORK_TEST_REFRESH_TOKEN != '' }}
-        env:
-          RORK_AUTH_URL: https://api.rork.com
-        run: |
-          echo "::add-mask::$RORK_TEST_REFRESH_TOKEN"
-          EXCHANGE=$(curl -s -X POST "${RORK_AUTH_URL}/oauth/refresh" \
-            -H "Content-Type: application/json" \
-            -d "{\"app_key\":\"${RORK_APP_KEY}\",\"refresh_token\":\"${RORK_TEST_REFRESH_TOKEN}\"}")
-          ACCESS=$(echo "$EXCHANGE" | jq -r '.access_token // empty')
-          [ -n "$ACCESS" ] || { echo "::error title=Rork Auth exchange failed::no access_token from refresh"; exit 1; }
-          echo "::add-mask::$ACCESS"
-          CODE=$(curl -s -o /tmp/probe3.json -w '%{http_code}' \
-            -X POST "${SUPABASE_URL}/rest/v1/rpc/get_bootstrap" \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${ACCESS}" \
-            -H "Content-Type: application/json" \
-            -d '{}')
-          echo "get_bootstrap → HTTP $CODE"
-          [ "$CODE" = "200" ] || { echo "::error title=Authenticated RPC failed::HTTP $CODE"; exit 1; }
-
       - name: Result
-        run: echo "::notice title=Backend live::$SUPABASE_URL answered every probe (universal-only release channel verified)."
+        run: echo "::notice title=Backend live::$EXPO_PUBLIC_SUPABASE_URL answered every probe (universal-only release channel verified)."
