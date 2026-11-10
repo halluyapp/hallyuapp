@@ -73,9 +73,18 @@ jobs:
 
       - name: Ensure the backend catalog is populated (sync through the gateway)
         run: |
-          node scripts/ci/ci-gateway-client.mjs catalog-sync
+          sync() {
+            for attempt in 1 2 3; do
+              if node scripts/ci/ci-gateway-client.mjs catalog-sync "$1"; then return 0; fi
+              echo "catalog-sync ${1:-trending}: attempt $attempt failed; retrying in 20s"
+              sleep 20
+            done
+            echo "::error title=catalog-sync::${1:-trending} failed after 3 attempts"
+            return 1
+          }
+          sync
           for world in kdrama cdrama anime hollywood; do
-            node scripts/ci/ci-gateway-client.mjs catalog-sync "$world"
+            sync "$world"
           done
 
       - name: Stamp build metadata & run full static, type, SQL & Vitest gate
