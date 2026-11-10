@@ -39,9 +39,9 @@ export const SUPABASE_PUBLIC_STORAGE_BASE =
 export const VAPID_PUBLIC_KEY =
   'BPPsdnRM3XroAtSPKNcz3zGWGLCmqZPDsTqu7_0wNEGcbIOLJ488DCKQQzQL2AHxxtTLW6yyj4-1jsp_nXaCCug';
 
-/** Public permanent Android release certificate SHA-256 fingerprint (used for Digital Asset Links & verification). */
+/** Public permanent Android release certificate SHA-256 fingerprint (CI-vault keystore; printed by build-apk's "Print release certificate fingerprint" step). */
 export const ANDROID_RELEASE_SHA256 =
-  '64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA';
+  '52:1C:68:52:78:0B:EA:80:94:A7:3C:7A:59:E3:BE:C0:24:D1:2C:61:53:16:24:37:75:30:65:A7:64:6F:FF:E8';
 
 /**
  * Direct 100% public Supabase Storage CDN URLs (`200 OK` globally, zero private-repo 404s).
