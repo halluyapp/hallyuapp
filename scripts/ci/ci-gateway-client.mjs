@@ -17,6 +17,10 @@
 //       Asks the gateway for a short-lived STORAGE SIGNED UPLOAD URL (edge functions sit behind
 //       a platform proxy that cannot accept a ~38 MB request body, so the APK goes from the
 //       runner straight to storage), PUTs the APK, then registers the release through the gateway.
+//   node ci-gateway-client.mjs catalog-sync [world]
+//       Asks the gateway to run one catalog-sync job on the backend (trending, or the discover
+//       import for one world). The web deploy runs it before its quality gate so a fresh backend
+//       always has a populated catalog.
 
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -160,6 +164,15 @@ async function vaultEnsure() {
   }
 }
 
+async function catalogSync(world) {
+  const result = await callGateway('catalog.sync', {
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(world ? { world } : {}),
+  });
+  if (!result.ok) throw new Error('gateway did not confirm the catalog sync');
+  console.log(`catalog sync (${result.world ?? 'trending'}) done: ${result.result}`);
+}
+
 async function publish(apkPath, meta) {
   const apk = fs.readFileSync(apkPath);
   if (apk.byteLength < 1_000_000) throw new Error(`${apkPath} is too small to be an APK`);
@@ -199,6 +212,8 @@ try {
     await clientEnv();
   } else if (command === 'vault-ensure') {
     await vaultEnsure();
+  } else if (command === 'catalog-sync') {
+    await catalogSync(args[0] ?? '');
   } else if (command === 'publish') {
     const apkPath = args[0];
     const get = (flag) => {
@@ -213,7 +228,7 @@ try {
       commit: get('--commit') || '',
     });
   } else {
-    console.error('usage: ci-gateway-client.mjs client-env | vault-ensure | publish <apk> [flags]');
+    console.error('usage: ci-gateway-client.mjs client-env | vault-ensure | catalog-sync [world] | publish <apk> [flags]');
     process.exit(2);
   }
 } catch (e) {

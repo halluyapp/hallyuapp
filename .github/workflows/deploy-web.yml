@@ -41,12 +41,10 @@ jobs:
       CI: "1"
       EXPO_PUBLIC_APP_VERSION: "1.0.${{ github.run_number }}"
       EXPO_PUBLIC_GIT_COMMIT: "${{ github.sha }}"
-      EXPO_PUBLIC_TMDB_ACCESS_TOKEN: ${{ secrets.EXPO_PUBLIC_TMDB_ACCESS_TOKEN }}
-      EXPO_PUBLIC_TMDB_API_KEY: ${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}
-      EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-      EXPO_PUBLIC_RORK_APP_KEY: ${{ secrets.EXPO_PUBLIC_RORK_APP_KEY }}
-      EXPO_PUBLIC_MEDIA_BUCKET: ${{ secrets.EXPO_PUBLIC_MEDIA_BUCKET }}
+      # Zero repository secrets: the client-safe backend values (backend URL, anon key, Rork app
+      # key, media bucket) are fetched from the backend's GitHub-OIDC `ci-gateway` after it
+      # verifies this workflow's identity — nothing sensitive is stored in this repository.
+      CI_GATEWAY_URL: https://ltyymanoidagwsapgiql.supabase.co/functions/v1/ci-gateway
 
     steps:
       - name: Checkout
@@ -70,11 +68,32 @@ jobs:
             ln -s ../../schema-utils/node_modules/ajv node_modules/ajv-keywords/node_modules/ajv
           fi
 
+      - name: Fetch client-safe backend values (GitHub-OIDC → gateway)
+        run: node scripts/ci/ci-gateway-client.mjs client-env
+
+      - name: Ensure the backend catalog is populated (sync through the gateway)
+        run: |
+          node scripts/ci/ci-gateway-client.mjs catalog-sync
+          for world in kdrama cdrama anime hollywood; do
+            node scripts/ci/ci-gateway-client.mjs catalog-sync "$world"
+          done
+
       - name: Stamp build metadata & run full static, type, SQL & Vitest gate
         run: |
+          set -o pipefail
           echo "EXPO_PUBLIC_GIT_SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "EXPO_PUBLIC_BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-          npm run check
+          npm run check 2>&1 | tee /tmp/check.log
+
+      # Surface the failing gate assertions as check-run annotations (readable without job logs).
+      - name: Diagnose gate failure
+        if: failure()
+        run: |
+          if [ -f /tmp/check.log ]; then
+            grep -nE 'AssertionError|✖|error:' /tmp/check.log | tail -8 | while IFS= read -r line; do
+              echo "::error title=gate-failure::${line:0:500}"
+            done
+          fi
 
       - name: Export & stamp GitHub Pages bundle (/hallyuapp) + clean root bundle
         env:
