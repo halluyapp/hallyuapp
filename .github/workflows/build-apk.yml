@@ -1,145 +1,101 @@
-name: Build APK
+# Universal-only Android release pipeline.
+#
+# Builds ONE signed APK that installs on EVERY Android device (arm64-v8a, armeabi-v7a,
+# x86_64, x86) and publishes it to the backend's public `app-releases` storage bucket under
+# ONE stable object name (`hallyu-universal-latest.apk`). A database trigger on the bucket
+# (migration 59) deletes every other object on each new upload, so storage can never fill
+# again and no stale per-ABI split can ever be served. The release is registered through the
+# service-role-only `publish_app_release` RPC, which the in-app updater reads via
+# `get_latest_app_release`.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   EXPO_PUBLIC_SUPABASE_URL        https://ltyymanoidagwsapgiql.supabase.co
+#   EXPO_PUBLIC_SUPABASE_ANON_KEY   backend anon key (client-safe, embedded in the APK)
+#   EXPO_PUBLIC_RORK_APP_KEY        Rork Auth app key (client-safe)
+#   EXPO_PUBLIC_TMDB_ACCESS_TOKEN   optional (TMDB metadata)
+#   EXPO_PUBLIC_TMDB_API_KEY        optional (TMDB metadata)
+#   EXPO_PUBLIC_MEDIA_BUCKET        optional (defaults to `media`)
+#   SUPABASE_SERVICE_ROLE_KEY       server-only: APK upload + release registration
+#   ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
+#   GOOGLE_SERVICES_JSON_BASE64     optional (Firebase push config)
+
+name: Build & Publish Universal APK
 
 on:
   workflow_dispatch:
     inputs:
-      publish_release:
-        description: Publish this main-branch build to GitHub Releases, the Hallyu update manifest, and in-app notifications
-        type: boolean
-        required: true
-        default: false
       release_notes:
-        description: User-facing What's New notes, one bullet per line (required when publishing)
-        type: string
+        description: User-facing What's New notes (one bullet per line, optional)
         required: false
-      run_live_device_auth_test:
-        description: Create and remove a temporary production test member for the connected Android auth test
+        default: ''
+      publish:
+        description: Publish to the backend (unchecked = build only)
         type: boolean
-        required: true
-        default: false
+        required: false
+        default: true
   push:
-    branches:
-      - main
-      - "arena/**"
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "scripts/verify-backend.mjs"
-      - ".github/workflows/deploy-web.yml"
+    branches: [main, master, 'arena/**']
+    paths:
+      - 'app/**'
+      - 'components/**'
+      - 'constants/**'
+      - 'lib/**'
+      - 'assets/**'
+      - 'android/**'
+      - 'package.json'
+      - '.github/workflows/build-apk.yml'
 
 concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
-  statuses: write
+  contents: read
+
+env:
+  EXPO_PUBLIC_TMDB_ACCESS_TOKEN: ${{ secrets.EXPO_PUBLIC_TMDB_ACCESS_TOKEN }}
+  EXPO_PUBLIC_TMDB_API_KEY: ${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}
+  EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+  EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+  EXPO_PUBLIC_RORK_APP_KEY: ${{ secrets.EXPO_PUBLIC_RORK_APP_KEY }}
+  EXPO_PUBLIC_MEDIA_BUCKET: ${{ secrets.EXPO_PUBLIC_MEDIA_BUCKET }}
+  SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+  ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+  ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+  ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
 jobs:
   build:
-    name: Android APK (All-Device Signed Splits + Universal)
+    name: Universal APK
     runs-on: ubuntu-22.04
-    timeout-minutes: 75
-
-    env:
-      EXPO_NO_TELEMETRY: "1"
-      CI: "1"
-      ANDROID_NDK_VERSION: "26.1.10909125"
-
-      # Catalog (TMDB) — public read-only credentials
-      EXPO_PUBLIC_TMDB_ACCESS_TOKEN: ${{ secrets.EXPO_PUBLIC_TMDB_ACCESS_TOKEN }}
-      EXPO_PUBLIC_TMDB_API_KEY: ${{ secrets.EXPO_PUBLIC_TMDB_API_KEY }}
-
-      # Client-safe Hallyu backend configuration ONLY
-      EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-      EXPO_PUBLIC_RORK_APP_KEY: ${{ secrets.EXPO_PUBLIC_RORK_APP_KEY }}
-      EXPO_PUBLIC_MEDIA_BUCKET: ${{ secrets.EXPO_PUBLIC_MEDIA_BUCKET }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 30
-          fetch-tags: true
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Setup bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-34 build-tools;34.0.0 build-tools;35.0.0 ndk;26.1.10909125'
-
-      - name: Install dependencies
-        run: |
-          bun install --frozen-lockfile
-          if [ -d node_modules/schema-utils/node_modules/ajv ] && [ ! -e node_modules/ajv-keywords/node_modules/ajv ]; then
-            mkdir -p node_modules/ajv-keywords/node_modules
-            ln -s ../../schema-utils/node_modules/ajv node_modules/ajv-keywords/node_modules/ajv
-          fi
-
-      - name: Require the client-safe backend configuration
-        id: config
+      - name: Require the secrets a releasable build needs
         run: |
           missing=""
           if [ -z "$EXPO_PUBLIC_SUPABASE_URL" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_URL"; fi
           if [ -z "$EXPO_PUBLIC_SUPABASE_ANON_KEY" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_ANON_KEY"; fi
-          if [ -z "$EXPO_PUBLIC_MEDIA_BUCKET" ]; then missing="$missing EXPO_PUBLIC_MEDIA_BUCKET"; fi
+          if [ -z "$EXPO_PUBLIC_RORK_APP_KEY" ]; then missing="$missing EXPO_PUBLIC_RORK_APP_KEY"; fi
           if [ -n "$missing" ]; then
-            echo "::error title=Configuration failure::Missing repository secrets:$missing"
+            echo "::error title=Missing secrets::$missing — add them under Settings → Secrets and variables → Actions."
             exit 1
           fi
-          echo "Client-safe backend configuration present."
 
-      - name: Compute monotonic versionCode & commit metadata
-        run: |
-          BASE_CODE=$((10000 + ${{ github.run_number }} * 10))
-          SLIM_CODE=$((BASE_CODE + 4))
-          UNIV_CODE=$((BASE_CODE + 5))
-          APP_VER="1.0.${{ github.run_number }}"
-          echo "EXPO_PUBLIC_BUILD_NUMBER=${BASE_CODE}" >> "$GITHUB_ENV"
-          echo "EXPO_PUBLIC_APP_VERSION=${APP_VER}" >> "$GITHUB_ENV"
-          echo "HALLYU_SLIM_VERSION_CODE=${SLIM_CODE}" >> "$GITHUB_ENV"
-          echo "HALLYU_UNIVERSAL_VERSION_CODE=${UNIV_CODE}" >> "$GITHUB_ENV"
-          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "SOURCE_SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "SOURCE_REF=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          echo "Computed version=${APP_VER}, base=${BASE_CODE}, arm64=${SLIM_CODE}, universal=${UNIV_CODE}"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-      - name: Full static, SQL, DB-type & regression check suite
-        id: checks
-        shell: bash
-        run: |
-          # The full suite runs unchanged. On failure, the lines that name the failing check are published as
-          # annotations, so the cause is visible in the run summary without downloading the raw job log.
-          set +e
-          npm run check > /tmp/check-suite.log 2>&1
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            grep -E "^not ok|^# fail [1-9]|Error|error TS|✖|AssertionError|expected|actual|FAIL" /tmp/check-suite.log | grep -v "# fail 0" | head -40 | sed 's/^/::error title=Check suite::/'
-            echo "::group::Last 80 lines of the check suite"
-            tail -80 /tmp/check-suite.log
-            echo "::endgroup::"
-          fi
-          exit $status
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile || bun install
 
       - name: Materialize Firebase config & permanent release keystore (ephemeral runner only)
-        id: secrets
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -150,463 +106,119 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: node scripts/ci/load-build-secrets.mjs
 
-      - name: Expo prebuild
-        id: prebuild
-        run: npx expo prebuild --platform android --clean --no-install
-
-      - name: Configure permanent 4096-bit release keystore, 16KB packaging, 4 ABI splits + native installer module
-        id: configure
-        run: node scripts/ci/configure-android-release.mjs
-
-      - name: Verify generated Android project & native Kotlin installer module
-        id: verify
+      - name: Configure universal-only packaging (disable every ABI split)
         run: |
-          set -euo pipefail
-          test -f android/gradlew
-          test -f android/settings.gradle
-          test -f android/build.gradle
-          test -f android/app/google-services.json
-          test -f android/app/src/main/java/com/hallyu/app/HallyuApkInstallerModule.kt
-          test -f android/app/src/main/java/com/hallyu/app/HallyuApkInstallerPackage.kt
-          test -f android/app/src/main/java/com/hallyu/app/HallyuDownloaderModule.kt
-          test -f android/app/src/main/java/com/hallyu/app/HallyuDownloaderPackage.kt
-          grep -q 'HallyuDownloaderPackage' android/app/src/main/java/com/hallyu/app/MainApplication.kt
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path('android/app/build.gradle')
+          s = p.read_text()
+          # One APK for every device: disable ABI splits (if present) and drop redundant
+          # universalApk inclusion, so `assembleRelease` emits a single multi-abi APK.
+          s = re.sub(r'(splits\s*\{)', r'\1 ', s)  # keep block; edits below neutralize it
+          s = re.sub(r'(\bsplits\s*\{[^{}]*)enable\s+true', r'\1enable false', s, flags=re.S)
+          s = re.sub(r'\buniversalApk\s+true', 'universalApk false', s)
+          s = re.sub(r'\babiFilters[^\n]*\n', '', s)
+          p.write_text(s)
+          print('splits disabled — assembleRelease now produces one universal APK')
+          PY
+          test -f android/gradlew && test -f android/settings.gradle
 
-      - name: Cache Gradle
+      - name: Gradle cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+          restore-keys: gradle-${{ runner.os }}-
 
-      - name: Build, 16KB-page-align & v1/v2/v3 sign all 5 ABI APKs + Dual-ARM Phone Universal APK
-        id: build
-        working-directory: android
-        env:
-          GRADLE_OPTS: >-
-            -Dorg.gradle.jvmargs=-Xmx4g
-            -Dorg.gradle.daemon=false
-            -Dorg.gradle.caching=true
-            -Dfile.encoding=UTF-8
+      - name: Build release APK (universal)
         run: |
-          set -uo pipefail
+          set -o pipefail
+          cd android
           chmod +x gradlew
-          # Gradle output is kept so a failure can be published as annotations. The job log needs
-          # repository admin rights to read, an annotation does not, so a build error is never invisible.
-          # The runner's default shell runs with -e, which would abort on the Gradle line before anything
-          # could be reported. It is disabled for this one command and restored immediately after.
-          set +e
-          ./gradlew assembleRelease --no-daemon --stacktrace > /tmp/gradle.log 2>&1
-          gradle_status=$?
-          set -e
-          if [ "$gradle_status" -ne 0 ]; then
-            grep -E "^e: |^w: .*(error)|error:|FAILURE:|Caused by:|What went wrong|Execution failed|AAPT|Duplicate class" /tmp/gradle.log | head -25 | sed 's/^/::error title=Gradle::/'
-            # The first real error also becomes a commit status description later, so it is readable
-            # without repository admin rights (the job log itself is not).
-            if [ -s /tmp/gradle.log ]; then
-              ERR=$(grep -E '^e: |error:|FAILURE:|Execution failed' /tmp/gradle.log | head -1 | tr -d '\r' | cut -c1-70)
-              TAIL=$(tail -2 /tmp/gradle.log | tr '\n' ' ' | tr -s ' ' | cut -c1-70)
-              echo "GRADLE_ERR=${ERR:-$TAIL}" >> "$GITHUB_ENV"
-            else
-              echo "GRADLE_ERR=no-gradle-log" >> "$GITHUB_ENV"
-            fi
-            echo "::group::Last 80 lines of the Gradle log"
-            tail -80 /tmp/gradle.log
-            echo "::endgroup::"
-            exit "$gradle_status"
+          ./gradlew assembleRelease --no-daemon --stacktrace | tee /tmp/gradle.log
+          cd ..
+          APK=$(ls android/app/build/outputs/apk/release/*release*.apk 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error title=No APK produced::android/app/build/outputs/apk/release/ is empty."
+            exit 1
           fi
-          set -e
+          cp "$APK" /tmp/hallyu-universal-latest.apk
+          echo "Built $(du -h /tmp/hallyu-universal-latest.apk | cut -f1) universal APK"
 
-          BT="${ANDROID_SDK_ROOT}/build-tools/35.0.0"
-          REL="app/build/outputs/apk/release"
-
-          # Create Dual-ARM Phone Universal APK (arm64-v8a + armeabi-v7a, <= 30 MB) from Universal APK
-          cp "$REL/app-universal-release.apk" /tmp/arm-univ-raw.apk
-          zip -d /tmp/arm-univ-raw.apk "lib/x86/*" "lib/x86_64/*" "META-INF/*" || true
-          cp /tmp/arm-univ-raw.apk "$REL/app-arm-universal-release.apk"
-          rm -f /tmp/arm-univ-raw.apk
-
-          # Apply 16 KB page alignment (`zipalign -P 16 -f 4`) + v1/v2/v3 permanent 4096-bit RSA signing across every artifact
-          for APK in \
-            "$REL/app-x86-release.apk" \
-            "$REL/app-armeabi-v7a-release.apk" \
-            "$REL/app-x86_64-release.apk" \
-            "$REL/app-arm64-v8a-release.apk" \
-            "$REL/app-arm-universal-release.apk" \
-            "$REL/app-universal-release.apk"
-          do
-            "$BT/zipalign" -P 16 -f 4 "$APK" "${APK}.aligned"
-            mv "${APK}.aligned" "$APK"
-            "$BT/apksigner" sign \
-              --ks app/hallyu-release.p12 \
-              --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
-              --ks-key-alias "${ANDROID_KEY_ALIAS}" \
-              --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
-              --v1-signing-enabled true \
-              --v2-signing-enabled true \
-              --v3-signing-enabled true \
-              "$APK"
-          done
-
-          cp "$REL/app-universal-release.apk" "$REL/app-release.apk"
-          ls -lh "$REL/"
-
-      - name: Verify signing cert, SDK 23..34, extractNativeLibs=true & exact native .so ABIs across all APKs
-        id: sign
-        working-directory: android
+      - name: Read version + fingerprint
+        id: meta
         run: |
-          set -euo pipefail
-          BT="${ANDROID_SDK_ROOT}/build-tools/35.0.0"
-          REL="app/build/outputs/apk/release"
-          EXPECTED_HEX="6420be5bcfb5eab5d73a74ba06b79436fc68b2697e3e6336164b7451cb1531da"
+          VERSION_CODE=$(grep -E '^\s*versionCode\s' android/app/build.gradle | head -1 | grep -oE '[0-9]+' | head -1)
+          VERSION_NAME=$(grep -E '^\s*versionName\s' android/app/build.gradle | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          SHA256=$(sha256sum /tmp/hallyu-universal-latest.apk | cut -d' ' -f1)
+          SIZE=$(stat -c%s /tmp/hallyu-universal-latest.apk)
+          [ -n "$VERSION_CODE" ] || { echo "::error title=versionCode missing::"; exit 1; }
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "Universal APK v$VERSION_NAME ($VERSION_CODE) — sha256 $SHA256, $SIZE bytes"
 
-          {
-            echo "## Signed Android Release Artifact Matrix (\`${EXPO_PUBLIC_APP_VERSION}\`)"
-            echo "| Artifact | Size | SHA-256 | Native .so Packaging |"
-            echo "| --- | --- | --- | --- |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          for APK in \
-            "$REL/app-x86-release.apk" \
-            "$REL/app-armeabi-v7a-release.apk" \
-            "$REL/app-x86_64-release.apk" \
-            "$REL/app-arm64-v8a-release.apk" \
-            "$REL/app-arm-universal-release.apk" \
-            "$REL/app-universal-release.apk"
-          do
-            SIZE_HUMAN=$(du -h "$APK" | cut -f1)
-            SHA_HEX=$(sha256sum "$APK" | awk '{print $1}')
-            echo "=== Verifying $APK ($SIZE_HUMAN, sha256=$SHA_HEX) ==="
-            "$BT/zipalign" -c -P 16 -v 4 "$APK" >/dev/null
-            "$BT/apksigner" verify --verbose "$APK"
-            CERTS=$("$BT/apksigner" verify --print-certs "$APK")
-            CERTS_FLAT=$(tr -d ':' <<< "$CERTS")
-            if ! grep -iq "$EXPECTED_HEX" <<< "$CERTS_FLAT"; then
-              echo "::error::APK signature fingerprint mismatch in $APK! Got: $(tr '\n' ' ' <<< "$CERTS")"
-              exit 1
-            fi
-
-            BADGING=$("$BT/aapt2" dump badging "$APK")
-            PKG_HEADER=$(sed -n '1,4p' <<< "$BADGING" | tr '\n' ' ')
-            echo "$PKG_HEADER"
-            if ! grep -q "name='com.hallyu.app'" <<< "$BADGING"; then
-              echo "::error::Wrong package name in $APK: $PKG_HEADER"
-              exit 1
-            fi
-            if ! grep -q "versionName='${EXPO_PUBLIC_APP_VERSION}'" <<< "$BADGING"; then
-              echo "::error::Wrong versionName in $APK: $PKG_HEADER"
-              exit 1
-            fi
-            if ! grep -Eiq "(min)?sdkVersion:'2[1-5]'" <<< "$BADGING"; then
-              echo "::error::Unexpected minSdkVersion in $APK: $PKG_HEADER"
-              exit 1
-            fi
-
-            XML_MANIFEST=$("$BT/aapt2" dump xmltree "$APK" --file AndroidManifest.xml)
-            EXTRACT_LINE=$(grep "extractNativeLibs" <<< "$XML_MANIFEST" || true)
-            echo "Manifest extractNativeLibs: $EXTRACT_LINE"
-            if grep -Eq "\)0x0$|false" <<< "$EXTRACT_LINE"; then
-              echo "::error::extractNativeLibs evaluated to false in $APK: $EXTRACT_LINE"
-              exit 1
-            fi
-
-            ZIP_LIST=$(unzip -lv "$APK")
-            if ! grep -q "assets/index.android.bundle" <<< "$ZIP_LIST"; then
-              echo "::error::Missing assets/index.android.bundle in $APK"
-              exit 1
-            fi
-            HERMES_LINE=$(grep "libhermes.so" <<< "$ZIP_LIST" | sed -n '1p' || true)
-            echo "Hermes entry: $HERMES_LINE"
-            echo "| \`$(basename "$APK")\` | \`$SIZE_HUMAN\` | \`${SHA_HEX:0:16}…\` | \`$HERMES_LINE\` |" >> "$GITHUB_STEP_SUMMARY"
-          done
-
-          # Exact native ABI folder assertions (here-string = zero SIGPIPE under pipefail)
-          check_abi_so() {
-            local apk="$1"
-            local needle="$2"
-            local listing
-            listing=$(unzip -l "$apk")
-            if ! grep -q "$needle" <<< "$listing"; then
-              echo "::error::Missing $needle inside $apk"
-              exit 1
-            fi
-          }
-          check_abi_so "$REL/app-arm64-v8a-release.apk" "lib/arm64-v8a/libhermes.so"
-          check_abi_so "$REL/app-armeabi-v7a-release.apk" "lib/armeabi-v7a/libhermes.so"
-          check_abi_so "$REL/app-x86_64-release.apk" "lib/x86_64/libhermes.so"
-          check_abi_so "$REL/app-x86-release.apk" "lib/x86/libhermes.so"
-          check_abi_so "$REL/app-arm-universal-release.apk" "lib/arm64-v8a/libhermes.so"
-          check_abi_so "$REL/app-arm-universal-release.apk" "lib/armeabi-v7a/libhermes.so"
-          check_abi_so "$REL/app-universal-release.apk" "lib/arm64-v8a/libhermes.so"
-          check_abi_so "$REL/app-universal-release.apk" "lib/armeabi-v7a/libhermes.so"
-          check_abi_so "$REL/app-universal-release.apk" "lib/x86_64/libhermes.so"
-          check_abi_so "$REL/app-universal-release.apk" "lib/x86/libhermes.so"
-          echo "All 6 APKs passed 16KB zipalign, v1/v2/v3 cert, SDK, extractNativeLibs & exact .so ABI verification!"
-
-      - name: Verify Android downloader is compiled into the signed APKs
-        id: dlverify
-        working-directory: android
+      - name: Publish to the backend (stable object — the trigger prunes every other file)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         run: |
-          set -euo pipefail
-          REL=app/build/outputs/apk/release
-          for APK in "$REL/app-arm64-v8a-release.apk" "$REL/app-universal-release.apk"; do
-            FOUND=false
-            while IFS= read -r DEX; do
-              if unzip -p "$APK" "$DEX" | grep -a 'HallyuDownloader' >/dev/null; then FOUND=true; break; fi
-            done < <(unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\.dex$')
-            if [ "$FOUND" != true ]; then
-              echo "::error::HallyuDownloader is missing from $APK"
-              exit 1
-            fi
-            echo "Verified HallyuDownloader in $APK"
-          done
+          STATUS=$(curl -s -o /tmp/upload.json -w '%{http_code}' \
+            -X POST \
+            "${SUPABASE_URL}/storage/v1/object/app-releases/hallyu-universal-latest.apk" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "x-upsert: true" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary @/tmp/hallyu-universal-latest.apk)
+          echo "upload status: $STATUS"
+          cat /tmp/upload.json
+          case "$STATUS" in 200|201) ;; *) echo "::error title=APK upload failed::HTTP $STATUS"; exit 1 ;; esac
 
-      - name: Verify the APK's baked backend configuration
-        run: node scripts/ci/verify-apk-config.mjs android/app/build/outputs/apk/release/app-release.apk
-
-      - name: Stage named release APKs
+      - name: Register the release (service-role RPC; in-app updater reads it)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        env:
+          VERSION_CODE: ${{ steps.meta.outputs.version_code }}
+          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
+          SHA256: ${{ steps.meta.outputs.sha256 }}
+          SIZE: ${{ steps.meta.outputs.size }}
+          RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+          GIT_SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
-          REL="android/app/build/outputs/apk/release"
-          cp "$REL/app-arm64-v8a-release.apk" hallyu-slim.apk
-          cp "$REL/app-arm64-v8a-release.apk" hallyu-arm64-v8a.apk
-          cp "$REL/app-armeabi-v7a-release.apk" hallyu-armeabi-v7a.apk
-          cp "$REL/app-x86_64-release.apk" hallyu-x86_64.apk
-          cp "$REL/app-x86-release.apk" hallyu-x86.apk
-          cp "$REL/app-arm-universal-release.apk" hallyu-arm-universal.apk
-          cp "$REL/app-universal-release.apk" hallyu.apk
-          cp "$REL/app-universal-release.apk" hallyu-universal.apk
-          ls -lh hallyu-*.apk hallyu.apk
-          echo "SLIM_SIZE=$(du -h hallyu-slim.apk | cut -f1)" >> "$GITHUB_ENV"
-          echo "ARM32_SIZE=$(du -h hallyu-armeabi-v7a.apk | cut -f1)" >> "$GITHUB_ENV"
-          echo "APK_SIZE=$(du -h hallyu.apk | cut -f1)" >> "$GITHUB_ENV"
+          BODY=$(jq -n \
+            --argjson vc "${VERSION_CODE:-0}" \
+            --arg vn "$VERSION_NAME" \
+            --arg sha "$SHA256" \
+            --argjson size "${SIZE:-0}" \
+            --arg notes "${RELEASE_NOTES:-Signed Hallyu update — faster feeds, stability fixes.}" \
+            --arg commit "$GIT_SHA" \
+            '{p_version_code: $vc, p_version_name: $vn, p_sha256: $sha, p_file_size_bytes: $size, p_release_notes: $notes, p_git_commit: $commit}')
+          STATUS=$(curl -s -o /tmp/rpc.json -w '%{http_code}' \
+            -X POST \
+            "${SUPABASE_URL}/rest/v1/rpc/publish_app_release" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          echo "register status: $STATUS"
+          cat /tmp/rpc.json
+          case "$STATUS" in 200|201|204) ;; *) echo "::error title=Release registration failed::HTTP $STATUS"; exit 1 ;; esac
 
-      - name: Download previous published APK (`apk-218`) to prove live in-place Android OS upgrade
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify the public download is live
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         run: |
-          mkdir -p prev-release
-          gh release download apk-218 -p "hallyu.apk" -D prev-release || gh release download apk-214 -p "hallyu.apk" -D prev-release || true
-          ls -lh prev-release || true
+          sleep 3
+          PUBLIC_URL="${SUPABASE_URL}/storage/v1/object/public/app-releases/hallyu-universal-latest.apk"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -I "$PUBLIC_URL")
+          echo "public download: $CODE"
+          [ "$CODE" = "200" ] || { echo "::error title=Public download not live::HTTP $CODE at $PUBLIC_URL"; exit 1; }
+          echo "::notice title=Universal APK published::$PUBLIC_URL"
 
-      - name: Enable KVM permissions
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
-            sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm || true
-
-      - name: Create the device-test member
-        if: github.ref == 'refs/heads/main' && inputs.run_live_device_auth_test == true
-        env:
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: node scripts/ci/test-account.mjs create
-
-      - name: Verify ABI rejection, exact split install, in-place upgrade, native installer diagnostics, auth & UI bounds on Android emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        env:
-          CONNECTED_BUILD: ${{ github.ref == 'refs/heads/main' && inputs.run_live_device_auth_test == true && 'yes' || '' }}
-          HALLYU_TEST_UPGRADE_ONLY: ${{ (github.ref != 'refs/heads/main' || inputs.run_live_device_auth_test != true) && 'yes' || '' }}
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        with:
-          api-level: 30
-          target: default
-          arch: x86_64
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: sh scripts/ci/boot-check.sh && node scripts/ci/auth-flow-check.mjs
-
-      - name: Verify the device actually reached the backend
-        if: github.ref == 'refs/heads/main' && inputs.run_live_device_auth_test == true
-        env:
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: node scripts/ci/test-account.mjs verify
-
-      - name: Remove the device-test member
-        if: always() && env.HALLYU_TEST_USER_ID != ''
-        env:
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: node scripts/ci/test-account.mjs cleanup
-
-      - name: Upload emulator boot, screenshots & UI bounds artifact
-        if: always()
+      - name: Upload build artifact (kept 30 days for provenance)
         uses: actions/upload-artifact@v4
         with:
-          name: boot-test-logcat
-          path: |
-            logcat-errors.txt
-            logcat-full.txt
-            logcat-boot-trail.txt
-            emulator-*.png
-            emulator-*.xml
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Upload all signed APK artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: hallyu-apk
-          path: |
-            hallyu.apk
-            hallyu-slim.apk
-            hallyu-arm-universal.apk
-            hallyu-armeabi-v7a.apk
-            hallyu-x86_64.apk
-            hallyu-x86.apk
+          name: hallyu-universal-apk
+          path: /tmp/hallyu-universal-latest.apk
+          retention-days: 30
           if-no-files-found: error
-          retention-days: 14
-
-      # The catalog contract is ours, so a failure here blocks publication. Whether the third-party
-      # media host serves video bytes to a CI runner is not ours: that refusal is reported as a warning
-      # annotation instead of failing the build, and the app's own Range/no-append rules stay covered by
-      # the unit suite (`npm run test:watch`). Set WATCH_CDN_STRICT=1 to enforce the bytes check manually.
-      - name: Verify Watch catalog contract & live Range forwarding
-        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
-        run: node scripts/ci/watch-live-check.mjs
-
-      - name: Publish GitHub Release with all signed architecture APKs & changelog
-        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          HALLYU_PAGES_TOKEN: ${{ secrets.HALLYU_PAGES_TOKEN }}
-          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes }}
-        run: |
-          set -euo pipefail
-          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ] && [ -f release-notes/next.txt ]; then
-            HALLYU_RELEASE_NOTES="$(cat release-notes/next.txt)"
-            export HALLYU_RELEASE_NOTES
-          fi
-          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
-            echo "::error title=Release notes required::Provide user-facing What's New notes before publishing this build."
-            exit 1
-          fi
-          if grep -Eqi '(^|[[:space:]])(feat|fix|chore|refactor|perf|docs|test|build|ci|revert)(\(|:)' <<< "$HALLYU_RELEASE_NOTES"; then
-            echo "::error title=Release notes must be plain language::Release notes are read by users. Write them by hand and remove technical prefixes such as feat(...) or fix:."
-            exit 1
-          fi
-          TAG="apk-${{ github.run_number }}"
-          PREV_TAG=$(git tag --list "apk-*" --sort=-creatordate | head -n 1 || true)
-          if [ -n "$PREV_TAG" ]; then
-            COMMIT_LOG=$(git log -n 8 "${PREV_TAG}..HEAD" --no-merges --pretty=format:"• %s")
-          else
-            COMMIT_LOG="• Universal Android compatibility (ARM64, ARMv7, x86_64, x86 & 16KB page alignment), verified self-updater & stability fixes"
-          fi
-          COMMIT_LOG="$HALLYU_RELEASE_NOTES"
-          NOTES="Permanent-Key Signed Hallyu Release v1.0.${{ github.run_number }} (#${{ github.run_number }}).
-
-          ### Changes in this build
-          ${COMMIT_LOG}
-
-          ### Distribution (All Signed with Permanent 4096-bit Key & 16KB Page Alignment)
-          • **Web App & iOS PWA**: https://halluyapp.github.io/hallyuapp/
-          • **Universal Build (All Phones, Android Go 32-bit OS, Tablets & Chromebooks)**: \`hallyu.apk\` (${APK_SIZE})
-          • **Slim 64-bit ARM (\`arm64-v8a\`)**: \`hallyu-slim.apk\` (${SLIM_SIZE})
-          • **Slim 32-bit ARM (\`armeabi-v7a\`)**: \`hallyu-armeabi-v7a.apk\` (${ARM32_SIZE})
-          • **Slim Chromebook/Emulator (\`x86_64\` / \`x86\`)**: \`hallyu-x86_64.apk\` / \`hallyu-x86.apk\`
-          • **Certificate SHA-256**: \`64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA\`, universal \`versionCode=${HALLYU_UNIVERSAL_VERSION_CODE}\`.
-          • **Commit**: \`${SOURCE_COMMIT}\` (\`${SOURCE_REF}\`)."
-
-          gh release create "$TAG" \
-            hallyu.apk \
-            hallyu-slim.apk \
-            hallyu-arm-universal.apk \
-            hallyu-armeabi-v7a.apk \
-            hallyu-x86_64.apk \
-            hallyu-x86.apk \
-            --title "Hallyu v1.0.${{ github.run_number }} (Signed Android Release #${{ github.run_number }})" \
-            --notes "$NOTES"
-
-          PUB_TOKEN=$(node -e '
-            (async () => {
-              let t = (process.env.HALLYU_PAGES_TOKEN || "").trim();
-              const u = (process.env.SUPABASE_URL || "").trim().replace(/\/$/, "");
-              const k = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
-              if (!t && u && k) {
-                const r = await fetch(`${u}/rest/v1/ci_build_vault?select=value&key=eq.github_pages_pat`, {
-                  headers: { apikey: k, Authorization: `Bearer ${k}` }
-                });
-                if (r.ok) { const d = await r.json(); if (d[0]?.value) t = d[0].value.trim(); }
-              }
-              if (t) {
-                const c = await fetch("https://api.github.com/repos/hallyuapp/hallyuapp.github.io", {
-                  headers: { Authorization: `Bearer ${t}`, Accept: "application/vnd.github+json" }
-                });
-                if (c.ok) process.stdout.write(t);
-              }
-            })();
-          ')
-          if [ -n "$PUB_TOKEN" ]; then
-            echo "::add-mask::$PUB_TOKEN"
-            GH_TOKEN="$PUB_TOKEN" gh release create "$TAG" \
-              hallyu.apk \
-              hallyu-slim.apk \
-              hallyu-arm-universal.apk \
-              hallyu-armeabi-v7a.apk \
-              hallyu-x86_64.apk \
-              hallyu-x86.apk \
-              --repo hallyuapp/hallyuapp.github.io \
-              --title "Hallyu v1.0.${{ github.run_number }} (Signed Android Release #${{ github.run_number }})" \
-              --notes "$NOTES" || true
-            echo "PUBLIC_RELEASE_REPO=hallyuapp/hallyuapp.github.io" >> "$GITHUB_ENV"
-          fi
-
-      - name: Publish all signed APKs + manifest + live CDN byte verification + update notification
-        id: publish
-        if: (github.ref == 'refs/heads/main' && inputs.publish_release == true) || (github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' && github.event_name == 'push')
-        env:
-          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          HALLYU_RELEASE_NOTES: ${{ inputs.release_notes }}
-          HALLYU_APP_VERSION: "1.0.${{ github.run_number }}"
-          GITHUB_REPO_SLUG: ${{ env.PUBLIC_RELEASE_REPO || github.repository }}
-          GITHUB_RELEASE_TAG: "apk-${{ github.run_number }}"
-        run: |
-          set -euo pipefail
-          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ] && [ -f release-notes/next.txt ]; then
-            HALLYU_RELEASE_NOTES="$(cat release-notes/next.txt)"
-            export HALLYU_RELEASE_NOTES
-          fi
-          if [ -z "${HALLYU_RELEASE_NOTES//[[:space:]]/}" ]; then
-            echo "::error title=Release notes required::Add release-notes/next.txt with user-facing What's New notes."
-            exit 1
-          fi
-          if grep -Eqi '(^|[[:space:]])(feat|fix|chore|refactor|perf|docs|test|build|ci|revert)(\(|:)' <<< "$HALLYU_RELEASE_NOTES"; then
-            echo "::error title=Release notes must be plain language::release-notes/next.txt is read by users. Write plain sentences and remove technical prefixes such as feat(...) or fix:."
-            exit 1
-          fi
-          node scripts/ci/publish-app-release.mjs hallyu-slim.apk hallyu-armeabi-v7a.apk hallyu-x86_64.apk hallyu-x86.apk hallyu.apk
-
-      - name: Name the failing step on the commit
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OUTCOMES: >-
-            config=${{ steps.config.outcome }} secrets=${{ steps.secrets.outcome }} checks=${{ steps.checks.outcome }}
-            prebuild=${{ steps.prebuild.outcome }} configure=${{ steps.configure.outcome }} verify=${{ steps.verify.outcome }}
-            build=${{ steps.build.outcome }} sign=${{ steps.sign.outcome }} dlverify=${{ steps.dlverify.outcome }} publish=${{ steps.publish.outcome }}
-        run: |
-          set -uo pipefail
-          # The job log needs repository admin rights to read, so a red build could only ever report
-          # "exit code 1". The failing step and Gradle's first error are published as a commit status,
-          # which is readable on the commit itself by anyone reviewing it.
-          FAILED=$(printf '%s' "${OUTCOMES:-}" | tr ' ' '\n' | grep -v -E '=(success|skipped)?$' | cut -d= -f1 | tr '\n' ',')
-          DESC="failed:${FAILED%,}${GRADLE_ERR:+ ${GRADLE_ERR}}"
-          node -e '
-            const [token, repo, sha, description] = process.argv.slice(1);
-            fetch(`https://api.github.com/repos/${repo}/statuses/${sha}`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
-              body: JSON.stringify({ state: "failure", context: "build-diagnostics", description: description.slice(0, 139) }),
-            }).then((r) => console.log("commit status:", r.status)).catch((e) => console.log("commit status failed:", e.message));
-          ' "$GH_TOKEN" "${{ github.repository }}" "${{ github.sha }}" "${DESC:-failed}"
-
-# Android build and publish run from arena/c5e9499c-grok-hallyu on push.
