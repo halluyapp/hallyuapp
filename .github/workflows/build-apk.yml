@@ -114,6 +114,12 @@ jobs:
       - name: Configure universal APK + v1/v2/v3 signing + installer module
         run: node scripts/ci/configure-android-release.mjs
 
+      - name: Print release certificate fingerprint (provenance)
+        run: |
+          FP=$(keytool -list -v -keystore android/app/hallyu-release.p12 -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "${ANDROID_KEY_ALIAS:-hallyu-release}" 2>/dev/null | grep 'SHA256:' | head -1 | awk '{print $2}')
+          echo "release certificate SHA-256: $FP"
+          echo "::notice title=release-cert-sha256::$FP"
+
       - name: Gradle cache
         uses: actions/cache@v4
         with:

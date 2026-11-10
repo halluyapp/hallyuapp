@@ -14,6 +14,8 @@
  * zero private-repo authentication dependencies).
  */
 
+import { Platform } from 'react-native';
+
 export const SUPPORT_EMAIL = 'fixhallyu@gmail.com';
 export const ADMIN_CONTACT_EMAIL = 'jgdevv10@gmail.com';
 

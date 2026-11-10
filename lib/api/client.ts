@@ -46,7 +46,7 @@ const client: SupabaseClient | null =
         // Rork Auth owns the session: every PostgREST call carries the member's Rork JWT as the
         // Bearer credential so Row Level Security resolves the same member the app is signed in
         // as (there is no separate Supabase Auth session). When signed out, requests run anon.
-        accessToken: async () => getBackendAccessToken() ?? undefined,
+        accessToken: async () => getBackendAccessToken() ?? null,
       })
     : null;
 

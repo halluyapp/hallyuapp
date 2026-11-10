@@ -97,10 +97,15 @@ test('Repo rename: links, App Links intent filters, Web Push SW path, OpenGraph 
   assert.ok(!publishScript.includes('/functions/v1/send-push'), 'release publisher must not call the nonexistent broadcast function');
 
   const apkWorkflow = fs.readFileSync(path.resolve(ROOT, '.github/workflows/build-apk.yml'), 'utf8');
-  assert.ok(apkWorkflow.includes('publish_release:'), 'production app release must require explicit workflow dispatch');
-  assert.ok(apkWorkflow.includes("inputs.publish_release == true"), 'production app release steps must be gated by explicit approval');
+  // Universal-only pipeline: releases publish AUTOMATICALLY on every push through the backend's
+  // GitHub-OIDC `ci-gateway` — zero repository secrets, no manual approval step (the old
+  // `publish_release` dispatch gate and live device-test opt-in were retired with it).
+  assert.ok(apkWorkflow.includes('workflow_dispatch:'), 'manual dispatch stays available for custom What\'s New notes');
   assert.ok(apkWorkflow.includes('release_notes:'), "release dispatch must accept user-facing What's New notes");
-  assert.ok(apkWorkflow.includes('inputs.run_live_device_auth_test == true'), 'production device test-account creation must be opt-in');
+  assert.ok(apkWorkflow.includes('id-token: write'), 'publishing must authenticate through GitHub OIDC, not repository secrets');
+  assert.ok(!/\$\{\{[^}]*secrets\./.test(apkWorkflow), 'release pipeline must not reference repository secrets');
+  assert.ok(apkWorkflow.includes('ci-gateway-client.mjs publish'), 'publishing must go through the backend CI gateway');
+  assert.ok(apkWorkflow.includes('hallyu-universal-latest.apk'), 'release pipeline must publish the ONE universal APK object');
 
   const webWorkflow = fs.readFileSync(path.resolve(ROOT, '.github/workflows/deploy-web.yml'), 'utf8');
   assert.ok(webWorkflow.includes('inputs.run_live_browser_test == true'), 'production browser test-account creation must be opt-in');
@@ -870,17 +875,19 @@ test('Universal Android Compatibility & Independent Verified Web Deployment: all
   const linksMod = loadTsModule('lib/links.ts', {
     'react-native': { Platform: { OS: 'web' } },
   });
-  assert.notEqual(
-    linksMod.LATEST_UNIVERSAL_APK_CDN_URL,
-    linksMod.LATEST_ARM32_APK_CDN_URL,
-    'Universal APK URL must NEVER point to 32-bit-only armeabi-v7a (breaks Pixel 7+/Galaxy S24+ ARMv9 phones)',
+  // Universal-only pipeline (backend migrations 58/59): ONE stable object holds the ONE APK that
+  // installs on EVERY device — 64-bit ARMv8/ARMv9, 32-bit ARM, x86_64, x86. The per-ABI constants
+  // are aliases kept for older releases; the ARMv9 hazard they guarded against is gone because the
+  // universal package carries every ABI.
+  const universalUrl = linksMod.LATEST_UNIVERSAL_APK_CDN_URL;
+  assert.match(
+    universalUrl,
+    /^https:\/\/.*\.supabase\.co\/storage\/v1\/object\/public\/app-releases\/hallyu-universal-latest\.apk$/,
+    'universal APK must point at the stable app-releases object on Supabase Storage',
   );
-  assert.equal(linksMod.LATEST_SLIM_APK_CDN_URL, linksMod.LATEST_UNIVERSAL_APK_CDN_URL);
-  assert.match(linksMod.LATEST_UNIVERSAL_APK_CDN_URL, /^https:\/\/.*\.supabase\.co\/storage\/v1\/object\/public\/app-releases\/latest\/hallyu-universal\.apk$/);
-  assert.match(linksMod.LATEST_ARM64_APK_CDN_URL, /hallyu-arm64-v8a\.apk$/);
-  assert.match(linksMod.LATEST_ARM32_APK_CDN_URL, /hallyu-armeabi-v7a\.apk$/);
-  assert.match(linksMod.LATEST_X86_64_APK_CDN_URL, /hallyu-x86_64\.apk$/);
-  assert.match(linksMod.LATEST_X86_APK_CDN_URL, /hallyu-x86\.apk$/);
+  for (const alias of ['LATEST_ARM64_APK_CDN_URL', 'LATEST_ARM32_APK_CDN_URL', 'LATEST_X86_64_APK_CDN_URL', 'LATEST_X86_APK_CDN_URL', 'LATEST_SLIM_APK_CDN_URL']) {
+    assert.equal(linksMod[alias], universalUrl, `${alias} must alias the one universal APK`);
+  }
 
   // 2. Verify all 5 ABIs + 64-bit CPU running 32-bit OS + native PackageInstaller outcomes
   const storageMap = new Map();
