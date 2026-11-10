@@ -1,10 +1,13 @@
 /**
- * Authentication — Rork Cloud sessions with an honest device-local fallback.
+ * Authentication — Google via Rork Auth, with an honest device-local fallback.
  *
- * When the build carries a backend connection (constants/keys.ts `backendConfigured`), accounts are
- * real Supabase Auth sessions: sign-up creates the `auth.users` row, and the database trigger
- * (migration 03) creates the profile + preferences — the client never inserts a profile. Password
- * reset and verification emails are real. The session persists across launches via AsyncStorage.
+ * When the build carries a backend connection (constants/keys.ts `backendConfigured`), sign-in is
+ * Google-only through Rork Auth (lib/rorkAuth.ts): the Rork access token doubles as the Supabase
+ * Bearer credential (lib/api/client.ts `accessToken` option) so Row Level Security resolves the
+ * member on every query, and the idempotent `register_profile` RPC provisions the profile row on
+ * first sign-in (migration 58) — the very first profile to register becomes the founder/CEO role.
+ * Email-and-password simply does not exist here: those methods report it honestly instead of
+ * pretending.
  *
  * When the build has no backend, the provider falls back to the original device-local behaviour so
  * a local build still boots: an "account" is a profile in AsyncStorage, and the email-dependent
@@ -14,16 +17,16 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { performVerifiedAccountDeletion } from './accountDeletion';
 import { reportError, track } from './analytics';
 import { markBoot } from './boot';
-import { ensureBackendSessionToken, setBackendAccessToken, supabase } from './api/client';
+import { ensureBackendSessionToken, setBackendAccessToken, setBackendTokenRefresher, supabase } from './api/client';
+import * as RorkAuth from './rorkAuth';
 
 export type AuthStatus = 'loading' | 'signedOut' | 'guest' | 'signedIn';
 
-/** How this account was established. */
-export type AuthProviderName = 'email';
+/** How this account was established. Google is the only backend path; email is device-local. */
+export type AuthProviderName = 'email' | 'google';
 
 export interface AuthUser {
   id: string;
@@ -47,6 +50,7 @@ interface AuthValue {
   status: AuthStatus;
   user: AuthUser | null;
   recoveryPending: boolean;
+  signInWithGoogle: (preferredName?: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, displayName: string) => Promise<'signedIn' | 'verify'>;
   sendReset: (email: string) => Promise<void>;
@@ -61,18 +65,14 @@ interface AuthValue {
 const Ctx = createContext<AuthValue | null>(null);
 const GUEST_KEY = 'hallyu.auth.guest';
 const ACCOUNT_KEY = 'hallyu.auth.account.v1';
-/** Deep link the backend emails return to (declared in supabase/config.toml + app.json scheme). */
-function authRedirectUrl(): string {
-  if (typeof window !== 'undefined' && window.location?.origin) {
-    return `${window.location.origin}/auth/callback`;
-  }
-  return 'hallyu://auth/callback';
-}
 
 const MIN_PASSWORD = 6;
 
 /** Honest message for the flows that need an email service when no backend is configured. */
 const NO_MAIL = 'Email isn’t available in this build — no backend is configured.';
+
+/** Honest message for email-and-password in backend builds: the only door is Google. */
+const GOOGLE_ONLY = 'Email sign-in isn’t available — use Continue with Google.';
 
 function handleFrom(email?: string, name?: string): string {
   const base =
@@ -106,33 +106,35 @@ async function writeLocalAccount(user: AuthUser): Promise<void> {
   await AsyncStorage.setItem(ACCOUNT_KEY, JSON.stringify(user)).catch(() => {});
 }
 
-/** Maps the Supabase auth user onto the AuthUser shape the screens render. */
-function mapSupabaseUser(u: SupabaseUser): AuthUser {
-  const meta = (u.user_metadata ?? {}) as Record<string, string | undefined>;
-  const email = u.email ?? undefined;
-  return {
-    id: u.id,
-    email,
-    displayName: meta.display_name ?? meta.full_name ?? displayNameFor(email ?? 'Member'),
-    handle: meta.handle ?? handleFrom(email, meta.user_name),
-    emailVerified: Boolean(u.email_confirmed_at ?? u.confirmed_at),
-    provider: 'email',
-  };
-}
-
-/** Maps a supabase-js AuthApiError onto the AuthError codes the screens switch on. */
-function mapAuthError(e: unknown): AuthError {
-  if (e instanceof AuthError) return e;
-  const raw = e as { code?: string; message?: string; status?: number } | null;
-  const code = raw?.code ?? '';
-  const message = raw?.message ?? String(e ?? 'Authentication failed.');
-  if (/fetch|network|timeout/i.test(message)) return new AuthError('network', 'You appear to be offline — try again.');
-  if (/invalid login credentials/i.test(message)) return new AuthError('credentials', 'That email and password don’t match an account.');
-  if (/email not confirmed/i.test(message)) return new AuthError('unverified', 'Verify your email first — check your inbox.');
-  if (code === 'user_already_exists' || /already registered|already exists/i.test(message)) return new AuthError('exists', 'An account with that email already exists — sign in instead.');
-  if (code === 'weak_password' || /password.*weak|at least/i.test(message)) return new AuthError('weak_password', 'Use at least 6 characters.');
-  if (/rate|too many/i.test(message)) return new AuthError('rate_limit', 'Too many attempts — wait a minute and try again.');
-  return new AuthError('unknown', message);
+/**
+ * Registers (or resumes) the backend profile for a fresh Rork identity. `register_profile`
+ * (migration 58) is an idempotent upsert keyed on the Rork `sub`, so it is safe to call on every
+ * sign-in; the first profile ever created is promoted to the founder/CEO role by the database.
+ * Resolves null when this build has no database to register against.
+ */
+async function registerBackendProfile(identity: RorkAuth.RorkIdentity, preferredName?: string): Promise<AuthUser | null> {
+  if (!supabase) return null;
+  const displayName = (preferredName?.trim() || identity.name?.trim() || displayNameFor(identity.email || 'Member')).slice(0, 40);
+  const handle = handleFrom(identity.email || identity.name, displayName);
+  try {
+    const { data, error } = await supabase.rpc('register_profile', { p_handle: handle, p_display_name: displayName });
+    if (error) {
+      reportError('auth.register_profile', error);
+    }
+    const id = typeof data === 'string' && data ? data : (data as { id?: string } | null)?.id ?? identity.sub;
+    return {
+      id,
+      email: identity.email || undefined,
+      displayName,
+      handle,
+      avatarUrl: identity.picture,
+      emailVerified: true,
+      provider: 'google',
+    };
+  } catch (e) {
+    reportError('auth.register_profile', e);
+    return null;
+  }
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -141,11 +143,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [recoveryPending, setRecoveryPending] = useState(false);
   const booted = useRef(false);
 
-  // Boot. With a backend: restore the persisted session and follow auth state changes. Without
-  // one: the original device-local account resolves straight from storage.
+  // Boot. With a backend: restore the Rork session from SecureStore (refreshing an expired access
+  // token) and register the profile. Without one: the original device-local account resolves
+  // straight from storage.
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
+
+    // Keep lib/api/client.ts's ensureBackendSessionToken able to recover a lapsed token.
+    setBackendTokenRefresher(async () => (await RorkAuth.refreshAccessToken())?.accessToken ?? null);
 
     if (!supabase) {
       (async () => {
@@ -170,44 +176,70 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     void (async () => {
       try {
-        // Bounded: on a browser where storage is blocked or slow, getSession() can wait forever and
-        // leave the whole app on the splash. A late session is still picked up by onAuthStateChange.
-        const { data, error } = await Promise.race([
-          supabase.auth.getSession(),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('session lookup timed out')), 4000)),
-        ]);
-        if (error) throw error;
-        const session: Session | null = data.session;
-        setBackendAccessToken(session?.access_token ?? null);
-        if (session?.user) {
-          setUser(mapSupabaseUser(session.user));
-          setStatus('signedIn');
-          markBoot('auth:session-restored');
+        const stored = await RorkAuth.readStoredTokens();
+        let tokens = stored;
+        if (tokens && !RorkAuth.identityFromAccessToken(tokens.accessToken)) {
+          tokens = await RorkAuth.refreshAccessToken();
+        }
+        if (!tokens) {
+          setStatus((await AsyncStorage.getItem(GUEST_KEY)) === '1' ? 'guest' : 'signedOut');
+          markBoot('auth:no-session');
           return;
         }
-        setStatus((await AsyncStorage.getItem(GUEST_KEY)) === '1' ? 'guest' : 'signedOut');
-        markBoot('auth:no-session');
+        const identity = RorkAuth.identityFromAccessToken(tokens.accessToken);
+        if (!identity) {
+          await RorkAuth.clearStoredTokens();
+          setStatus('signedOut');
+          markBoot('auth:no-session');
+          return;
+        }
+        setBackendAccessToken(tokens.accessToken);
+        const next = (await registerBackendProfile(identity)) ?? {
+          id: identity.sub,
+          email: identity.email || undefined,
+          displayName: identity.name || displayNameFor(identity.email || 'Member'),
+          handle: handleFrom(identity.email, identity.name),
+          avatarUrl: identity.picture,
+          emailVerified: true,
+          provider: 'google' as const,
+        };
+        setUser(next);
+        setStatus('signedIn');
+        markBoot('auth:session-restored');
       } catch (e) {
         reportError('auth.boot.session', e);
         markBoot('auth:boot-failed');
         setStatus('signedOut');
       }
     })();
+  }, []);
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      setBackendAccessToken(session?.access_token ?? null);
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
-        if (session?.user) {
-          setUser(mapSupabaseUser(session.user));
-          setStatus('signedIn');
-        }
-      } else if (event === 'SIGNED_OUT') {
-        // The account switch itself is handled by the store's AccountSync; here we only resolve
-        // back to the signed-out (or guest) state the gate expects.
-        setStatus((prev) => (prev === 'guest' ? 'guest' : 'signedOut'));
+  /** The one backend door: Google, brokered by Rork Auth. */
+  const signInWithGoogle = useCallback(async (preferredName?: string) => {
+    try {
+      const identity = await RorkAuth.startGoogleSignIn();
+      setBackendAccessToken((await RorkAuth.readStoredTokens())?.accessToken ?? null);
+      await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
+      const next =
+        (await registerBackendProfile(identity, preferredName)) ?? {
+          id: identity.sub,
+          email: identity.email || undefined,
+          displayName: preferredName?.trim() || identity.name || displayNameFor(identity.email || 'Member'),
+          handle: handleFrom(identity.email, identity.name),
+          avatarUrl: identity.picture,
+          emailVerified: true,
+          provider: 'google' as const,
+        };
+      setUser(next);
+      setStatus('signedIn');
+      track('auth.signin', { provider: 'google' });
+    } catch (e) {
+      if (e instanceof Error && e.message === 'cancelled') throw new AuthError('cancelled', 'cancelled');
+      if (e instanceof Error && /network|fetch|timeout/i.test(e.message)) {
+        throw new AuthError('network', 'You appear to be offline — try again.');
       }
-    });
-    return () => sub.subscription.unsubscribe();
+      throw e instanceof AuthError ? e : new AuthError('unknown', e instanceof Error ? e.message : String(e));
+    }
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
@@ -230,18 +262,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email: address, password });
-      if (error) throw error;
-      setBackendAccessToken(data.session?.access_token ?? null);
-      await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
-      const next = mapSupabaseUser(data.user);
-      setUser(next);
-      setStatus('signedIn');
-      track('auth.signin', { provider: next.provider });
-    } catch (e) {
-      throw mapAuthError(e);
-    }
+    throw new AuthError('unknown', GOOGLE_ONLY);
   }, []);
 
   const signUp = useCallback(async (email: string, password: string, displayName: string) => {
@@ -249,9 +270,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!address.includes('@')) throw new AuthError('unknown', 'That email address does not look right.');
     if (password.length < MIN_PASSWORD) throw new AuthError('weak_password', 'Use at least 6 characters.');
     const name = displayName.trim() || displayNameFor(address);
-    const handle = handleFrom(address, name);
 
     if (!supabase) {
+      const handle = handleFrom(address, name);
       const next: AuthUser = { id: idFor(address), email: address, displayName: name, handle, emailVerified: true, provider: 'email' };
       await writeLocalAccount(next);
       await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
@@ -261,73 +282,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return 'signedIn' as const;
     }
 
-    try {
-      // `data` feeds the on_auth_user_created trigger (migration 03): handle + display name are
-      // chosen at sign-up, not invented later.
-      const { data, error } = await supabase.auth.signUp({
-        email: address,
-        password,
-        options: { data: { display_name: name, full_name: name, handle }, emailRedirectTo: authRedirectUrl() },
-      });
-      if (error) throw error;
-      await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
-      if (data.session?.user) {
-        setBackendAccessToken(data.session.access_token ?? null);
-        setUser(mapSupabaseUser(data.session.user));
-        setStatus('signedIn');
-        track('auth.signup', { provider: 'email' });
-        return 'signedIn' as const;
-      }
-      // Email confirmation is on: the account exists but there is no session yet.
-      setStatus('signedOut');
-      track('auth.signup', { provider: 'email', verify: true });
-      return 'verify' as const;
-    } catch (e) {
-      throw mapAuthError(e);
-    }
+    throw new AuthError('unknown', GOOGLE_ONLY);
   }, []);
 
   const sendReset = useCallback(async (email: string) => {
     const address = email.trim().toLowerCase();
     if (!address.includes('@')) throw new AuthError('unknown', 'That email address does not look right.');
-
     if (!supabase) throw new AuthError('unknown', NO_MAIL);
-
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(address, { redirectTo: authRedirectUrl() });
-      if (error) throw error;
-      setRecoveryPending(true);
-    } catch (e) {
-      throw mapAuthError(e);
-    }
+    // Google accounts authenticate with Google — there is no app password to reset.
+    throw new AuthError('unknown', GOOGLE_ONLY);
   }, []);
 
   const updatePassword = useCallback(async (password: string) => {
     if (password.length < MIN_PASSWORD) throw new AuthError('weak_password', 'Use at least 6 characters.');
-
     if (!supabase) throw new AuthError('unknown', 'Password changes aren’t available yet — this account is stored on this device only.');
-
-    try {
-      const { error } = await supabase.auth.updateUser({ password });
-      if (error) throw error;
-      setRecoveryPending(false);
-    } catch (e) {
-      throw mapAuthError(e);
-    }
+    throw new AuthError('unknown', GOOGLE_ONLY);
   }, []);
 
   const resendVerification = useCallback(async (email: string) => {
     const address = email.trim().toLowerCase();
     if (!address.includes('@')) throw new AuthError('unknown', 'That email address does not look right.');
-
     if (!supabase) throw new AuthError('unknown', NO_MAIL);
-
-    try {
-      const { error } = await supabase.auth.resend({ type: 'signup', email: address, options: { emailRedirectTo: authRedirectUrl() } });
-      if (error) throw error;
-    } catch (e) {
-      throw mapAuthError(e);
-    }
+    throw new AuthError('unknown', GOOGLE_ONLY);
   }, []);
 
   const continueAsGuest = useCallback(() => {
@@ -339,7 +315,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     if (supabase) {
-      await supabase.auth.signOut().catch((e) => reportError('auth.signOut', e));
+      await RorkAuth.clearStoredTokens().catch((e) => reportError('auth.signOut', e));
       setBackendAccessToken(null);
     }
     await AsyncStorage.removeItem(GUEST_KEY).catch(() => {});
@@ -365,7 +341,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       signOutRemote: async () => {
         setBackendAccessToken(null);
-        await supabase!.auth.signOut();
+        await RorkAuth.clearStoredTokens();
       },
       clearLocalAccountStorage: async () => {
         await AsyncStorage.removeItem(ACCOUNT_KEY).catch(() => {});
@@ -387,6 +363,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       status,
       user,
       recoveryPending,
+      signInWithGoogle,
       signIn,
       signUp,
       sendReset,
@@ -397,7 +374,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       deleteAccount,
       clearRecovery: () => setRecoveryPending(false),
     }),
-    [status, user, recoveryPending, signIn, signUp, sendReset, updatePassword, resendVerification, continueAsGuest, signOut, deleteAccount],
+    [status, user, recoveryPending, signInWithGoogle, signIn, signUp, sendReset, updatePassword, resendVerification, continueAsGuest, signOut, deleteAccount],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

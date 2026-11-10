@@ -2,10 +2,11 @@
  * Backend connection layer — one typed Supabase client for the whole app (§6.1 of
  * docs/RORK-CLOUD-CONNECTION-PROMPT.md).
  *
- * The client is built once from the client-safe connection values (constants/keys.ts). When the
- * build carries no backend (no `EXPO_PUBLIC_*` secrets at build time) the client is null and the
- * rest of the app degrades to the device-local behaviour it shipped with — honestly: the
- * connection gate reports `misconfigured` ("local mode"), never a fake "connected".
+ * When the build carries a backend connection (constants/keys.ts `backendConfigured`), accounts
+ * are Google sessions brokered by Rork Auth (lib/rorkAuth.ts): the Rork access token is presented
+ * to Supabase as the Bearer credential via the client's `accessToken` option, so Row Level
+ * Security resolves the signed-in member on every query. There is deliberately no email/password
+ * path against the backend — lib/auth.tsx reports that honestly.
  *
  * Health follows the exact pattern of lib/catalog.ts's CatalogHealth store: a module-level
  * snapshot, a subscribe function, and a `useSyncExternalStore` hook (lib/hooks.ts
@@ -42,6 +43,10 @@ const client: SupabaseClient | null =
           autoRefreshToken: true,
           detectSessionInUrl: false,
         },
+        // Rork Auth owns the session: every PostgREST call carries the member's Rork JWT as the
+        // Bearer credential so Row Level Security resolves the same member the app is signed in
+        // as (there is no separate Supabase Auth session). When signed out, requests run anon.
+        accessToken: async () => getBackendAccessToken() ?? undefined,
       })
     : null;
 
@@ -70,25 +75,29 @@ export function getBackendAccessToken(): string | null {
   return currentToken;
 }
 
+/** Wired once by lib/auth.tsx: recovers a lapsed token via the Rork refresh flow. */
+let rorkTokenRefresher: (() => Promise<string | null>) | null = null;
+
+export function setBackendTokenRefresher(fn: () => Promise<string | null>): void {
+  rorkTokenRefresher = fn;
+}
+
 /**
- * Ensures the in-memory member access token is populated from the active Supabase session
- * whenever React auth state transitions slightly ahead of `onAuthStateChange`.
+ * Ensures the in-memory member access token is available for paths outside supabase-js (the
+ * account-deletion RPC's pre-check). Under Rork Auth there is no Supabase Auth session to fall
+ * back on — the token comes from the auth provider's memory or the Rork refresh flow.
  */
 export async function ensureBackendSessionToken(): Promise<string | null> {
   if (currentToken) return currentToken;
   if (!supabase) return null;
-  try {
-    const { data } = await supabase.auth.getSession();
-    let token = data.session?.access_token ?? null;
-    if (!token) {
-      const { data: anonData } = await supabase.auth.signInAnonymously();
-      token = anonData.session?.access_token ?? null;
+  if (rorkTokenRefresher) {
+    const token = await rorkTokenRefresher().catch(() => null);
+    if (token) {
+      currentToken = token;
+      return token;
     }
-    if (token) currentToken = token;
-    return token;
-  } catch {
-    return currentToken;
   }
+  return currentToken;
 }
 
 /**
@@ -257,3 +266,4 @@ export async function exchangeRorkToken(refreshToken: string): Promise<string> {
   if (!data.access_token) throw new Error('Rork Auth returned no access token.');
   return data.access_token;
 }
+
