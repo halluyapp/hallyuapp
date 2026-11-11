@@ -260,31 +260,25 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
   if (!authUrl) throw new Error('Google sign-in did not return a consent URL.');
 
   if (Platform.OS === 'web') {
-    // Browser preview: a popup + postMessage hand-off instead of a system browser sheet.
-    await exchangeViaPopup(authUrl, verifier);
-    const tokens = await readStoredTokens();
-    return identityFromAccessToken(tokens?.accessToken ?? '') ?? (await requireIdentityAfterExchange());
+    // Browser preview: only the tokens returned by THIS popup exchange may establish identity.
+    // Falling back to SecureStore here could silently sign in the previous account after a cancel.
+    const tokens = await exchangeViaPopup(authUrl, verifier);
+    const identity = identityFromAccessToken(tokens.accessToken);
+    if (!identity) throw new Error('Google sign-in returned an unreadable session — try again.');
+    return identity;
   }
 
   const result = await WebBrowser.openAuthSessionAsync(authUrl, authCallbackScheme());
   if (result.type !== 'success') throw new Error('cancelled');
   const code = new URL(result.url).searchParams.get('code');
   if (!code) throw new Error('Google sign-in did not return an authorization code.');
-  await exchangeCode(code, verifier);
-  const tokens = await readStoredTokens();
-  const identity = identityFromAccessToken(tokens?.accessToken ?? '');
+  const tokens = await exchangeCode(code, verifier);
+  const identity = identityFromAccessToken(tokens.accessToken);
   if (!identity) throw new Error('Google sign-in returned an unreadable session — try again.');
   return identity;
 }
 
-async function requireIdentityAfterExchange(): Promise<RorkIdentity> {
-  const tokens = await readStoredTokens();
-  const identity = identityFromAccessToken(tokens?.accessToken ?? '');
-  if (!identity) throw new Error('Google sign-in did not complete — try again.');
-  return identity;
-}
-
-async function exchangeCode(code: string, verifier: string): Promise<void> {
+async function exchangeCode(code: string, verifier: string): Promise<StoredTokens> {
   const res = await fetch(`${AUTH_URL}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -298,32 +292,55 @@ async function exchangeCode(code: string, verifier: string): Promise<void> {
   if (!data.access_token || !data.refresh_token) {
     throw new Error('Google sign-in returned no session tokens.');
   }
-  await storeTokens({ accessToken: data.access_token, refreshToken: data.refresh_token });
+  const tokens = { accessToken: data.access_token, refreshToken: data.refresh_token };
+  await storeTokens(tokens);
+  return tokens;
 }
 
-async function exchangeViaPopup(authUrl: string, verifier: string): Promise<void> {
+const POPUP_TIMEOUT_MS = 120_000;
+
+async function exchangeViaPopup(authUrl: string, verifier: string): Promise<StoredTokens> {
   const popup = window.open(authUrl, '_blank', 'width=500,height=650');
+  if (!popup) {
+    throw new Error('Google sign-in popup was blocked. Allow popups for Hallyu, then try again.');
+  }
   const allowedOrigins = new Set([new URL(authUrl).origin, new URL(AUTH_URL).origin]);
-  await new Promise<void>((resolve, reject) => {
-    const onMessage = (event: MessageEvent) => {
-      if (!allowedOrigins.has(event.origin) || (popup && event.source !== popup)) return;
-      if (event.data?.type !== 'rork_auth_callback') return;
+  return new Promise<StoredTokens>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
       window.removeEventListener('message', onMessage);
       clearInterval(poll);
+      clearTimeout(timeout);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const succeed = (tokens: StoredTokens) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(tokens);
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (!allowedOrigins.has(event.origin) || event.source !== popup) return;
+      if (event.data?.type !== 'rork_auth_callback') return;
       const code = typeof event.data.code === 'string' ? event.data.code : '';
       if (!code) {
-        reject(new Error('cancelled'));
+        fail(new Error('cancelled'));
         return;
       }
-      exchangeCode(code, verifier).then(resolve, reject);
+      exchangeCode(code, verifier).then(succeed, (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
     };
-    window.addEventListener('message', onMessage);
     const poll = setInterval(() => {
-      if (popup?.closed) {
-        clearInterval(poll);
-        window.removeEventListener('message', onMessage);
-        resolve();
-      }
-    }, 500);
+      if (popup.closed) fail(new Error('cancelled'));
+    }, 250);
+    const timeout = setTimeout(() => {
+      popup.close();
+      fail(new Error('Google sign-in timed out. Please try again.'));
+    }, POPUP_TIMEOUT_MS);
+    window.addEventListener('message', onMessage);
   });
 }

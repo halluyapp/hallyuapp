@@ -20,6 +20,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { performVerifiedAccountDeletion } from './accountDeletion';
 import { reportError, track } from './analytics';
 import { markBoot } from './boot';
+import { provisionWithRetry } from './provisioning';
 import { ensureBackendSessionToken, setBackendAccessToken, setBackendTokenRefresher, supabase } from './api/client';
 import * as RorkAuth from './rorkAuth';
 
@@ -185,7 +186,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       let run = provisioning.current?.key === key ? provisioning.current.run : null;
       if (!run) {
-        run = registerBackendProfile(identity, preferredName);
+        // register_profile is idempotent, so transient edge/network failures are safe to retry in
+        // the original action. The member must not need to enter guest mode or tap repeatedly just
+        // to finish creating the account they already authorized with Google.
+        run = provisionWithRetry(
+          () => registerBackendProfile(identity, preferredName),
+          () => generation === sessionGeneration.current,
+        );
         provisioning.current = { key, run };
         const clear = () => {
           if (provisioning.current?.run === run) provisioning.current = null;
@@ -198,6 +205,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setProvisioningError(null);
       setUser(next);
       setStatus('signedIn');
+      markBoot(`auth:profile-ready:${next.id}`);
       return next;
     } catch (e) {
       if (generation !== sessionGeneration.current) throw new AuthError('cancelled', 'cancelled');

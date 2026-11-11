@@ -56,7 +56,7 @@ export default function SignUp() {
           {error ? (
             <InlineNotice tone={error.code === 'network' ? 'warning' : 'danger'} icon={error.code === 'network' ? 'cloud-offline-outline' : 'alert-circle-outline'} text={error.message} />
           ) : null}
-          <Button label={busy ? 'Please wait…' : auth.status === 'recovery' ? 'Retry account setup' : 'Continue with Google'} size="lg" block loading={busy} onPress={submit} />
+          <Button label={busy ? 'Creating your account…' : auth.status === 'recovery' ? 'Retry account setup' : 'Continue with Google'} size="lg" block loading={busy} onPress={submit} />
         </View>
         <View style={{ marginTop: space.x6, gap: space.x2 }}>
           <Button label="Already have an account? Sign in" variant="ghost" onPress={() => router.replace('/(auth)/sign-in')} />

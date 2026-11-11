@@ -10,7 +10,7 @@ function jwt(sub, expired = false) {
   return `${encode({ alg: 'none', typ: 'JWT' })}.${encode({ sub, email: `${sub}@example.test`, exp: Math.floor(Date.now() / 1000) + (expired ? -3600 : 3600) })}.signature`;
 }
 
-function loadRork({ fetchImpl, delays = {}, browserResult = { type: 'cancel' } }) {
+function loadRork({ fetchImpl, delays = {}, browserResult = { type: 'cancel' }, platform = 'android', window }) {
   const values = new Map();
   const writes = [];
   const secure = {
@@ -45,10 +45,10 @@ function loadRork({ fetchImpl, delays = {}, browserResult = { type: 'cancel' } }
     },
     'expo-secure-store': secure,
     'expo-web-browser': { async openAuthSessionAsync() { return browserResult; } },
-    'react-native': { Platform: { OS: 'android' } },
+    'react-native': { Platform: { OS: platform } },
   };
   const context = vm.createContext({
-    console, Buffer, TextDecoder, Uint8Array, URL, Date, JSON, Promise, setTimeout, clearTimeout, setInterval, clearInterval,
+    console, Buffer, TextDecoder, Uint8Array, URL, Date, JSON, Promise, setTimeout, clearTimeout, setInterval, clearInterval, window,
     atob: (value) => Buffer.from(value, 'base64').toString('binary'),
     fetch: fetchImpl,
     process: { env: { EXPO_PUBLIC_RORK_APP_KEY: 'test-app', EXPO_PUBLIC_RORK_AUTH_URL: 'https://auth.example.test' } },
@@ -147,11 +147,107 @@ test('a refreshed JWT for another Rork subject is never adopted', async () => {
   assert.equal(values.get('hallyu.rork.access_token'), original);
 });
 
+test('web sign-in rejects a blocked popup instead of waiting forever', async () => {
+  const window = { open: () => null, addEventListener() {}, removeEventListener() {} };
+  const { auth } = loadRork({
+    platform: 'web',
+    window,
+    fetchImpl: async () => response(200, { auth_url: 'https://auth.example.test/consent' }),
+  });
+  await assert.rejects(auth.startGoogleSignIn(), /popup was blocked/);
+});
+
+test('web popup cancellation never falls back to the previous stored account', async () => {
+  const popup = { closed: true, close() { this.closed = true; } };
+  const listeners = new Set();
+  const window = {
+    open: () => popup,
+    addEventListener: (_type, fn) => listeners.add(fn),
+    removeEventListener: (_type, fn) => listeners.delete(fn),
+  };
+  const { auth, values } = loadRork({
+    platform: 'web',
+    window,
+    fetchImpl: async () => response(200, { auth_url: 'https://auth.example.test/consent' }),
+  });
+  values.set('hallyu.rork.access_token', jwt('previous-account'));
+  values.set('hallyu.rork.refresh_token', 'previous-refresh');
+  await assert.rejects(auth.startGoogleSignIn(), /cancelled/);
+  assert.equal(auth.identityFromAccessToken(values.get('hallyu.rork.access_token')).sub, 'previous-account');
+  assert.equal(listeners.size, 0);
+});
+
+test('web popup success uses only the newly exchanged identity and cleans up listeners', async () => {
+  const popup = { closed: false, close() { this.closed = true; } };
+  const listeners = new Set();
+  const window = {
+    open: () => popup,
+    addEventListener: (_type, fn) => listeners.add(fn),
+    removeEventListener: (_type, fn) => listeners.delete(fn),
+    emit(event) { for (const fn of [...listeners]) fn(event); },
+  };
+  const { auth, values } = loadRork({
+    platform: 'web',
+    window,
+    fetchImpl: async (url) => {
+      if (url.endsWith('/oauth/initiate')) return response(200, { auth_url: 'https://auth.example.test/consent' });
+      if (url.endsWith('/oauth/token')) return response(200, { access_token: jwt('new-web-account'), refresh_token: 'new-web-refresh' });
+      throw new Error(`Unexpected URL ${url}`);
+    },
+  });
+  values.set('hallyu.rork.access_token', jwt('previous-account'));
+  values.set('hallyu.rork.refresh_token', 'previous-refresh');
+  const signingIn = auth.startGoogleSignIn();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  window.emit({ origin: 'https://auth.example.test', source: popup, data: { type: 'rork_auth_callback', code: 'new-code' } });
+  const identity = await signingIn;
+  assert.equal(identity.sub, 'new-web-account');
+  assert.equal(values.get('hallyu.rork.refresh_token'), 'new-web-refresh');
+  assert.equal(listeners.size, 0);
+});
+
+function loadProvisioning() {
+  const filename = `${process.cwd()}/lib/provisioning.ts`;
+  const output = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, fileName: filename,
+  }).outputText;
+  const module = { exports: {} };
+  const context = vm.createContext({ console });
+  new vm.Script(`(function(exports, module) { ${output}\n})`, { filename }).runInContext(context)(module.exports, module);
+  return module.exports;
+}
+
+test('first registration action retries transient provisioning and returns the created profile', async () => {
+  const { provisionWithRetry } = loadProvisioning();
+  let calls = 0;
+  const waits = [];
+  const profile = await provisionWithRetry(async () => {
+    calls += 1;
+    if (calls < 3) throw new Error('temporary network failure');
+    return { id: 'created-profile' };
+  }, () => true, async (milliseconds) => { waits.push(milliseconds); });
+  assert.equal(profile.id, 'created-profile');
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [350, 700]);
+});
+
+test('registration retry is bounded and stops when the session is cancelled', async () => {
+  const { provisionWithRetry } = loadProvisioning();
+  let calls = 0;
+  await assert.rejects(provisionWithRetry(async () => { calls += 1; throw new Error('offline'); }, () => true, async () => {}), /offline/);
+  assert.equal(calls, 3);
+  calls = 0;
+  await assert.rejects(provisionWithRetry(async () => { calls += 1; throw new Error('cancelled'); }, () => false, async () => {}), /cancelled/);
+  assert.equal(calls, 1);
+});
+
 test('registration, AccountSync, and feed refresh retain their honesty invariants', () => {
   const auth = fs.readFileSync('lib/auth.tsx', 'utf8');
   assert.ok(!auth.includes('id: identity.sub'));
   assert.ok(auth.includes(".eq('auth_sub', identity.sub)"));
   assert.ok(auth.includes('generation !== sessionGeneration.current'));
+  assert.ok(auth.includes('run = provisionWithRetry('));
+  assert.ok(auth.includes('() => registerBackendProfile(identity, preferredName)'));
   const migration = fs.readFileSync('supabase/migrations/20261111100000_61_registration_owner_and_ceo_repairs.sql', 'utf8');
   assert.ok(migration.includes("public.generate_handle(coalesce(nullif(btrim(p_handle), ''), 'member'), v_id)"));
   assert.ok(!migration.includes("'member'), v_sub)"));

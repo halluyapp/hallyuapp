@@ -2,9 +2,9 @@
 #
 # Builds ONE signed APK that installs on EVERY Android device (arm64-v8a, armeabi-v7a,
 # x86_64, x86) and publishes it to the backend's public `app-releases` storage bucket under
-# ONE stable object (`hallyu-universal-latest.apk`). A database trigger deletes every other
-# object on each upload, so storage can never fill again and a stale per-ABI split can never
-# be served. The release is registered through the service-role `publish_app_release` RPC,
+# ONE stable object (`hallyu-universal-latest.apk`). A narrowly scoped Edge Function then removes
+# every obsolete APK through the Storage API after verifying the new upload. Non-APK metadata is
+# untouched and a failed cleanup fails the release visibly. Registration uses `publish_app_release`,
 # which the in-app updater reads via `get_latest_app_release`.
 #
 # How it works without any GitHub secret: the job mints a short-lived GitHub OIDC token
@@ -174,14 +174,30 @@ jobs:
             --notes "$NOTES" \
             --commit "${{ github.sha }}"
 
-      - name: Verify the public download is live
+      - name: Remove obsolete APKs through the Storage API
+        env:
+          EXPECTED_SHA256: ${{ steps.meta.outputs.sha256 }}
+          GITHUB_ACTIONS_OIDC_AUDIENCE: hallyu-release-maintenance
+        run: |
+          TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$GITHUB_ACTIONS_OIDC_AUDIENCE" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")
+          curl -fsS -X POST "${EXPO_PUBLIC_SUPABASE_URL}/functions/v1/release-maintenance" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "apikey: $EXPO_PUBLIC_SUPABASE_ANON_KEY" \
+            -H 'Content-Type: application/json' \
+            --data '{"expected_apk":"hallyu-universal-latest.apk"}'
+
+      - name: Verify the public download is the newly published APK
+        env:
+          EXPECTED_SHA256: ${{ steps.meta.outputs.sha256 }}
+          EXPECTED_SIZE: ${{ steps.meta.outputs.size }}
         run: |
           sleep 3
           PUBLIC_URL="${EXPO_PUBLIC_SUPABASE_URL}/storage/v1/object/public/app-releases/hallyu-universal-latest.apk"
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' -I "$PUBLIC_URL")
-          echo "public download: $CODE"
-          [ "$CODE" = "200" ] || { echo "::error title=Public download not live::HTTP $CODE at $PUBLIC_URL"; exit 1; }
-          echo "::notice title=Universal APK published::$PUBLIC_URL"
+          curl -fL --retry 3 --retry-delay 2 "$PUBLIC_URL" -o /tmp/hallyu-published.apk
+          echo "$EXPECTED_SHA256  /tmp/hallyu-published.apk" | sha256sum -c -
+          ACTUAL_SIZE=$(stat -c%s /tmp/hallyu-published.apk)
+          [ "$ACTUAL_SIZE" = "$EXPECTED_SIZE" ] || { echo "::error title=Published APK size mismatch::expected $EXPECTED_SIZE, got $ACTUAL_SIZE"; exit 1; }
+          echo "::notice title=Universal APK published and SHA-256 verified::$PUBLIC_URL"
 
       # No log access from here — surface the gradle failure lines as error annotations so
       # they are readable through the check-runs API.

@@ -74,6 +74,33 @@ test('retention is a dry run unless HALLYU_RETENTION_APPLY=1 is set', () => {
   assert.equal(retentionDryRun({ HALLYU_RETENTION_APPLY: '1' }), false);
 });
 
+test('CI verifies that the public APK bytes are the newly built release', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/build-apk.yml'), 'utf8');
+  assert.match(workflow, /EXPECTED_SHA256: \$\{\{ steps\.meta\.outputs\.sha256 \}\}/);
+  assert.match(workflow, /sha256sum -c -/);
+  assert.match(workflow, /ACTUAL_SIZE=\$\(stat -c%s \/tmp\/hallyu-published\.apk\)/);
+});
+
+test('release worker uses GitHub OIDC and the Storage API, retaining only the stable APK', () => {
+  const worker = fs.readFileSync(path.join(ROOT, 'supabase/functions/release-maintenance/index.ts'), 'utf8');
+  const auth = fs.readFileSync(path.join(ROOT, 'supabase/functions/_shared/githubActions.ts'), 'utf8');
+  const migration = fs.readFileSync(path.join(ROOT, 'supabase/migrations/20261111150000_66_login_engagement_catalog_and_release_repairs.sql'), 'utf8');
+  assert.match(migration, /drop trigger if exists app_releases_prune_trg on storage\.objects/);
+  assert.match(worker, /verifyGitHubActionsToken\(token, repository\)/);
+  assert.match(worker, /const current = await fetch\([^\n]+\{ method: 'HEAD'/);
+  assert.match(worker, /entry\.name\.toLowerCase\(\)\.endsWith\('\.apk'\)/);
+  assert.match(worker, /const obsolete = names\.filter\(\(name\) => name !== KEEP\)/);
+  assert.match(worker, /adminClient\(\)\.storage\.from\(BUCKET\)\.remove\(obsolete\)/);
+  assert.match(worker, /remaining\.length\) return jsonResponse/);
+  assert.ok(auth.includes('payload.job_workflow_ref'));
+  assert.ok(auth.includes('.github/workflows/build-apk.yml'));
+  assert.ok(auth.includes("crypto.subtle.verify('RSASSA-PKCS1-v1_5'"));
+  assert.ok(auth.includes("['push', 'workflow_dispatch'].includes(String(payload.event_name))"));
+  const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/build-apk.yml'), 'utf8');
+  assert.ok(workflow.includes('/functions/v1/release-maintenance'));
+  assert.ok(workflow.includes('id-token: write'));
+});
+
 test('publisher uploads only the universal APK to Supabase and points every ABI at it', () => {
   assert.match(publishSource, /const SUPABASE_PUBLISHED_KEYS = new Set\(\['universal'\]\)/);
   assert.match(publishSource, /if \(!SUPABASE_PUBLISHED_KEYS\.has\(key\)\) \{/);

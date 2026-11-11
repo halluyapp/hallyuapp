@@ -284,13 +284,12 @@ export async function probeBackend(timeoutMs = 6000, online = true): Promise<Con
 
   publish({ status: 'connecting', at: Date.now() });
   try {
-    // A saved session may need a token refresh before getSession() returns. If that refresh is slow
-    // (common on web after a long idle), it must not decide the gate: the backend is still reachable.
-    // So the session lookup gets a short bound, and any failure there falls back to the anonymous probe.
+    // Rork owns the session; supabase.auth.getSession() is a different, normally-empty session
+    // store. Probe the same bearer credential used by PostgREST so "connected" covers the member's
+    // authenticated bootstrap rather than merely proving that an anonymous RPC answers.
     let signedIn = false;
     try {
-      const session = await withTimeout(supabase.auth.getSession(), Math.min(2000, timeoutMs));
-      signedIn = !!session.data.session;
+      signedIn = Boolean(await withTimeout(ensureBackendSessionToken(), Math.min(2000, timeoutMs)));
     } catch {
       signedIn = false;
     }

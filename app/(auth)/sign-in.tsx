@@ -55,7 +55,7 @@ export default function SignIn() {
           {error ? (
             <InlineNotice tone={error.code === 'network' ? 'warning' : 'danger'} icon={error.code === 'network' ? 'cloud-offline-outline' : 'alert-circle-outline'} text={error.message} />
           ) : null}
-          <Button label={busy ? 'Please wait…' : auth.status === 'recovery' ? 'Retry account setup' : 'Continue with Google'} size="lg" block loading={busy} onPress={signIn} />
+          <Button label={busy ? 'Finishing sign-in…' : auth.status === 'recovery' ? 'Retry account setup' : 'Continue with Google'} size="lg" block loading={busy} onPress={signIn} />
           <Button label="Continue as guest" variant="ghost" onPress={() => { auth.continueAsGuest(); router.replace('/(tabs)'); }} />
         </View>
         <Text variant="label" tone="secondary" style={{ marginTop: space.x6 }}>

@@ -50,4 +50,16 @@ if (expected > 0 && results.length < expected) {
   console.error(`::error::repro.sql produced ${results.length} check lines but declares ${expected} — a block failed to compile and its checks are missing, not passing.`);
   process.exit(1);
 }
-process.exit(failures.length === 0 ? 0 : 1);
+if (failures.length === 0 && result.status === 0) {
+  const repair = spawnSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-d', DB, '-f', path.join(REPO, 'scripts', 'localdb', 'login-engagement-repairs.sql')], {
+    encoding: 'utf8', cwd: SCRATCH, env: { ...process.env }, maxBuffer: 32 * 1024 * 1024,
+  });
+  const repairOutput = `${repair.stdout ?? ''}${repair.stderr ?? ''}`.trim();
+  if (repairOutput) console.log(repairOutput);
+  if (repair.status !== 0) {
+    console.error('::error::login/engagement repair behavior checks failed.');
+    process.exit(1);
+  }
+  console.log('✓ suspended writes rejected; self-deletion and service episode ingest preserved');
+}
+process.exit(failures.length === 0 && result.status === 0 ? 0 : 1);

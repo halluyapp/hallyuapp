@@ -36,6 +36,7 @@ import { useAuth } from '../../lib/auth';
 import { catalog } from '../../lib/catalog';
 import { FANDOMS, formatFandomOf } from '../../lib/fandoms';
 import { haptic, useApp, useBackendHealth, useLoad, useReduceMotion } from '../../lib/hooks';
+import { feedSnapshotEqual, type FeedSnapshotItem } from '../../lib/feedSnapshot';
 import { useI18n } from '../../lib/i18n';
 import { useInteractionGate } from '../../lib/interactive';
 import { FandomId, Post } from '../../lib/model';
@@ -59,23 +60,7 @@ type Row =
   | { key: string; kind: 'discussions' }
   | { key: string; kind: 'guest' };
 
-interface FeedItem {
-  post: Post;
-  reason?: string;
-}
-
-/**
- * Compares two ranked feeds by membership & ordering rather than array reference identity so Home's
- * feed adoption always converges in a single pass without triggering unbounded re-renders.
- */
-function feedEqual(a: FeedItem[], b: FeedItem[]): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i]!.post.id !== b[i]!.post.id || a[i]!.reason !== b[i]!.reason) return false;
-  }
-  return true;
-}
+type FeedItem = FeedSnapshotItem<Post>;
 
 const UNIVERSE_TINT: Partial<Record<FandomId, string>> = {
   kdrama: '#FF2D55',
@@ -185,7 +170,7 @@ function Home() {
     return liveFeed.filter((r) => !shown.has(r.post.id)).length;
   }, [liveFeed, feed]);
 
-  const adoptFeed = useCallback((next: FeedItem[]) => setFeed((prev) => (feedEqual(prev, next) ? prev : next)), []);
+  const adoptFeed = useCallback((next: FeedItem[]) => setFeed((prev) => (feedSnapshotEqual(prev, next) ? prev : next)), []);
 
   useEffect(() => {
     if (newCount === 0 || atTop.current) {
