@@ -22,6 +22,7 @@ import {
   type HallyuLiveEvent,
   toggleEventRsvp,
 } from '../lib/api/features';
+import { hasModeratorAccess } from '../lib/roles';
 import { adoptDramas } from '../lib/catalogSync';
 import { FANDOMS } from '../lib/fandoms';
 import { haptic, useApp, useRequireMember } from '../lib/hooks';
@@ -67,7 +68,7 @@ export default function EventsScreen() {
   const [nowMs, setNowMs] = useState(Date.now());
 
   // Host new event modal (staff / admin)
-  const isStaff = me.role === 'admin' || me.role === 'moderator';
+  const isStaff = hasModeratorAccess(me.role);
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newSubtitle, setNewSubtitle] = useState('');

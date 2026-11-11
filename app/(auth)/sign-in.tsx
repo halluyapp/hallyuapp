@@ -25,7 +25,8 @@ export default function SignIn() {
     setBusy(true);
     setError(null);
     try {
-      await auth.signInWithGoogle();
+      if (auth.status === 'recovery') await auth.retryProfileProvisioning();
+      else await auth.signInWithGoogle();
       router.replace('/');
     } catch (e) {
       const err = e instanceof AuthError ? e : new AuthError('unknown', e instanceof Error ? e.message : 'Google sign-in failed — try again.');
@@ -48,10 +49,13 @@ export default function SignIn() {
           Your episodes, follows and collections are waiting exactly where you left them.
         </Text>
         <View style={{ gap: space.x4 }}>
+          {auth.provisioningError && !error ? (
+            <InlineNotice tone="warning" icon="cloud-offline-outline" text={auth.provisioningError} />
+          ) : null}
           {error ? (
             <InlineNotice tone={error.code === 'network' ? 'warning' : 'danger'} icon={error.code === 'network' ? 'cloud-offline-outline' : 'alert-circle-outline'} text={error.message} />
           ) : null}
-          <Button label={busy ? 'Opening Google…' : 'Continue with Google'} size="lg" block loading={busy} onPress={signIn} />
+          <Button label={busy ? 'Please wait…' : auth.status === 'recovery' ? 'Retry account setup' : 'Continue with Google'} size="lg" block loading={busy} onPress={signIn} />
           <Button label="Continue as guest" variant="ghost" onPress={() => { auth.continueAsGuest(); router.replace('/(tabs)'); }} />
         </View>
         <Text variant="label" tone="secondary" style={{ marginTop: space.x6 }}>

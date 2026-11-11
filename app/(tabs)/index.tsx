@@ -25,7 +25,7 @@ import { Screen, useColumn, useListPadding } from '../../components/ui/Screen';
 import { SectionHeader } from '../../components/ui/Section';
 import { Segmented } from '../../components/ui/Segmented';
 import { PostSkeleton } from '../../components/ui/Skeleton';
-import { EmptyState } from '../../components/ui/States';
+import { EmptyState, InlineNotice } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { LiveIndicator, TopBar, Wordmark } from '../../components/ui/TopBar';
 import { WebAppInstallBanner } from '../../components/web/WebAppInstallBanner';
@@ -50,6 +50,7 @@ import {
 } from '../../lib/selectors';
 import { getState } from '../../lib/store';
 import { onTabReTap } from '../../lib/tabEvents';
+import { adoptLocal, refreshSocialFeed } from '../../lib/sync';
 
 type Row =
   | { key: string; kind: 'post'; post: Post; reason?: string }
@@ -117,7 +118,19 @@ function Home() {
   const viewport = useViewabilityTracker<Row>((r) =>
     r.kind === 'post' && r.post.video ? r.post.id : null,
   );
-  const { control: refreshControl, onRefresh: pull } = useRefresh('home');
+  const refreshFeed = useCallback(async () => {
+    await refreshSocialFeed(
+      {
+        getState,
+        apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+        addPosts: (posts) => {
+          for (const post of posts) adoptLocal({ type: 'addPost', post });
+        },
+      },
+      tab === 'following' ? 'following' : 'latest',
+    );
+  }, [tab]);
+  const { control: refreshControl, error: refreshError, onRefresh: pull } = useRefresh('home', refreshFeed);
   const reduceMotion = useReduceMotion(state.prefs.reduceMotion);
   const padding = useListPadding();
   const column = useColumn(FEED_MAX);
@@ -281,7 +294,7 @@ function Home() {
   }, [feed, page, guest, tab, universe, shortList.length, people.length, discussions.length]);
 
   const onRefresh = useCallback(async () => {
-    await pull();
+    if (!(await pull())) return;
     const list = await fetchHallyuEvents(universe).catch(() => []);
     if (list.length > 0) setFeaturedEvent(list[0]!);
     const fresh = getState();
@@ -376,6 +389,11 @@ function Home() {
 
   const header = (
     <View style={{ paddingBottom: space.x2 }}>
+      {refreshError ? (
+        <View style={{ marginHorizontal: space.margin, marginBottom: space.x2 }}>
+          <InlineNotice tone="warning" icon="cloud-offline-outline" text={`Could not refresh the feed. Cached posts are still shown. ${refreshError}`} />
+        </View>
+      ) : null}
       <WebAppInstallBanner />
       <Pressable
         onPress={() => router.push('/events')}

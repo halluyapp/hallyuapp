@@ -1,3 +1,4 @@
+import { hasAdminAccess, type AppRole } from '../../lib/roles';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -160,7 +161,7 @@ export function AdminDashboard({
   const { me } = useApp();
   const { width } = useLayout();
   const isWide = width >= 980;
-  const isAdmin = me.role === 'admin';
+  const isAdmin = hasAdminAccess(me.role);
 
   const [section, setSection] = useState<AdminSection>(() =>
     resolveAdminSection(routeParam, initialSection),
@@ -513,7 +514,7 @@ export function AdminDashboard({
   const handleUpdateUserAccount = async (
     target: AdminUserRecord,
     patch: {
-      role?: 'member' | 'moderator' | 'admin';
+      role?: Exclude<AppRole, 'ceo'>;
       accountStatus?: 'active' | 'suspended';
       excludeFromCompetitions?: boolean;
     },

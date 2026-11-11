@@ -1,6 +1,8 @@
 /**
  * Hallyu content model — see docs/design/02-content-model-and-rules.md
  */
+import type { AppRole } from './roles';
+
 export type ID = string;
 
 /**
@@ -118,7 +120,7 @@ export interface User {
   featuredBadgeIds?: string[];
   awards?: UserAward[];
   isPrivate?: boolean;
-  role?: 'member' | 'moderator' | 'admin';
+  role?: AppRole;
 }
 
 export interface Episode {

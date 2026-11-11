@@ -68,13 +68,9 @@ function base64UrlEncode(bytes: Uint8Array): string {
   return out;
 }
 
-function randomVerifier(): string {
-  const bytes = new Uint8Array(32);
-  if (typeof globalThis.crypto?.getRandomValues === 'function') {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
+async function randomVerifier(): Promise<string> {
+  // Never weaken PKCE to Math.random when WebCrypto is unavailable (as on some React Native runtimes).
+  const bytes = await Crypto.getRandomBytesAsync(32);
   return base64UrlEncode(bytes);
 }
 
@@ -114,38 +110,81 @@ export function identityFromAccessToken(token: string): RorkIdentity | null {
 
 // ── Token custody (SecureStore only) ─────────────────────────────────────────────────────────
 
+let custodyGeneration = 0;
+let custodyQueue: Promise<unknown> = Promise.resolve();
+
+function serializeCustody<T>(operation: () => Promise<T>): Promise<T> {
+  const run = custodyQueue.then(operation, operation);
+  custodyQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 export async function readStoredTokens(): Promise<StoredTokens | null> {
+  return serializeCustody(async () => {
+    try {
+      const accessToken = await SecureStore.getItemAsync(ACCESS_KEY);
+      const refreshToken = await SecureStore.getItemAsync(REFRESH_KEY);
+      return accessToken && refreshToken ? { accessToken, refreshToken } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+async function storeTokens(tokens: StoredTokens, expectedGeneration?: number): Promise<boolean> {
+  // A fresh OAuth exchange is a new session and invalidates every older refresh in flight.
+  if (expectedGeneration === undefined) custodyGeneration += 1;
+  return serializeCustody(async () => {
+    if (expectedGeneration !== undefined && expectedGeneration !== custodyGeneration) return false;
+    await Promise.all([
+      SecureStore.setItemAsync(ACCESS_KEY, tokens.accessToken),
+      SecureStore.setItemAsync(REFRESH_KEY, tokens.refreshToken),
+    ]);
+    return true;
+  });
+}
+
+export async function clearStoredTokens(): Promise<void> {
+  // Invalidate immediately, then order deletion after any secure-store write already in progress.
+  custodyGeneration += 1;
+  await serializeCustody(async () => {
+    await Promise.all([
+      SecureStore.deleteItemAsync(ACCESS_KEY).catch(() => {}),
+      SecureStore.deleteItemAsync(REFRESH_KEY).catch(() => {}),
+    ]);
+  });
+}
+
+/** Decode the previous subject even when its access token expired; the server still verifies every JWT. */
+function identityFromStoredToken(token: string): RorkIdentity | null {
   try {
-    const accessToken = await SecureStore.getItemAsync(ACCESS_KEY);
-    const refreshToken = await SecureStore.getItemAsync(REFRESH_KEY);
-    return accessToken && refreshToken ? { accessToken, refreshToken } : null;
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const binary = typeof atob === 'function' ? atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)) : '';
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<string, unknown>;
+    if (typeof payload.sub !== 'string' || !payload.sub) return null;
+    return {
+      sub: payload.sub,
+      email: typeof payload.email === 'string' ? payload.email : '',
+      name: typeof payload.name === 'string' ? payload.name : undefined,
+      picture: typeof payload.picture === 'string' ? payload.picture : undefined,
+    };
   } catch {
     return null;
   }
 }
 
-async function storeTokens(tokens: StoredTokens): Promise<void> {
-  await Promise.all([
-    SecureStore.setItemAsync(ACCESS_KEY, tokens.accessToken),
-    SecureStore.setItemAsync(REFRESH_KEY, tokens.refreshToken),
-  ]);
-}
-
-export async function clearStoredTokens(): Promise<void> {
-  await Promise.all([
-    SecureStore.deleteItemAsync(ACCESS_KEY).catch(() => {}),
-    SecureStore.deleteItemAsync(REFRESH_KEY).catch(() => {}),
-  ]);
-}
-
 /**
- * Trades the stored refresh token for a fresh access token. Returns null when there is nothing
- * stored or Rork Auth rejects the refresh (stale install, revoked session) — the caller then
- * treats the member as signed out. A rejected refresh token is cleared so it cannot loop.
+ * Trades the stored refresh token for a fresh access token. Authentication rejections clear the
+ * credential; network/5xx failures preserve it. Logout/account-switch generations cannot be overwritten.
  */
-export async function refreshAccessToken(): Promise<StoredTokens | null> {
+async function requestAccessTokenRefresh(): Promise<StoredTokens | null> {
+  const generation = custodyGeneration;
   const stored = await readStoredTokens();
-  if (!stored || !APP_KEY) return null;
+  if (!stored || !APP_KEY || generation !== custodyGeneration) return null;
+  const previousIdentity = identityFromStoredToken(stored.accessToken);
+  if (!previousIdentity) return null;
   let res: Response;
   try {
     res = await fetch(`${AUTH_URL}/oauth/refresh`, {
@@ -157,14 +196,33 @@ export async function refreshAccessToken(): Promise<StoredTokens | null> {
     return null; // offline — keep the stored tokens and retry on the next launch
   }
   if (!res.ok) {
-    await clearStoredTokens();
+    if ((res.status === 400 || res.status === 401 || res.status === 403) && generation === custodyGeneration) {
+      await clearStoredTokens();
+    }
     return null;
   }
-  const data = (await res.json()) as { access_token?: string };
-  if (!data.access_token) return null;
-  const next: StoredTokens = { accessToken: data.access_token, refreshToken: stored.refreshToken };
-  await storeTokens(next);
-  return next;
+  const data = (await res.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string };
+  const refreshedIdentity = data.access_token ? identityFromAccessToken(data.access_token) : null;
+  if (!data.access_token || !refreshedIdentity || refreshedIdentity.sub !== previousIdentity.sub) return null;
+  const next: StoredTokens = {
+    accessToken: data.access_token,
+    refreshToken: typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : stored.refreshToken,
+  };
+  return (await storeTokens(next, generation)) ? next : null;
+}
+
+let refreshInFlight: Promise<StoredTokens | null> | null = null;
+
+/** One refresh across OAuth restoration and every PostgREST caller. */
+export async function refreshAccessToken(): Promise<StoredTokens | null> {
+  if (refreshInFlight) return refreshInFlight;
+  const run = requestAccessTokenRefresh();
+  refreshInFlight = run;
+  try {
+    return await run;
+  } finally {
+    if (refreshInFlight === run) refreshInFlight = null;
+  }
 }
 
 // ── The Google flow ──────────────────────────────────────────────────────────────────────────
@@ -178,7 +236,7 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
   if (!APP_KEY) {
     throw new Error('Google sign-in is not configured in this build (missing EXPO_PUBLIC_RORK_APP_KEY).');
   }
-  const verifier = randomVerifier();
+  const verifier = await randomVerifier();
   const challenge = await sha256Base64Url(verifier);
 
   let authUrl: string;
@@ -245,8 +303,10 @@ async function exchangeCode(code: string, verifier: string): Promise<void> {
 
 async function exchangeViaPopup(authUrl: string, verifier: string): Promise<void> {
   const popup = window.open(authUrl, '_blank', 'width=500,height=650');
+  const allowedOrigins = new Set([new URL(authUrl).origin, new URL(AUTH_URL).origin]);
   await new Promise<void>((resolve, reject) => {
     const onMessage = (event: MessageEvent) => {
+      if (!allowedOrigins.has(event.origin) || (popup && event.source !== popup)) return;
       if (event.data?.type !== 'rork_auth_callback') return;
       window.removeEventListener('message', onMessage);
       clearInterval(poll);

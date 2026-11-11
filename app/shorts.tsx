@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, FlatList, PanResponder, Pressable, StatusBar, StyleSheet, TextInput, useWindowDimensions, View, ViewToken } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { hasModeratorAccess } from '../lib/roles';
 import { formatClock } from '../lib/watchRules';
 import { ShareCardModal } from '../components/share/ShareCardModal';
 import { VideoAccessSheet } from '../components/video/VideoAccessSheet';
@@ -41,7 +42,7 @@ export default function Shorts() {
   const params = useLocalSearchParams<{ id?: string; dramaId?: string }>();
   const { state, me } = useApp();
   const require = useRequireMember();
-  const isStaff = me.role === 'admin' || me.role === 'moderator';
+  const isStaff = hasModeratorAccess(me.role);
   const reduce = useReduceMotion(state.prefs.reduceMotion);
   const all = useMemo(() => selectShorts(state), [state]);
   const list = useMemo(() => {

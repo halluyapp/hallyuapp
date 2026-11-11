@@ -9,6 +9,7 @@ import {
   requestVideoCreatorAccess,
   type VideoAccessStatus,
 } from '../../lib/api/features';
+import { hasModeratorAccess } from '../../lib/roles';
 import { haptic, useApp } from '../../lib/hooks';
 import { withAlpha } from '../../lib/motion';
 import { Button } from '../ui/Button';
@@ -88,7 +89,7 @@ export function VideoAccessSheet({
     }
   };
 
-  const isStaff = me.role === 'admin' || me.role === 'moderator';
+  const isStaff = hasModeratorAccess(me.role);
   const usedRatio =
     status && status.monthlyBudget > 0
       ? Math.min(1, Math.max(0, status.usedThisMonth / status.monthlyBudget))

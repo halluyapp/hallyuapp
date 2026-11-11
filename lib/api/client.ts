@@ -46,7 +46,23 @@ const client: SupabaseClient | null =
         // Rork Auth owns the session: every PostgREST call carries the member's Rork JWT as the
         // Bearer credential so Row Level Security resolves the same member the app is signed in
         // as (there is no separate Supabase Auth session). When signed out, requests run anon.
-        accessToken: async () => getBackendAccessToken() ?? null,
+        accessToken: async () => ensureBackendSessionToken(),
+        global: {
+          // Only idempotent reads are retried after a 401. Replaying an RPC or mutation could duplicate
+          // posts, reactions, uploads, or other writes when the server accepted the first request.
+          fetch: async (input, init) => {
+            const method = (init?.method ?? (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')).toUpperCase();
+            const response = await fetch(input, init);
+            if (response.status !== 401 || !['GET', 'HEAD', 'OPTIONS'].includes(method) || !getBackendAccessToken()) {
+              return response;
+            }
+            const refreshed = await refreshBackendSessionToken(true);
+            if (!refreshed) return response;
+            const headers = new Headers(init?.headers ?? (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));
+            headers.set('Authorization', `Bearer ${refreshed}`);
+            return fetch(input, { ...init, headers });
+          },
+        },
       })
     : null;
 
@@ -64,40 +80,84 @@ export function isBackendConfigured(): boolean {
 // future signed fetches) present the same credential.
 
 let currentToken: string | null = null;
+let tokenGeneration = 0;
 
 /** Called by lib/auth.tsx on every session change. */
 export function setBackendAccessToken(token: string | null): void {
+  // Clearing an already-empty token still invalidates an in-flight refresh during logout.
+  if (currentToken === token && token !== null) return;
   currentToken = token;
+  tokenGeneration += 1;
 }
 
-/** The current member access token, or null when signed out. */
+const TOKEN_EXPIRY_LEEWAY_MS = 60_000;
+
+/** Returns the JWT expiry without trusting it for authorization (PostgREST verifies the token). */
+export function tokenExpiryMs(token: string): number | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part || typeof atob !== 'function') return null;
+    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as { exp?: unknown };
+    return typeof payload.exp === 'number' && Number.isFinite(payload.exp) ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+function tokenUsable(token: string | null): token is string {
+  if (!token) return false;
+  const expiry = tokenExpiryMs(token);
+  return expiry !== null && expiry > Date.now() + TOKEN_EXPIRY_LEEWAY_MS;
+}
+
+/** The current unexpired member access token, or null when signed out/expired. */
 export function getBackendAccessToken(): string | null {
-  return currentToken;
+  return tokenUsable(currentToken) ? currentToken : null;
 }
 
 /** Wired once by lib/auth.tsx: recovers a lapsed token via the Rork refresh flow. */
 let rorkTokenRefresher: (() => Promise<string | null>) | null = null;
+let refreshPromise: Promise<string | null> | null = null;
 
-export function setBackendTokenRefresher(fn: () => Promise<string | null>): void {
+export function setBackendTokenRefresher(fn: (() => Promise<string | null>) | null): void {
   rorkTokenRefresher = fn;
 }
 
+async function refreshBackendSessionToken(force = false): Promise<string | null> {
+  if (!supabase || !rorkTokenRefresher) return null;
+  if (!force && tokenUsable(currentToken)) return currentToken;
+  if (refreshPromise) return refreshPromise;
+
+  const generation = tokenGeneration;
+  const run = (async () => {
+    const refreshed = await rorkTokenRefresher!().catch(() => null);
+    // A sign-out/account switch while the refresh was in flight must not resurrect the old session.
+    if (!refreshed || !tokenUsable(refreshed) || generation !== tokenGeneration) return null;
+    currentToken = refreshed;
+    return refreshed;
+  })();
+  refreshPromise = run;
+  try {
+    return await run;
+  } finally {
+    if (refreshPromise === run) refreshPromise = null;
+  }
+}
+
 /**
- * Ensures the in-memory member access token is available for paths outside supabase-js (the
- * account-deletion RPC's pre-check). Under Rork Auth there is no Supabase Auth session to fall
- * back on — the token comes from the auth provider's memory or the Rork refresh flow.
+ * Returns a currently valid Rork token, refreshing expired/missing tokens exactly once across all
+ * simultaneous callers. Supabase Auth is deliberately not consulted: this application uses Rork
+ * identity, not a Supabase Auth session.
  */
 export async function ensureBackendSessionToken(): Promise<string | null> {
-  if (currentToken) return currentToken;
+  const usable = getBackendAccessToken();
+  if (usable) return usable;
   if (!supabase) return null;
-  if (rorkTokenRefresher) {
-    const token = await rorkTokenRefresher().catch(() => null);
-    if (token) {
-      currentToken = token;
-      return token;
-    }
-  }
-  return currentToken;
+  return refreshBackendSessionToken();
 }
 
 /**

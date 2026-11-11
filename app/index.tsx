@@ -212,7 +212,7 @@ export default function Index() {
       return;
     }
 
-    const dest = auth.status === 'signedOut' ? '/(auth)/welcome' : auth.status === 'signedIn' && !state.onboarding.done ? '/(onboarding)/fandoms' : '/(tabs)';
+    const dest = auth.status === 'signedOut' ? '/(auth)/welcome' : auth.status === 'recovery' ? '/(auth)/recover' : auth.status === 'signedIn' && !state.onboarding.done ? '/(onboarding)/fandoms' : '/(tabs)';
     markBoot(`index:redirect${auth.status === 'signedOut' || (auth.status === 'signedIn' && !state.onboarding.done) ? '' : ':tabs'} ${dest}`);
     router.replace(dest as never);
   }, [ready, navReady, pathname, auth.status, state.onboarding.done, router]);

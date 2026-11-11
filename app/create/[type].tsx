@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import { hasModeratorAccess } from '../../lib/roles';
 import { makePoster } from '../../lib/media';
 import { attachAsset, discardAssets, MediaPipelineError, uploadAsset, uploadPoster, verifyPostMedia } from '../../lib/api/media';
 import type { UploadProgress } from '../../lib/api/media';
@@ -160,7 +161,7 @@ export default function Composer() {
   const [videoAccessOpen, setVideoAccessOpen] = useState(false);
   const [videoAccess, setVideoAccess] = useState<VideoAccessStatus | null>(null);
 
-  const isStaff = me.role === 'admin' || me.role === 'moderator';
+  const isStaff = hasModeratorAccess(me.role);
 
   useEffect(() => {
     if (auth.status !== 'signedIn') return;

@@ -326,27 +326,40 @@ function AccountSync() {
           adoptLocal({ type: 'prefs', patch: device });
         }
         if (stale()) return;
-        applied.current = u.id; // mark COMPLETE once the local snapshot is in
         // Server-side push registration so episode alerts can reach this device (local reminders
         // stay in addition — §6.4 of the connection contract). Silent no-op on any failure.
         void registerDevicePushToken();
-        // Adopt the member's real backend state (profile, prefs, follows, saves, watchlist, own posts,
-        // communities, the latest feed page, the notification inbox) into the cache.
-        await adoptBackendState({
-          getState,
-          apply: (patch) => {
-            if (!stale()) adoptLocal({ type: 'hydrate', state: patch });
-          },
-          addPosts: (posts) => {
+        // Adopt the member's real backend state. A small bounded retry handles transient cold-start
+        // failures without creating parallel hydrations or spinning forever.
+        let hydrated = false;
+        let lastFailure: unknown;
+        for (let attempt = 0; attempt < 3 && !hydrated; attempt += 1) {
+          try {
+            await adoptBackendState({
+              getState,
+              apply: (patch) => {
+                if (!stale()) adoptLocal({ type: 'hydrate', state: patch });
+              },
+              addPosts: (posts) => {
+                if (stale()) return;
+                for (const post of posts) adoptLocal({ type: 'addPost', post });
+              },
+              isStale: stale,
+            });
+            hydrated = true;
+          } catch (e) {
+            lastFailure = e;
             if (stale()) return;
-            for (const post of posts) adoptLocal({ type: 'addPost', post });
-          },
-          isStale: stale,
-        }).finally(() => {
-          if (!stale() && getState().backendSyncedUserId !== u.id) {
-            adoptLocal({ type: 'hydrate', state: { backendSyncedUserId: u.id } });
+            if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
           }
-        });
+        }
+        if (!hydrated) throw lastFailure ?? new Error('Backend hydration failed');
+        if (stale()) return;
+        // Completion is a success marker, never a finally/cleanup action.
+        applied.current = u.id;
+        if (getState().backendSyncedUserId !== u.id) {
+          adoptLocal({ type: 'hydrate', state: { backendSyncedUserId: u.id } });
+        }
       } catch (e) {
         // Expected async failures: log diagnostics, keep the app usable.
         reportError('AccountSync.sync', e, { account: u.id });
@@ -388,13 +401,18 @@ function AccountSync() {
         if (auth.status === 'signedIn' && auth.user) {
           void registerDevicePushToken();
           if (awayMs > 8_000) {
+            const expectedUserId = auth.user.id;
             void adoptBackendState({
               getState,
-              apply: (patch) => adoptLocal({ type: 'hydrate', state: patch }),
+              apply: (patch) => {
+                if (getState().profile.id === expectedUserId) adoptLocal({ type: 'hydrate', state: patch });
+              },
               addPosts: (posts) => {
+                if (getState().profile.id !== expectedUserId) return;
                 for (const post of posts) adoptLocal({ type: 'addPost', post });
               },
-            });
+              isStale: () => getState().profile.id !== expectedUserId,
+            }).catch((e) => reportError('AccountSync.foreground', e));
           } else {
             void adoptNotifications({
               getState,

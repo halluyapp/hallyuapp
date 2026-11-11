@@ -8,6 +8,8 @@
 //
 // Reads server credentials from function environment OR cached `public.ci_build_vault` (`service_role`).
 
+import { integerOption, readObjectBody } from '../_shared/request.ts';
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -631,37 +633,40 @@ async function recordOutcome(
       : JSON.stringify(outcome.details ?? outcome.message ?? '');
 
   if (outcome.ok) {
-    counters.sent += 1;
-    await rpc('report_delivery', {
+    const { error } = await rpc('report_delivery', {
       p_delivery_id: delivery.delivery_id,
       p_sent: true,
       p_error: null,
       p_invalid: false,
       p_provider_message_id: outcome.id ?? null,
     });
+    if (error) throw new Error(`could not record sent delivery ${delivery.delivery_id}: ${error.message}`);
+    counters.sent += 1;
     return;
   }
 
   if (isInvalidToken(outcome.details, outcome.message)) {
-    counters.invalid += 1;
-    await rpc('report_delivery', {
+    const { error } = await rpc('report_delivery', {
       p_delivery_id: delivery.delivery_id,
       p_sent: false,
       p_error: `${details} ${outcome.message ?? ''}`.trim().slice(0, 300),
       p_invalid: true,
       p_provider_message_id: outcome.id ?? null,
     });
+    if (error) throw new Error(`could not record invalid delivery ${delivery.delivery_id}: ${error.message}`);
+    counters.invalid += 1;
     return;
   }
 
-  counters.failed += 1;
-  await rpc('report_delivery', {
+  const { error } = await rpc('report_delivery', {
     p_delivery_id: delivery.delivery_id,
     p_sent: false,
     p_error: `${outcome.status}: ${details} ${outcome.message ?? ''}`.trim().slice(0, 300),
     p_invalid: false,
     p_provider_message_id: outcome.id ?? null,
   });
+  if (error) throw new Error(`could not record failed delivery ${delivery.delivery_id}: ${error.message}`);
+  counters.failed += 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -670,18 +675,23 @@ async function recordOutcome(
 
 Deno.serve(async (request: Request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (request.method !== 'POST') return errorResponse('POST required', 405);
 
   const guard = requireServiceRole(request);
   if (!guard.ok) return guard.response;
 
-  let body: { limit?: number; max_attempts?: number; verify_fcm?: boolean; reload_secrets?: boolean } = {};
-  if (request.method === 'POST') {
-    try {
-      body = await request.json();
-    } catch {
-      // Empty scheduled cron payload is normal.
-    }
+  let body: { limit?: number; max_attempts?: number; verify_fcm?: boolean; reload_secrets?: boolean };
+  try {
+    body = (await readObjectBody(request)) as { limit?: number; max_attempts?: number; verify_fcm?: boolean; reload_secrets?: boolean };
+  } catch {
+    return errorResponse('a valid JSON object body is required', 400);
   }
+  if ((body.verify_fcm !== undefined && typeof body.verify_fcm !== 'boolean') || (body.reload_secrets !== undefined && typeof body.reload_secrets !== 'boolean')) {
+    return errorResponse('verify_fcm and reload_secrets must be booleans', 400);
+  }
+  const limit = integerOption(body.limit, MAX_BATCH, 1, MAX_BATCH);
+  const maxAttempts = integerOption(body.max_attempts, 5, 1, 10);
+  if (limit === null || maxAttempts === null) return errorResponse('limit or max_attempts is outside its allowed integer range', 400);
 
   if (body.reload_secrets) cachedSecrets = null;
 
@@ -693,14 +703,12 @@ Deno.serve(async (request: Request) => {
       fcmTokenVerified = Boolean(accessToken && accessToken.length > 20);
     }
 
-  const limit = Math.min(Math.max(body.limit ?? MAX_BATCH, 1), MAX_BATCH);
-
   const { error: fanoutError } = await rpc('fanout_due_notifications', { p_limit: 500 });
   if (fanoutError) return errorResponse(`fan-out failed: ${fanoutError.message}`, 500);
 
   let { data, error: claimError } = await rpc<ClaimedDelivery[]>('claim_notification_deliveries', {
     p_limit: limit,
-    p_max_attempts: body.max_attempts ?? 5,
+    p_max_attempts: maxAttempts,
   });
   if (claimError) return errorResponse(`could not claim deliveries: ${claimError.message}`, 500);
 
@@ -708,12 +716,14 @@ Deno.serve(async (request: Request) => {
     // `AFTER INSERT` wake via `pg_net` can arrive a few milliseconds before the outer SQL
     // transaction commits; a brief retry catches those newly committed rows immediately.
     await new Promise((resolve) => setTimeout(resolve, 400));
-    await rpc('fanout_due_notifications', { p_limit: 500 });
+    const { error: retryFanoutError } = await rpc('fanout_due_notifications', { p_limit: 500 });
+    if (retryFanoutError) return errorResponse(`fan-out retry failed: ${retryFanoutError.message}`, 500);
     const retry = await rpc<ClaimedDelivery[]>('claim_notification_deliveries', {
       p_limit: limit,
-      p_max_attempts: body.max_attempts ?? 5,
+      p_max_attempts: maxAttempts,
     });
-    if (!retry.error) data = retry.data;
+    if (retry.error) return errorResponse(`could not retry delivery claim: ${retry.error.message}`, 500);
+    data = retry.data;
   }
 
   const claimed = data ?? [];
@@ -744,24 +754,28 @@ Deno.serve(async (request: Request) => {
         );
         continue;
       }
+      let outcome: ProviderResult;
       try {
-        const outcome = await sendFcmSingle(delivery, secrets.fcmServiceAccount);
-        await recordOutcome(delivery, outcome, counters);
+        outcome = await sendFcmSingle(delivery, secrets.fcmServiceAccount);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await recordOutcome(delivery, { ok: false, status: 502, message: msg }, counters);
+        outcome = { ok: false, status: 502, message: msg };
       }
+      // A bookkeeping failure is not a provider failure and must not be recorded as a retryable
+      // provider rejection; abort honestly instead of scheduling a duplicate push.
+      await recordOutcome(delivery, outcome, counters);
       continue;
     }
 
     if (delivery.token.startsWith('webpush:') || delivery.token.startsWith('{')) {
+      let outcome: ProviderResult;
       try {
-        const outcome = await sendWebPushSingle(delivery, secrets);
-        await recordOutcome(delivery, outcome, counters);
+        outcome = await sendWebPushSingle(delivery, secrets);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await recordOutcome(delivery, { ok: false, status: 502, message: msg }, counters);
+        outcome = { ok: false, status: 502, message: msg };
       }
+      await recordOutcome(delivery, outcome, counters);
       continue;
     }
 

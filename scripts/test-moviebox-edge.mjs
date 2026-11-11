@@ -73,6 +73,7 @@ const DETAIL_BREAKING_BAD = {
 const ENV = {
   SUPABASE_URL: 'https://proj.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'svc-test-key',
+  SUPABASE_ANON_KEY: 'anon-test-key',
   WATCH_PLAYBACK_KEY: 'x'.repeat(40),
 };
 let handler = null;
@@ -101,6 +102,19 @@ function route(url, init) {
     if (u.includes('/search')) return json(SEARCH_LUPIN);
     if (u.includes('/detail/')) return json(DETAIL_BREAKING_BAD);
     return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 });
+  }
+  if (u.includes('proj.supabase.co/rest/v1/rpc/current_profile_id')) {
+    const auth = init?.headers?.Authorization ?? '';
+    if (auth === 'Bearer rork-active' || auth === 'Bearer rork-suspended') {
+      return json('11111111-1111-4111-8111-111111111111');
+    }
+    return json(null);
+  }
+  if (u.includes('proj.supabase.co/rest/v1/profiles?')) {
+    const auth = init?.headers?.Authorization ?? '';
+    if (auth === 'Bearer rork-active') return json([{ id: '11111111-1111-4111-8111-111111111111' }]);
+    if (auth === 'Bearer rork-suspended') return json([]);
+    return new Response('forbidden', { status: 403 });
   }
   if (u.includes('hakunaymatata.com')) {
     mediaRange = init?.headers?.Range ?? null;
@@ -327,6 +341,20 @@ test('auth: a POST without a signed-in user is refused; a playback without the s
   const noKey = await post({ action: 'playback', ...BB, se: 1, ep: 1 });
   ENV.WATCH_PLAYBACK_KEY = saved;
   assert.equal(noKey.status, 503);
+});
+
+test('auth: a Rork application token is resolved through PostgREST and checked for an active profile', async () => {
+  calls.length = 0;
+  const active = await post({ action: 'home' }, 'rork-active');
+  assert.equal(active.status, 200);
+  const identity = calls.find((u) => u.includes('/rpc/current_profile_id'));
+  const profile = calls.find((u) => u.includes('/rest/v1/profiles?'));
+  assert.ok(identity && profile, 'the caller identity and active profile are both checked');
+
+  calls.length = 0;
+  const suspended = await post({ action: 'home' }, 'rork-suspended');
+  assert.equal(suspended.status, 401);
+  assert.equal(calls.filter((u) => u.includes('/home')).length, 0, 'an inactive profile cannot reach the upstream');
 });
 
 test('no Megan anywhere in the function', () => {

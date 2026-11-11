@@ -3,26 +3,43 @@ import { RefreshControl } from 'react-native';
 import { colors } from '../../constants/theme';
 
 /**
- * Pull-to-refresh for a screen. There is no server to round-trip: the data on screen IS the data on
- * this device, so the gesture simply re-reads the local store and settles. `scope` is kept as the
- * screen's data interest (home, activity, drama…) so a future data layer can map it again.
+ * Pull-to-refresh for a screen. When a backend task is supplied, success means that task completed;
+ * failures are exposed to the screen and cached data is left alone. Device-local screens may omit it.
  */
-export function useRefresh(_scope?: string) {
+export function useRefresh(_scope?: string, task?: () => Promise<void>) {
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
+  const running = useRef<Promise<boolean> | null>(null);
   useEffect(
     () => () => {
       alive.current = false;
     },
     [],
   );
-  const onRefresh = useCallback(async () => {
+  const onRefresh = useCallback(async (): Promise<boolean> => {
+    if (running.current) return running.current;
     setRefreshing(true);
-    // A short beat so the gesture reads as intentional; nothing is fetched and nothing is claimed.
-    await new Promise((r) => setTimeout(r, 350));
-    if (!alive.current) return;
-    setRefreshing(false);
-  }, []);
+    setError(null);
+    const run = (async () => {
+      try {
+        // Preserve the small visual beat, but never substitute it for the requested data request.
+        await Promise.all([task?.() ?? Promise.resolve(), new Promise((r) => setTimeout(r, 350))]);
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : 'Refresh failed. Your cached data is unchanged.';
+        if (alive.current) setError(message);
+        return false;
+      }
+    })();
+    running.current = run;
+    try {
+      return await run;
+    } finally {
+      if (running.current === run) running.current = null;
+      if (alive.current) setRefreshing(false);
+    }
+  }, [task]);
   const control = <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} colors={[colors.accent]} progressBackgroundColor={colors.surface2} />;
-  return { refreshing, onRefresh, control };
+  return { refreshing, error, onRefresh, control };
 }
