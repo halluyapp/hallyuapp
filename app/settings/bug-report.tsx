@@ -10,6 +10,7 @@ import { TextField } from '../../components/ui/TextField';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
+import { hasModeratorAccess } from '../../lib/roles';
 import { reportError } from '../../lib/analytics';
 import {
   fetchSupportTickets,
@@ -81,7 +82,7 @@ export default function BugReportScreen() {
     if (auth.status !== 'signedIn') return;
     const rows = await fetchSupportTickets('all').catch(() => []);
     setMyTickets(
-      me.role === 'admin' || me.role === 'moderator'
+      hasModeratorAccess(me.role)
         ? rows.filter((r) => r.reporter?.handle === me.handle || r.reporterEmail === auth.user?.email)
         : rows,
     );
@@ -119,7 +120,7 @@ export default function BugReportScreen() {
         message: 'Received! Your report is logged in Admin Studio and admins were notified.',
         tone: 'success',
       });
-      if (me.role === 'admin' || me.role === 'moderator') {
+      if (hasModeratorAccess(me.role)) {
         router.push({ pathname: '/settings/moderation', params: { tab: 'support' } });
       }
     } catch (err) {

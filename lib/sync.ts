@@ -35,6 +35,8 @@ import {
   resolveActorClientIds,
   serverTitleToDrama,
   toComment,
+  type FeedPage,
+  type FeedScope,
   type ServerComment,
   type ServerTitleRow,
 } from './api/feed';
@@ -482,12 +484,36 @@ export async function adoptPublicState(cb: Pick<AdoptionCallbacks, 'getState' | 
 }
 
 /**
+ * Pull the current first feed page and merge it into the cache. This deliberately has no internal
+ * catch: a refresh spinner must not report success when the RPC failed. Older cached pages remain
+ * intact, posts are deduplicated by the store, and a successful empty page is returned as empty.
+ */
+export async function refreshSocialFeed(
+  cb: Pick<AdoptionCallbacks, 'getState' | 'apply' | 'addPosts'>,
+  scope: FeedScope = 'latest',
+): Promise<FeedPage> {
+  if (!supabase) throw new Error('Backend is not configured');
+  if (scope === 'following' && !(await ensureBackendSessionToken())) {
+    throw new Error('A valid member session is required to refresh your following feed');
+  }
+  const page = await fetchFeed(scope, { limit: 25 });
+  const authorIds = [...new Set(page.items.map((post) => post.authorId))].filter(
+    (id) => id && !cb.getState().users[id],
+  );
+  const profiles = authorIds.length ? await fetchProfiles(authorIds) : [];
+  cb.addPosts(page.items);
+  if (profiles.length) cb.apply({ users: mergeUsers(cb.getState().users, profiles) });
+  return page;
+}
+
+/**
  * Read the member's server state and fold it into the cache.
  * Server collections, follows, watchlist, saves, alerts, memberships, onboarding, and profile
  * are treated as authoritative so mutations on Device B synchronize cleanly onto Device A.
  */
 export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
-  if (!supabase || !(await ensureBackendSessionToken())) return;
+  if (!supabase) throw new Error('Backend is not configured');
+  if (!(await ensureBackendSessionToken())) throw new Error('A valid member session is required for hydration');
   const stale = cb.isStale ?? (() => false);
   adopting = true;
   try {
@@ -578,7 +604,6 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     const syncedCollections = mergeCollections(otherCollections, colHydrated.collections);
 
     cb.apply({
-      backendSyncedUserId: boot.profile.id,
       profile: mergedMe,
       onboarding: {
         ...current.onboarding,
@@ -608,8 +633,8 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     });
 
     const [myPosts, feed, pulse] = await Promise.all([
-      hydrateServerPosts(boot.my_posts ?? []).catch(() => []),
-      fetchFeed('latest', { limit: 25 }).catch(() => null),
+      hydrateServerPosts(boot.my_posts ?? []),
+      fetchFeed('latest', { limit: 25 }),
       fetchCommunityPulse(null, 16).catch(() => null),
     ]);
     if (stale()) return;
@@ -625,7 +650,7 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
     }
 
     if (myPosts.length) cb.addPosts(myPosts);
-    if (feed?.items.length) cb.addPosts(feed.items);
+    if (feed.items.length) cb.addPosts(feed.items);
 
     if (boot.saved_post_ids.length) {
       const saved = await fetchPosts(boot.saved_post_ids.slice(0, 50)).catch(() => []);
@@ -648,9 +673,10 @@ export async function adoptBackendState(cb: AdoptionCallbacks): Promise<void> {
 
     const notifications = applyPendingReadMarks(await fetchNotifications());
     if (stale()) return;
-    cb.apply({ notifications });
+    cb.apply({ notifications, backendSyncedUserId: boot.profile.id });
   } catch (e) {
     reportError('sync.adopt', e);
+    throw e;
   } finally {
     adopting = false;
   }

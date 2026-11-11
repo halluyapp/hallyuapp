@@ -378,7 +378,9 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
           </View>
         ) : null}
 
-        {/* Actions */}
+        {/* Reaction breakdown gets its own row; keeping it beside every action clipped Like and
+            Comment on narrow phones. The primary controls always remain on one reachable row. */}
+        <ReactionSummary counts={post.reactions} style={styles.reactionSummary} />
         <View style={styles.actions}>
           <ReactionButton targetId={post.id} counts={post.reactions} />
           <Pressable onPress={onOpenComments ?? open} hitSlop={6} style={styles.action} accessibilityRole="button" accessibilityLabel={`${post.commentCount} comments`}>
@@ -406,8 +408,6 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
           <Pressable onPress={share} hitSlop={6} style={styles.action} accessibilityRole="button" accessibilityLabel="Share">
             <Ionicons name="share-outline" size={20} color={colors.textSecondary} />
           </Pressable>
-          <View style={{ flex: 1 }} />
-          <ReactionSummary counts={post.reactions} />
         </View>
       </Tap>
 
@@ -619,8 +619,9 @@ const styles = StyleSheet.create({
     borderColor: colors.accent,
   },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.x2, marginTop: -4 },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: space.x2, marginTop: -4 },
-  action: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36, paddingHorizontal: 6 },
+  reactionSummary: { alignSelf: 'flex-start', marginBottom: -4 },
+  actions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.x1, marginTop: -4 },
+  action: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 44, minWidth: 40, paddingHorizontal: 4 },
 });
 
 /** Memoised: with tracked store getters, a card re-renders only when its own data changes. */

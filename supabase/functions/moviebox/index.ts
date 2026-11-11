@@ -88,21 +88,53 @@ function seasonEpisode(input: Raw): { se: number; ep: number } | null {
 
 // ---------- session check ----------
 
-async function requireUser(req: Request): Promise<boolean> {
+async function requireUser(req: Request): Promise<string | null> {
   const auth = req.headers.get('authorization') ?? '';
-  if (!auth.startsWith('Bearer ')) return false;
+  if (!auth.startsWith('Bearer ')) return null;
   const token = auth.slice(7).trim();
   const serviceKey = (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '').trim();
-  if (serviceKey && token === serviceKey) return true; // server-side callers only
+  if (serviceKey && token === serviceKey) return 'service_role';
   const url = Deno.env.get('SUPABASE_URL');
   const anon = Deno.env.get('SUPABASE_ANON_KEY');
-  if (!url || !anon) return false;
+  if (!url || !anon || !token) return null;
   try {
-    const r = await fetch(`${url}/auth/v1/user`, { headers: { Authorization: auth, apikey: anon } });
-    return r.ok;
+    // HallyU uses Rork JWTs, not Supabase Auth. PostgREST verifies the bearer and resolves the
+    // application profile through the same current_profile_id() bridge used by every app query.
+    const identityResponse = await fetch(`${url}/rest/v1/rpc/current_profile_id`, {
+      method: 'POST',
+      headers: { Authorization: auth, apikey: anon, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!identityResponse.ok) return null;
+    const profileId: unknown = await identityResponse.json();
+    if (typeof profileId !== 'string' || !/^[0-9a-f-]{36}$/i.test(profileId)) return null;
+
+    const query = new URLSearchParams({ select: 'id', id: `eq.${profileId}`, account_status: 'eq.active', limit: '1' });
+    const profileResponse = await fetch(`${url}/rest/v1/profiles?${query}`, { headers: { Authorization: auth, apikey: anon } });
+    if (!profileResponse.ok) return null;
+    const rows = (await profileResponse.json()) as Array<{ id?: unknown }>;
+    return rows.length === 1 && rows[0]?.id === profileId ? profileId : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+// Small per-isolate abuse guard. Authentication and sealed media URLs remain the security boundary;
+// distributed deployments should additionally enforce platform/API-gateway rate limits.
+const actionWindows = new Map<string, { startedAt: number; count: number }>();
+function actionAllowed(userId: string, action: string): boolean {
+  if (userId === 'service_role') return true;
+  const now = Date.now();
+  const key = `${userId}:${action.startsWith('play') || action === 'captions' ? 'media' : 'metadata'}`;
+  const cap = key.endsWith(':media') ? 30 : 120;
+  const current = actionWindows.get(key);
+  if (!current || now - current.startedAt >= 60_000) {
+    if (actionWindows.size > 5000) actionWindows.clear();
+    actionWindows.set(key, { startedAt: now, count: 1 });
+    return true;
+  }
+  current.count += 1;
+  return current.count <= cap;
 }
 
 // ---------- sealed tokens (AES-GCM) ----------
@@ -599,7 +631,8 @@ Deno.serve(async (req) => {
   if (req.method === 'GET' && new URL(req.url).searchParams.get('action') === 'proxy') return handleMedia(req);
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
 
-  if (!(await requireUser(req))) return json({ error: 'unauthorized' }, 401);
+  const userId = await requireUser(req);
+  if (!userId) return json({ error: 'unauthorized' }, 401);
 
   let input: Raw;
   try {
@@ -609,6 +642,7 @@ Deno.serve(async (req) => {
   }
 
   const action = typeof input.action === 'string' ? input.action : 'unknown';
+  if (!actionAllowed(userId, action)) return json({ error: 'rate_limited', retry_after_seconds: 60 }, 429);
   const started = Date.now();
   try {
     switch (action) {

@@ -69,7 +69,7 @@ for (const file of migrationFiles) {
  * slice runs from the function's own `create or replace` to the end of its body delimiter.
  */
 function sliceFunctionBody(sql, name) {
-  const start = sql.search(new RegExp(`create\\s+(or\\s+replace\\s+)?function\\s+(public\\.)?${name}\\s*\\(`, 'i'));
+  const start = sql.search(new RegExp(`create\\s+(or\\s+replace\\s+)?function\\s+(?:[a-z_][a-z0-9_]*\\.)?${name}\\s*\\(`, 'i'));
   if (start === -1) return '';
 
   const bodyStart = sql.indexOf('$$', start);

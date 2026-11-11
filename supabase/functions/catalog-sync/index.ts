@@ -14,6 +14,7 @@
 
 import { adminClient, type AdminClient, requireServiceRole } from '../_shared/supabase.ts';
 import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
+import { integerOption, readObjectBody } from '../_shared/request.ts';
 import {
   activeSeasonNumber,
   type CatalogWorld,
@@ -40,6 +41,7 @@ interface SyncRequest {
   limit?: number;
   title_id?: string;
   season?: number;
+  idempotency_key?: string;
 }
 
 interface RunResult {
@@ -393,22 +395,49 @@ Deno.serve(async (request: Request) => {
 
   let body: SyncRequest;
   try {
-    body = (await request.json()) as SyncRequest;
+    body = (await readObjectBody(request)) as SyncRequest;
   } catch {
-    body = {};
+    return errorResponse('a valid JSON object body is required', 400);
   }
 
   const job: Job = body.job ?? 'trending';
+  if (!['trending', 'discover', 'refresh', 'detail', 'seasons'].includes(job)) {
+    return errorResponse(`unknown job ${job}`, 400);
+  }
+  if (body.world !== undefined && !WORLD_IDS.includes(body.world)) return errorResponse(`unknown world ${body.world}`, 400);
+  const pages = integerOption(body.pages, 1, 1, 3);
+  const limit = integerOption(body.limit, job === 'refresh' ? 48 : 24, 1, 80);
+  const season = integerOption(body.season, 1, 1, 99);
+  if (pages === null || limit === null || season === null) return errorResponse('pages, limit, and season must be bounded integers', 400);
+  if ((job === 'detail' || job === 'seasons') && !body.title_id) return errorResponse(`${job} requires a title_id`, 400);
+  if (body.title_id !== undefined && !/^[0-9a-f-]{36}$/i.test(body.title_id)) return errorResponse('title_id must be a UUID', 400);
+  const suppliedKey = request.headers.get('idempotency-key') ?? body.idempotency_key;
+  if (suppliedKey !== undefined && !/^[A-Za-z0-9._:-]{1,160}$/.test(suppliedKey)) {
+    return errorResponse('idempotency key must be 1..160 URL-safe characters', 400);
+  }
+
   const started = Date.now();
   const counter = { requests: 0 };
   const supabase = adminClient();
 
+  const hourlyKey = [job, body.world ?? 'all', body.title_id ?? '', season, pages, limit, new Date().toISOString().slice(0, 13)].join(':');
   const { data: runId, error: startError } = await supabase.rpc('catalog_begin_run', {
     p_job: job,
     p_provider_id: 'tmdb',
-    p_idempotency_key: `${job}:${body.world ?? 'all'}:${new Date().toISOString().slice(0, 19)}`,
+    p_idempotency_key: suppliedKey ?? hourlyKey,
   });
   if (startError) return errorResponse(startError.message, 409);
+  if (typeof runId !== 'string') return errorResponse('catalog_begin_run returned no run UUID', 500);
+
+  const { data: priorRun, error: priorError } = await supabase
+    .from('catalog_sync_runs')
+    .select('status, items_seen, items_written, items_unchanged, items_missing, started_at, finished_at')
+    .eq('id', runId)
+    .single();
+  if (priorError) return errorResponse(`could not verify catalog run state: ${priorError.message}`, 500);
+  if (priorRun?.status === 'succeeded') {
+    return jsonResponse({ ...priorRun, run_id: runId, job, skipped: true, reason: 'idempotency key already succeeded' });
+  }
 
   const result: RunResult = {
     run_id: (runId as string | null) ?? null,
@@ -424,7 +453,6 @@ Deno.serve(async (request: Request) => {
   try {
     switch (job) {
       case 'trending': {
-        const pages = Math.min(Math.max(body.pages ?? 1, 1), 3);
         const worlds = body.world ? [body.world] : [...WORLD_IDS];
         for (const world of worlds) {
           if (!WORLD_IDS.includes(world)) throw new Error(`unknown world ${world}`);
@@ -435,7 +463,7 @@ Deno.serve(async (request: Request) => {
         const enriched = await syncDueRecords(
           supabase,
           body.world ?? null,
-          Math.min(Math.max(body.limit ?? 24, 1), 80),
+          limit,
           counter,
         );
         result.items_written += enriched.written;
@@ -444,7 +472,6 @@ Deno.serve(async (request: Request) => {
       }
 
       case 'discover': {
-        const pages = Math.min(Math.max(body.pages ?? 1, 1), 3);
         const worlds = body.world ? [body.world] : [...WORLD_IDS];
         for (const world of worlds) {
           if (!WORLD_IDS.includes(world)) throw new Error(`unknown world ${world}`);
@@ -459,7 +486,7 @@ Deno.serve(async (request: Request) => {
         const outcome = await syncDueRecords(
           supabase,
           body.world ?? null,
-          Math.min(Math.max(body.limit ?? 48, 1), 80),
+          limit,
           counter,
         );
         result.items_seen = outcome.seen;
@@ -469,16 +496,14 @@ Deno.serve(async (request: Request) => {
       }
 
       case 'detail': {
-        if (!body.title_id) throw new Error('detail requires a title_id');
         result.items_seen = 1;
-        result.items_written = await syncDetail(supabase, body.title_id, counter);
+        result.items_written = await syncDetail(supabase, body.title_id!, counter);
         break;
       }
 
       case 'seasons': {
-        if (!body.title_id) throw new Error('seasons requires a title_id');
         result.items_seen = 1;
-        result.items_written = await syncSeason(supabase, body.title_id, body.season ?? 1, counter);
+        result.items_written = await syncSeason(supabase, body.title_id!, season, counter);
         break;
       }
 
@@ -486,15 +511,20 @@ Deno.serve(async (request: Request) => {
         return errorResponse(`unknown job ${job}`, 400);
     }
 
-    await supabase.rpc('job_reconcile_episode_schedule', { p_limit: 1000 });
-    await supabase.rpc('job_reconcile_catalog_status', { p_limit: 1000 });
-    await supabase.rpc('refresh_trending', { p_world: null });
+    for (const [fn, params] of [
+      ['job_reconcile_episode_schedule', { p_limit: 1000 }],
+      ['job_reconcile_catalog_status', { p_limit: 1000 }],
+      ['refresh_trending', { p_world: null }],
+    ] as const) {
+      const { error } = await supabase.rpc(fn, params);
+      if (error) throw new Error(`${fn}: ${error.message}`);
+    }
 
     result.items_unchanged = Math.max(0, result.items_seen - result.items_written);
     result.provider_requests = counter.requests;
     result.duration_ms = Date.now() - started;
 
-    await supabase.rpc('catalog_finish_run', {
+    const { error: finishError } = await supabase.rpc('catalog_finish_run', {
       p_run_id: result.run_id,
       p_status: 'succeeded',
       p_items_seen: result.items_seen,
@@ -502,6 +532,7 @@ Deno.serve(async (request: Request) => {
       p_items_unchanged: result.items_unchanged,
       p_items_missing: result.items_missing,
     });
+    if (finishError) return jsonResponse({ ...result, bookkeeping_error: finishError.message }, 500);
 
     return jsonResponse(result);
   } catch (error) {
@@ -512,7 +543,7 @@ Deno.serve(async (request: Request) => {
     result.duration_ms = Date.now() - started;
     result.provider_requests = counter.requests;
 
-    await supabase.rpc('catalog_finish_run', {
+    const { error: finishError } = await supabase.rpc('catalog_finish_run', {
       p_run_id: result.run_id,
       p_status: 'failed',
       p_items_seen: result.items_seen,
@@ -522,6 +553,6 @@ Deno.serve(async (request: Request) => {
       p_error: message.slice(0, 400),
     });
 
-    return jsonResponse(result, status === 429 ? 429 : 502);
+    return jsonResponse({ ...result, ...(finishError ? { bookkeeping_error: finishError.message } : {}) }, finishError ? 500 : status === 429 ? 429 : 502);
   }
 });

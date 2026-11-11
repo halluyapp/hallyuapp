@@ -28,7 +28,8 @@ export default function SignUp() {
     setBusy(true);
     setError(null);
     try {
-      await auth.signInWithGoogle(name.trim() || undefined);
+      if (auth.status === 'recovery') await auth.retryProfileProvisioning();
+      else await auth.signInWithGoogle(name.trim() || undefined);
       router.replace('/');
     } catch (e) {
       const err = e instanceof AuthError ? e : new AuthError('unknown', e instanceof Error ? e.message : 'Google sign-in failed — try again.');
@@ -49,10 +50,13 @@ export default function SignUp() {
         </Text>
         <View style={{ gap: space.x4 }}>
           <TextField label="Display name" value={name} onChangeText={setName} autoComplete="name" textContentType="name" maxLength={LIMITS.displayName} leading="person-outline" hint="Optional — how you’ll appear to others. You can change it later." />
+          {auth.provisioningError && !error ? (
+            <InlineNotice tone="warning" icon="cloud-offline-outline" text={auth.provisioningError} />
+          ) : null}
           {error ? (
             <InlineNotice tone={error.code === 'network' ? 'warning' : 'danger'} icon={error.code === 'network' ? 'cloud-offline-outline' : 'alert-circle-outline'} text={error.message} />
           ) : null}
-          <Button label={busy ? 'Opening Google…' : 'Continue with Google'} size="lg" block loading={busy} onPress={submit} />
+          <Button label={busy ? 'Creating your account…' : auth.status === 'recovery' ? 'Retry account setup' : 'Continue with Google'} size="lg" block loading={busy} onPress={submit} />
         </View>
         <View style={{ marginTop: space.x6, gap: space.x2 }}>
           <Button label="Already have an account? Sign in" variant="ghost" onPress={() => router.replace('/(auth)/sign-in')} />

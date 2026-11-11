@@ -72,9 +72,10 @@ console.log('\nHome feed adoption convergence');
 
   // Any memo/effect dep that names a useApp() getter is only safe now that useApp is stable, and
   // must not be able to feed itself. Assert the adoption path is guarded by a functional update.
-  check(/const adoptFeed = useCallback\(\(next: FeedItem\[\]\) => setFeed\(\(prev\) => \(feedEqual\(prev, next\) \? prev : next\)\)/.test(home), 'feed adoption compares content, not identity');
+  check(/const adoptFeed = useCallback\(\(next: FeedItem\[\]\) => setFeed\(\(prev\) => \(feedSnapshotEqual\(prev, next\) \? prev : next\)\)/.test(home), 'feed adoption compares post versions, not array identity');
   check(!/setFeed\(liveFeed\)/.test(code(home)), 'no bare `setFeed(liveFeed)` (always-new reference) remains');
-  check(/function feedEqual\(/.test(home), 'feedEqual() exists');
+  const comparator = readFileSync('lib/feedSnapshot.ts', 'utf8');
+  check(/a\[i\]!\.post !== b\[i\]!\.post/.test(comparator), 'feedSnapshotEqual adopts changed reaction/comment objects');
 
   const effectBlocks = [...home.matchAll(/useEffect\(\(\) => \{[\s\S]*?\n  \}, \[([^\]]*)\]\);/g)];
   for (const [, deps] of effectBlocks) {
@@ -99,7 +100,7 @@ console.log('\nSelf-feeding effects');
     const names = deps.split(',').map((s) => s.trim()).filter(Boolean);
     if (!names.length) return false;
     // a bare setX(...) of a name that the effect itself depends on
-    return names.some((n) => new RegExp(`(?<!adopt)set${n[0].toUpperCase()}${n.slice(1)}\\(`).test(body) && !/feedEqual/.test(body));
+    return names.some((n) => new RegExp(`(?<!adopt)set${n[0].toUpperCase()}${n.slice(1)}\\(`).test(body) && !/feedSnapshotEqual/.test(body));
   });
   check(loops.length === 0, `no effect re-sets a dependency through a bare setter (${loops.length} found)`);
 }

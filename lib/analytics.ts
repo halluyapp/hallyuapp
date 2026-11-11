@@ -55,9 +55,18 @@ export function drainAnalytics(): typeof buffer {
  * always logs a useful line (dev) and forwards to the analytics sink, so a swallowed failure is
  * still observable. Never throws.
  */
+function safeDiagnostic(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'object' && error && 'message' in error ? String((error as { message: unknown }).message) : String(error);
+  return raw
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [redacted]')
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[redacted-jwt]')
+    .slice(0, 500);
+}
+
 export function reportError(scope: string, error: unknown, props?: Record<string, unknown>): void {
-  const message = error instanceof Error ? error.message : String(error);
-  if (__DEV__) console.warn(`[hallyu:${scope}]`, message, error);
+  const message = safeDiagnostic(error);
+  // Do not print the original object: request errors can contain headers or refresh credentials.
+  if (__DEV__) console.warn(`[hallyu:${scope}]`, message);
   try {
     track('error.async', { scope, message, ...props });
   } catch {

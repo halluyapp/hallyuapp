@@ -26,6 +26,7 @@ import {
   toggleCommunityLock,
 } from '../../lib/api/features';
 import { timeAgo } from '../../lib/format';
+import { hasModeratorAccess } from '../../lib/roles';
 import { haptic, useApp } from '../../lib/hooks';
 
 type StudioTab = 'broadcast' | 'support' | 'creators' | 'reports' | 'communities';
@@ -64,6 +65,7 @@ export default function ModerationStudioScreen() {
   const params = useLocalSearchParams<{ tab?: string }>();
   const toast = useToast();
   const { me } = useApp();
+  const isStaff = hasModeratorAccess(me.role);
   const [tab, setTab] = useState<StudioTab>(() => resolveStudioTab(params.tab));
 
   useEffect(() => {
@@ -86,6 +88,10 @@ export default function ModerationStudioScreen() {
   const [sendingBc, setSendingBc] = useState(false);
 
   const load = useCallback(async () => {
+    if (!isStaff) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -100,7 +106,7 @@ export default function ModerationStudioScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isStaff]);
 
   useEffect(() => {
     void load();
@@ -259,6 +265,14 @@ export default function ModerationStudioScreen() {
   const pendingRequests = (data?.videoRequests ?? []).filter((r) => r.status === 'pending');
   const openTickets = tickets.filter((t) => t.status !== 'resolved');
   const openReportsCount = data?.reports.length ?? 0;
+
+  if (!isStaff) {
+    return (
+      <Screen header={<TopBar mode="stack" title="Admin & CEO Studio" />}>
+        <EmptyState icon="lock-closed-outline" title="Staff access required" body="This studio is limited to Hallyu moderators, administrators and the CEO." />
+      </Screen>
+    );
+  }
 
   return (
     <Screen

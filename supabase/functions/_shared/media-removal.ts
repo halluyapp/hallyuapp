@@ -57,15 +57,20 @@ export async function drainRemovalQueue(limit: number = DEFAULT_BATCH): Promise<
   }
 
   if (stuck.length > 0) {
-    await supabase.rpc('complete_media_removals', { p_paths: stuck, p_error: firstError });
+    const { error } = await supabase.rpc('complete_media_removals', { p_paths: stuck, p_error: firstError });
+    if (error) firstError = `could not record refused removals: ${error.message}`;
   }
   if (gone.length > 0) {
-    await supabase.rpc('complete_media_removals', { p_paths: gone, p_error: null });
+    const { error } = await supabase.rpc('complete_media_removals', { p_paths: gone, p_error: null });
+    // Storage already confirmed removal, but the queue must not be reported as reconciled when its
+    // bookkeeping failed. A later run may safely repeat the idempotent Storage delete.
+    if (error) firstError = `objects were removed but queue completion failed: ${error.message}`;
   }
 
-  const { count } = await supabase
+  const { count, error: countError } = await supabase
     .from('media_removal_queue')
     .select('path', { count: 'exact', head: true });
+  if (countError) firstError = `could not count remaining removals: ${countError.message}`;
 
   return { removed: gone.length, remaining: count ?? stuck.length, error: firstError };
 }

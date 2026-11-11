@@ -1,5 +1,5 @@
 -- Hallyu backend — 03 profiles.
--- `profiles.id` IS the auth.users id: one identity, one row. Everything the client reads as `User`
+-- `profiles.id` is the application UUID; auth_sub is the opaque Rork subject. One identity, one row. Everything the client reads as `User`
 -- (lib/model.ts) lives here except the denormalised counts, which triggers keep honest.
 
 -- Function bodies in this file may reference objects that later migrations create, so validation
@@ -11,7 +11,8 @@ create type public.profile_role as enum ('member', 'moderator', 'admin');
 create type public.account_status as enum ('active', 'suspended', 'deleted');
 
 create table if not exists public.profiles (
-  id                  uuid primary key references auth.users (id) on delete cascade,
+  id                  uuid primary key default gen_random_uuid(),
+  auth_sub            text        unique,
   handle              extensions.citext not null,
   display_name        text        not null,
   avatar_path         text,
@@ -43,6 +44,34 @@ create table if not exists public.profiles (
     follower_count >= 0 and following_count >= 0 and post_count >= 0 and comment_count >= 0
   )
 );
+
+comment on column public.profiles.auth_sub is 'Opaque Rork identity subject. It is not a UUID and is never used as the application profile id.';
+
+create or replace function public.current_profile_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select p.id from public.profiles p
+  where p.auth_sub = public.user_id() and p.account_status <> 'deleted'
+  limit 1;
+$$;
+
+-- Compatibility for functions and policies in the original Supabase Auth migrations. The deployed
+-- Rork migration replaced these call sites with current_profile_id(); both forms resolve the same
+-- application UUID. New functions use current_profile_id() directly.
+create or replace function auth.uid()
+returns uuid
+language sql
+stable
+set search_path = public, pg_temp
+as $$
+  select public.current_profile_id();
+$$;
+
+grant execute on function public.current_profile_id() to anon, authenticated, service_role;
 
 comment on column public.profiles.handle is 'Lower-case unique handle. Citext makes uniqueness case-insensitive.';
 comment on column public.profiles.avatar_path is 'Object path inside the `media` bucket (avatars/ prefix), not a public URL.';
@@ -136,9 +165,10 @@ begin
     'member'
   );
 
-  insert into public.profiles (id, handle, display_name)
+  insert into public.profiles (id, auth_sub, handle, display_name)
   values (
     new.id,
+    new.id::text,
     public.generate_handle(wanted, new.id),
     left(coalesce(nullif(btrim(new.raw_user_meta_data ->> 'full_name'), ''), nullif(split_part(coalesce(new.email, ''), '@', 1), ''), 'Member'), 40)
   )

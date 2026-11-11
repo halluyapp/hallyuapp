@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StyleSheet, TextInput, View } from 'react-native';
 import { colors, radius, sizes, space } from '../../constants/theme';
+import { hasModeratorAccess } from '../../lib/roles';
 import { Fandom, fandomById, isFandomId } from '../../lib/fandoms';
 import { compact } from '../../lib/format';
 import { useApp } from '../../lib/hooks';
@@ -245,7 +246,7 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
         {isMe ? (
           <>
             <Button label="Edit profile" variant="secondary" size="sm" icon="create-outline" onPress={() => router.push('/edit-profile')} />
-            {user.role === 'admin' || user.role === 'moderator' ? (
+            {hasModeratorAccess(user.role) ? (
               <Button label="Admin" variant="primary" size="sm" icon="shield-half-outline" onPress={() => router.push('/admin')} />
             ) : (
               <Button label="Messages" variant="secondary" size="sm" icon="chatbubble-ellipses-outline" onPress={() => router.push('/messages')} />

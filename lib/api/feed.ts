@@ -21,6 +21,7 @@ import type {
   UserAward,
   VerificationTier,
 } from '../model';
+import { normalizeRole, type AppRole } from '../roles';
 import type { ServerCollectionBundle } from './bootstrap';
 import { getBackendAccessToken, supabase } from './client';
 import { fetchPostMedia, signedUrls, type PostMedia } from './media';
@@ -136,7 +137,7 @@ interface ServerProfileRow {
   exclude_from_competitions?: boolean;
   featured_badge_ids?: string[] | null;
   is_private?: boolean;
-  role?: 'member' | 'moderator' | 'admin';
+  role?: AppRole;
   created_at?: string;
 }
 
@@ -484,7 +485,7 @@ export async function hydrateServerProfiles(
       featuredBadgeIds: Array.isArray(r.featured_badge_ids) ? r.featured_badge_ids : [],
       awards,
       isPrivate: Boolean(r.is_private),
-      role: r.role ?? undefined,
+      role: r.role ? normalizeRole(r.role) : undefined,
     };
   });
   return { users, dramas };

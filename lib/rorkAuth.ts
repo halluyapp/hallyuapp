@@ -68,13 +68,9 @@ function base64UrlEncode(bytes: Uint8Array): string {
   return out;
 }
 
-function randomVerifier(): string {
-  const bytes = new Uint8Array(32);
-  if (typeof globalThis.crypto?.getRandomValues === 'function') {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
+async function randomVerifier(): Promise<string> {
+  // Never weaken PKCE to Math.random when WebCrypto is unavailable (as on some React Native runtimes).
+  const bytes = await Crypto.getRandomBytesAsync(32);
   return base64UrlEncode(bytes);
 }
 
@@ -114,38 +110,81 @@ export function identityFromAccessToken(token: string): RorkIdentity | null {
 
 // ── Token custody (SecureStore only) ─────────────────────────────────────────────────────────
 
+let custodyGeneration = 0;
+let custodyQueue: Promise<unknown> = Promise.resolve();
+
+function serializeCustody<T>(operation: () => Promise<T>): Promise<T> {
+  const run = custodyQueue.then(operation, operation);
+  custodyQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 export async function readStoredTokens(): Promise<StoredTokens | null> {
+  return serializeCustody(async () => {
+    try {
+      const accessToken = await SecureStore.getItemAsync(ACCESS_KEY);
+      const refreshToken = await SecureStore.getItemAsync(REFRESH_KEY);
+      return accessToken && refreshToken ? { accessToken, refreshToken } : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+async function storeTokens(tokens: StoredTokens, expectedGeneration?: number): Promise<boolean> {
+  // A fresh OAuth exchange is a new session and invalidates every older refresh in flight.
+  if (expectedGeneration === undefined) custodyGeneration += 1;
+  return serializeCustody(async () => {
+    if (expectedGeneration !== undefined && expectedGeneration !== custodyGeneration) return false;
+    await Promise.all([
+      SecureStore.setItemAsync(ACCESS_KEY, tokens.accessToken),
+      SecureStore.setItemAsync(REFRESH_KEY, tokens.refreshToken),
+    ]);
+    return true;
+  });
+}
+
+export async function clearStoredTokens(): Promise<void> {
+  // Invalidate immediately, then order deletion after any secure-store write already in progress.
+  custodyGeneration += 1;
+  await serializeCustody(async () => {
+    await Promise.all([
+      SecureStore.deleteItemAsync(ACCESS_KEY).catch(() => {}),
+      SecureStore.deleteItemAsync(REFRESH_KEY).catch(() => {}),
+    ]);
+  });
+}
+
+/** Decode the previous subject even when its access token expired; the server still verifies every JWT. */
+function identityFromStoredToken(token: string): RorkIdentity | null {
   try {
-    const accessToken = await SecureStore.getItemAsync(ACCESS_KEY);
-    const refreshToken = await SecureStore.getItemAsync(REFRESH_KEY);
-    return accessToken && refreshToken ? { accessToken, refreshToken } : null;
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const binary = typeof atob === 'function' ? atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)) : '';
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<string, unknown>;
+    if (typeof payload.sub !== 'string' || !payload.sub) return null;
+    return {
+      sub: payload.sub,
+      email: typeof payload.email === 'string' ? payload.email : '',
+      name: typeof payload.name === 'string' ? payload.name : undefined,
+      picture: typeof payload.picture === 'string' ? payload.picture : undefined,
+    };
   } catch {
     return null;
   }
 }
 
-async function storeTokens(tokens: StoredTokens): Promise<void> {
-  await Promise.all([
-    SecureStore.setItemAsync(ACCESS_KEY, tokens.accessToken),
-    SecureStore.setItemAsync(REFRESH_KEY, tokens.refreshToken),
-  ]);
-}
-
-export async function clearStoredTokens(): Promise<void> {
-  await Promise.all([
-    SecureStore.deleteItemAsync(ACCESS_KEY).catch(() => {}),
-    SecureStore.deleteItemAsync(REFRESH_KEY).catch(() => {}),
-  ]);
-}
-
 /**
- * Trades the stored refresh token for a fresh access token. Returns null when there is nothing
- * stored or Rork Auth rejects the refresh (stale install, revoked session) — the caller then
- * treats the member as signed out. A rejected refresh token is cleared so it cannot loop.
+ * Trades the stored refresh token for a fresh access token. Authentication rejections clear the
+ * credential; network/5xx failures preserve it. Logout/account-switch generations cannot be overwritten.
  */
-export async function refreshAccessToken(): Promise<StoredTokens | null> {
+async function requestAccessTokenRefresh(): Promise<StoredTokens | null> {
+  const generation = custodyGeneration;
   const stored = await readStoredTokens();
-  if (!stored || !APP_KEY) return null;
+  if (!stored || !APP_KEY || generation !== custodyGeneration) return null;
+  const previousIdentity = identityFromStoredToken(stored.accessToken);
+  if (!previousIdentity) return null;
   let res: Response;
   try {
     res = await fetch(`${AUTH_URL}/oauth/refresh`, {
@@ -157,14 +196,33 @@ export async function refreshAccessToken(): Promise<StoredTokens | null> {
     return null; // offline — keep the stored tokens and retry on the next launch
   }
   if (!res.ok) {
-    await clearStoredTokens();
+    if ((res.status === 400 || res.status === 401 || res.status === 403) && generation === custodyGeneration) {
+      await clearStoredTokens();
+    }
     return null;
   }
-  const data = (await res.json()) as { access_token?: string };
-  if (!data.access_token) return null;
-  const next: StoredTokens = { accessToken: data.access_token, refreshToken: stored.refreshToken };
-  await storeTokens(next);
-  return next;
+  const data = (await res.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string };
+  const refreshedIdentity = data.access_token ? identityFromAccessToken(data.access_token) : null;
+  if (!data.access_token || !refreshedIdentity || refreshedIdentity.sub !== previousIdentity.sub) return null;
+  const next: StoredTokens = {
+    accessToken: data.access_token,
+    refreshToken: typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : stored.refreshToken,
+  };
+  return (await storeTokens(next, generation)) ? next : null;
+}
+
+let refreshInFlight: Promise<StoredTokens | null> | null = null;
+
+/** One refresh across OAuth restoration and every PostgREST caller. */
+export async function refreshAccessToken(): Promise<StoredTokens | null> {
+  if (refreshInFlight) return refreshInFlight;
+  const run = requestAccessTokenRefresh();
+  refreshInFlight = run;
+  try {
+    return await run;
+  } finally {
+    if (refreshInFlight === run) refreshInFlight = null;
+  }
 }
 
 // ── The Google flow ──────────────────────────────────────────────────────────────────────────
@@ -178,7 +236,7 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
   if (!APP_KEY) {
     throw new Error('Google sign-in is not configured in this build (missing EXPO_PUBLIC_RORK_APP_KEY).');
   }
-  const verifier = randomVerifier();
+  const verifier = await randomVerifier();
   const challenge = await sha256Base64Url(verifier);
 
   let authUrl: string;
@@ -202,31 +260,25 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
   if (!authUrl) throw new Error('Google sign-in did not return a consent URL.');
 
   if (Platform.OS === 'web') {
-    // Browser preview: a popup + postMessage hand-off instead of a system browser sheet.
-    await exchangeViaPopup(authUrl, verifier);
-    const tokens = await readStoredTokens();
-    return identityFromAccessToken(tokens?.accessToken ?? '') ?? (await requireIdentityAfterExchange());
+    // Browser preview: only the tokens returned by THIS popup exchange may establish identity.
+    // Falling back to SecureStore here could silently sign in the previous account after a cancel.
+    const tokens = await exchangeViaPopup(authUrl, verifier);
+    const identity = identityFromAccessToken(tokens.accessToken);
+    if (!identity) throw new Error('Google sign-in returned an unreadable session — try again.');
+    return identity;
   }
 
   const result = await WebBrowser.openAuthSessionAsync(authUrl, authCallbackScheme());
   if (result.type !== 'success') throw new Error('cancelled');
   const code = new URL(result.url).searchParams.get('code');
   if (!code) throw new Error('Google sign-in did not return an authorization code.');
-  await exchangeCode(code, verifier);
-  const tokens = await readStoredTokens();
-  const identity = identityFromAccessToken(tokens?.accessToken ?? '');
+  const tokens = await exchangeCode(code, verifier);
+  const identity = identityFromAccessToken(tokens.accessToken);
   if (!identity) throw new Error('Google sign-in returned an unreadable session — try again.');
   return identity;
 }
 
-async function requireIdentityAfterExchange(): Promise<RorkIdentity> {
-  const tokens = await readStoredTokens();
-  const identity = identityFromAccessToken(tokens?.accessToken ?? '');
-  if (!identity) throw new Error('Google sign-in did not complete — try again.');
-  return identity;
-}
-
-async function exchangeCode(code: string, verifier: string): Promise<void> {
+async function exchangeCode(code: string, verifier: string): Promise<StoredTokens> {
   const res = await fetch(`${AUTH_URL}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -240,30 +292,55 @@ async function exchangeCode(code: string, verifier: string): Promise<void> {
   if (!data.access_token || !data.refresh_token) {
     throw new Error('Google sign-in returned no session tokens.');
   }
-  await storeTokens({ accessToken: data.access_token, refreshToken: data.refresh_token });
+  const tokens = { accessToken: data.access_token, refreshToken: data.refresh_token };
+  await storeTokens(tokens);
+  return tokens;
 }
 
-async function exchangeViaPopup(authUrl: string, verifier: string): Promise<void> {
+const POPUP_TIMEOUT_MS = 120_000;
+
+async function exchangeViaPopup(authUrl: string, verifier: string): Promise<StoredTokens> {
   const popup = window.open(authUrl, '_blank', 'width=500,height=650');
-  await new Promise<void>((resolve, reject) => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.data?.type !== 'rork_auth_callback') return;
+  if (!popup) {
+    throw new Error('Google sign-in popup was blocked. Allow popups for Hallyu, then try again.');
+  }
+  const allowedOrigins = new Set([new URL(authUrl).origin, new URL(AUTH_URL).origin]);
+  return new Promise<StoredTokens>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
       window.removeEventListener('message', onMessage);
       clearInterval(poll);
+      clearTimeout(timeout);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const succeed = (tokens: StoredTokens) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(tokens);
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (!allowedOrigins.has(event.origin) || event.source !== popup) return;
+      if (event.data?.type !== 'rork_auth_callback') return;
       const code = typeof event.data.code === 'string' ? event.data.code : '';
       if (!code) {
-        reject(new Error('cancelled'));
+        fail(new Error('cancelled'));
         return;
       }
-      exchangeCode(code, verifier).then(resolve, reject);
+      exchangeCode(code, verifier).then(succeed, (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
     };
-    window.addEventListener('message', onMessage);
     const poll = setInterval(() => {
-      if (popup?.closed) {
-        clearInterval(poll);
-        window.removeEventListener('message', onMessage);
-        resolve();
-      }
-    }, 500);
+      if (popup.closed) fail(new Error('cancelled'));
+    }, 250);
+    const timeout = setTimeout(() => {
+      popup.close();
+      fail(new Error('Google sign-in timed out. Please try again.'));
+    }, POPUP_TIMEOUT_MS);
+    window.addEventListener('message', onMessage);
   });
 }

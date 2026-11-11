@@ -12,6 +12,7 @@ import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
 import { VerificationApplySheet } from '../../components/recognition/VerificationApplyModal';
 import { VerificationSeal } from '../../components/recognition/VerificationSeal';
 import { space } from '../../constants/theme';
+import { hasModeratorAccess } from '../../lib/roles';
 import { getInstalledVersionLabel } from '../../lib/appUpdater';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
@@ -30,7 +31,7 @@ export default function Settings() {
   const [creatorSheet, setCreatorSheet] = useState(false);
   const [verifSheet, setVerifSheet] = useState(false);
   const signedIn = auth.status === 'signedIn';
-  const isStaff = me.role === 'admin' || me.role === 'moderator';
+  const isStaff = hasModeratorAccess(me.role);
   const version = getInstalledVersionLabel();
   const activeLanguage =
     APP_LANGUAGES.find((l) => l.key === state.prefs.language)?.nativeLabel ?? 'English';

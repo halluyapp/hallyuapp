@@ -124,6 +124,10 @@ verify_jwt = true
 [functions.media-cleanup]
 verify_jwt = true
 
+# GitHub Actions OIDC only; removes obsolete APKs through Storage after a new public upload.
+[functions.release-maintenance]
+verify_jwt = false
+
 # Applied by `supabase db reset` after the migrations run. Reference data only: worlds and the
 # catalog providers. No member content is ever seeded.
 [db.seed]

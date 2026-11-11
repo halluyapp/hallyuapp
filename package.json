@@ -11,13 +11,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "ios": "expo run:ios",
-    "check": "npm run typecheck && npm run lint && npm run test:fandoms && npm run test:audit && npm run test:prerelease && npm run test:recognition && npm run test:upgrade && npm run test:sql && npm run test:db-types && npm run test:signatures && npm run test:apply && npm run test:backend-surface && npm run test:secrets && npm run test:tracker && npm run test:home-render && npm run test:book-diary && npm run test:timezone && npm run test:realtime && npm run test:vibe && npm run test:watch && npm run test:downloads && npm run test:release-retention && npm run test:storage-cleanup",
+    "check": "npm run typecheck && npm run lint && npm run test:fandoms && npm run test:audit && npm run test:prerelease && npm run test:auth-repairs && npm run test:recognition && npm run test:upgrade && npm run test:sql && npm run test:db-types && npm run test:signatures && npm run test:apply && npm run test:backend-surface && npm run test:secrets && npm run test:tracker && npm run test:home-render && npm run test:engagement-feed && npm run test:book-diary && npm run test:timezone && npm run test:realtime && npm run test:vibe && npm run test:watch && npm run test:downloads && npm run test:release-retention && npm run test:storage-cleanup",
     "test:recognition": "node --test scripts/test-recognition-and-admin.mjs",
     "test:prerelease": "node --test scripts/test-prerelease-regressions.mjs",
     "test:prerelease:live": "node scripts/verify-prerelease-live.mjs",
     "test:upgrade": "node scripts/verify-product-upgrade.mjs",
     "test:audit": "node --test scripts/test-production-audit.mjs",
     "test:home-render": "node scripts/verify-home-render.mjs",
+    "test:engagement-feed": "node --test scripts/test-engagement-feed.mjs",
     "test:fandoms": "node scripts/verify-fandoms.mjs",
     "test:sql": "node scripts/verify-sql.mjs",
     "test:db-types": "node scripts/verify-db-types.mjs",
@@ -37,7 +38,8 @@
     "test:watch-live": "node scripts/ci/watch-live-check.mjs",
     "test:downloads": "node --test scripts/ci/downloads-check.mjs",
     "test:release-retention": "node --test scripts/test-release-retention.mjs",
-    "test:storage-cleanup": "node --test scripts/test-storage-cleanup.mjs"
+    "test:storage-cleanup": "node --test scripts/test-storage-cleanup.mjs",
+    "test:auth-repairs": "node --test scripts/test-auth-repairs.mjs"
   },
   "dependencies": {
     "@expo/cli": "^0.18.31",

@@ -1913,6 +1913,7 @@ export type Database = {
       profiles: {
         Row: {
           account_status: Database['public']['Enums']['account_status'];
+          auth_sub: string | null;
           avatar_path: string | null;
           banner_url: string | null;
           bio: string | null;
@@ -1927,7 +1928,7 @@ export type Database = {
           follower_count: number;
           following_count: number;
           handle: string;
-          id: string;
+          id?: string;
           is_founder: boolean;
           is_private: boolean;
           onboarding_completed: boolean;
@@ -1946,6 +1947,7 @@ export type Database = {
         };
         Insert: {
           account_status?: Database['public']['Enums']['account_status'];
+          auth_sub?: string | null;
           avatar_path?: string | null;
           banner_url?: string | null;
           bio?: string | null;
@@ -1979,6 +1981,7 @@ export type Database = {
         };
         Update: {
           account_status?: Database['public']['Enums']['account_status'];
+          auth_sub?: string | null;
           avatar_path?: string | null;
           banner_url?: string | null;
           bio?: string | null;
@@ -3003,6 +3006,10 @@ export type Database = {
         Args: { p_idempotency_key?: string; p_job: string; p_provider_id?: string };
         Returns: string;
       };
+      claim_moderation_reports: {
+        Args: { p_limit?: number; p_stale_before?: string };
+        Returns: Database['public']['Tables']['reports']['Row'][];
+      };
       catalog_finish_run: {
         Args: {
           p_error?: string;
@@ -3977,7 +3984,7 @@ export type Database = {
         | 'collection_saved'
         | 'system';
       post_type: 'post' | 'reaction' | 'discussion' | 'review' | 'recommendation' | 'short';
-      profile_role: 'member' | 'moderator' | 'admin';
+      profile_role: 'member' | 'moderator' | 'admin' | 'ceo';
       protection_level: 'strict' | 'balanced' | 'off';
       push_platform: 'ios' | 'android' | 'web';
       reaction_kind: 'loved' | 'cried' | 'screamed' | 'swooned' | 'laughed' | 'furious';

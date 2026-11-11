@@ -3,6 +3,11 @@ name: Deploy Hallyu Web & PWA
 on:
   workflow_dispatch:
     inputs:
+      deploy_public_site:
+        description: Deploy this ref after every catalogue/static/build gate passes (otherwise artifact-only)
+        type: boolean
+        required: true
+        default: false
       run_live_browser_test:
         description: Create and remove a temporary production test member for authenticated browser checks
         type: boolean
@@ -458,7 +463,7 @@ jobs:
 
   deploy:
     name: Deploy & Verify Live Public Website
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu' || (github.event_name == 'workflow_dispatch' && inputs.deploy_public_site == true)
     needs: verify-and-build
     runs-on: ubuntu-22.04
     environment:
