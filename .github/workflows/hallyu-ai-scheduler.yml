@@ -1,0 +1,27 @@
+name: Hallyu AI scheduled intelligence
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hallyu-ai-scheduler
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    # Scheduled workflows only run on the default branch. The edge function independently pins
+    # refs/heads/main and this exact workflow before accepting the OIDC token.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Dispatch due schedules with GitHub OIDC
+        run: |
+          TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=hallyu-ai-scheduler" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")
+          curl -fsS -X POST "https://ltyymanoidagwsapgiql.supabase.co/functions/v1/hallyu-ai-scheduler" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{}'

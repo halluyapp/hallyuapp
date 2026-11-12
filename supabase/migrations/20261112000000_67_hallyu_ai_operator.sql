@@ -108,6 +108,14 @@ revoke all on public.hallyu_ai_approval from anon, authenticated;
 revoke all on public.hallyu_ai_schedule from anon, authenticated;
 revoke all on public.hallyu_ai_memory from anon, authenticated;
 
+-- Explicit deny policies make the lockdown auditable and satisfy the repository's RLS gate.
+-- service_role bypasses RLS inside the operator; anon/authenticated have no direct table grants.
+create policy hallyu_ai_task_no_direct_access on public.hallyu_ai_task for all to public using (false) with check (false);
+create policy hallyu_ai_tool_call_no_direct_access on public.hallyu_ai_tool_call for all to public using (false) with check (false);
+create policy hallyu_ai_approval_no_direct_access on public.hallyu_ai_approval for all to public using (false) with check (false);
+create policy hallyu_ai_schedule_no_direct_access on public.hallyu_ai_schedule for all to public using (false) with check (false);
+create policy hallyu_ai_memory_no_direct_access on public.hallyu_ai_memory for all to public using (false) with check (false);
+
 -- ── admin read/decide surface (re-checks the live role on every call) ─────────────────────────
 
 create or replace function public.hallyu_ai_is_staff()

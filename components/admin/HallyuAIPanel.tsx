@@ -32,11 +32,45 @@ interface AiApproval {
   requested_at: string;
 }
 
+interface AiSchedule {
+  id: string;
+  name: string;
+  kind: string;
+  interval_minutes: number;
+  enabled: boolean;
+  prompt: string;
+  next_run_at: string | null;
+  last_status: string | null;
+}
+
+interface AiPublication {
+  id: string;
+  task_id: string;
+  action: string;
+  title: string | null;
+  body: string;
+  sources: { title?: string; url?: string }[];
+  status: string;
+  target_id: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+interface AiToolCall {
+  id: string;
+  seq: number;
+  tool: string;
+  status: string;
+  result: unknown;
+  error: string | null;
+}
+
 type Ping = {
   model_configured: boolean;
   model: string;
   staff: boolean;
   tools: string[];
+  publishing_mode: 'approval' | 'autonomous';
 };
 
 const STATUS_TONE: Record<string, string> = {
@@ -48,11 +82,15 @@ const STATUS_TONE: Record<string, string> = {
   awaiting_approval: colors.warning,
 };
 
-function invoke<T>(body: Record<string, unknown>): Promise<T> {
-  return supabase.functions.invoke<T>('hallyu-ai-operator', { body }).then(({ data, error }) => {
-    if (error) throw new Error(error.message);
-    return data as T;
-  });
+async function invoke<T>(body: Record<string, unknown>): Promise<T> {
+  if (!supabase) throw new Error('Hallyu AI is unavailable because this build has no backend connection.');
+  const { data, error } = await supabase.functions.invoke<T>('hallyu-ai-operator', { body });
+  if (error) {
+    const context = (error as { context?: { json?: () => Promise<{ error?: string }> } }).context;
+    const detail = context?.json ? await context.json().catch(() => null) : null;
+    throw new Error(detail?.error ?? error.message);
+  }
+  return data as T;
 }
 
 export function HallyuAIPanel() {
@@ -61,6 +99,10 @@ export function HallyuAIPanel() {
   const [ping, setPing] = useState<Ping | null>(null);
   const [tasks, setTasks] = useState<AiTask[]>([]);
   const [approvals, setApprovals] = useState<AiApproval[]>([]);
+  const [schedules, setSchedules] = useState<AiSchedule[]>([]);
+  const [publications, setPublications] = useState<AiPublication[]>([]);
+  const [toolCalls, setToolCalls] = useState<Record<string, AiToolCall[]>>({});
+  const [lastResponse, setLastResponse] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -70,14 +112,22 @@ export function HallyuAIPanel() {
     setLoading(true);
     setError(null);
     try {
-      const [pingState, taskRows, approvalRows] = await Promise.all([
+      const client = supabase;
+      if (!client) throw new Error('Hallyu AI is unavailable because this build has no backend connection.');
+      const [pingState, taskRows, approvalRows, scheduleRows, publicationRows] = await Promise.all([
         invoke<Ping>({ action: 'ping' }),
-        supabase.rpc('hallyu_ai_admin_tasks', { p_limit: 30 }),
-        supabase.rpc('hallyu_ai_admin_approvals'),
+        client.rpc('hallyu_ai_admin_tasks', { p_limit: 30 }),
+        client.rpc('hallyu_ai_admin_approvals'),
+        client.rpc('hallyu_ai_admin_schedules'),
+        client.rpc('hallyu_ai_admin_publications', { p_limit: 20 }),
       ]);
+      const readError = taskRows.error ?? approvalRows.error ?? scheduleRows.error ?? publicationRows.error;
+      if (readError) throw new Error(readError.message);
       setPing(pingState);
       setTasks((taskRows.data as AiTask[]) ?? []);
       setApprovals((approvalRows.data as AiApproval[]) ?? []);
+      setSchedules((scheduleRows.data as AiSchedule[]) ?? []);
+      setPublications((publicationRows.data as AiPublication[]) ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -93,13 +143,14 @@ export function HallyuAIPanel() {
     const prompt = question.trim();
     if (!prompt || busy) return;
     setBusy(true);
-    haptic('light');
+    void haptic.light();
     try {
       const answer = await invoke<{ answer?: string; status?: string; detail?: string; error?: string }>({
         action: 'chat',
         prompt,
       });
       if (answer.error) throw new Error(answer.error);
+      setLastResponse(answer.answer ?? answer.detail ?? `Task status: ${answer.status ?? 'unknown'}`);
       toast.show({
         message: answer.status === 'awaiting_approval' ? answer.detail ?? 'Waiting for approval' : 'Hallyu AI replied — see the operator log below.',
         tone: 'success',
@@ -107,16 +158,51 @@ export function HallyuAIPanel() {
       setQuestion('');
       await loadAll();
     } catch (e) {
-      toast.show(e instanceof Error ? e.message : 'Hallyu AI could not answer right now.', 'danger');
+      toast.show({ message: e instanceof Error ? e.message : 'Hallyu AI could not answer right now.', tone: 'danger' });
       await loadAll();
     } finally {
       setBusy(false);
     }
   };
 
+  const updateSchedule = async (schedule: AiSchedule) => {
+    setBusy(true);
+    try {
+      await invoke({ action: 'schedule.update', schedule_id: schedule.id, enabled: !schedule.enabled, interval_minutes: schedule.interval_minutes, prompt: schedule.prompt });
+      toast.show({ message: schedule.enabled ? `${schedule.name} paused.` : `${schedule.name} enabled; its first run is due now.`, tone: 'success' });
+      await loadAll();
+    } catch (e) {
+      toast.show({ message: e instanceof Error ? e.message : 'Schedule update failed.', tone: 'danger' });
+    } finally { setBusy(false); }
+  };
+
+  const changePublishingMode = async () => {
+    if (!ping) return;
+    setBusy(true);
+    try {
+      const next = ping.publishing_mode === 'approval' ? 'autonomous' : 'approval';
+      await invoke({ action: 'settings.update', publishing_mode: next });
+      toast.show({ message: next === 'autonomous' ? 'Routine publishing is autonomous. Broadcasts still require approval.' : 'Routine publishing now requires approval.', tone: 'success' });
+      await loadAll();
+    } catch (e) {
+      toast.show({ message: e instanceof Error ? e.message : 'Settings update failed.', tone: 'danger' });
+    } finally { setBusy(false); }
+  };
+
+  const toggleToolCalls = async (taskId: string) => {
+    if (toolCalls[taskId]) {
+      setToolCalls((current) => { const next = { ...current }; delete next[taskId]; return next; });
+      return;
+    }
+    if (!supabase) return;
+    const { data, error: readError } = await supabase.rpc('hallyu_ai_admin_tool_calls', { p_task: taskId });
+    if (readError) toast.show({ message: readError.message, tone: 'danger' });
+    else setToolCalls((current) => ({ ...current, [taskId]: (data as AiToolCall[]) ?? [] }));
+  };
+
   const decide = async (approvalId: string, approve: boolean) => {
     setBusy(true);
-    haptic('medium');
+    void haptic.medium();
     try {
       await invoke({ action: 'approval.decide', approval_id: approvalId, approve });
       toast.show({ message: approve ? 'Approved — the AI resumes its plan.' : 'Rejected — the AI was told no.', tone: 'success' });
@@ -138,12 +224,20 @@ export function HallyuAIPanel() {
           <View style={{ flex: 1 }} />
           {loading ? <ActivityIndicator size="small" color={colors.accent} /> : null}
         </View>
+        {ping ? (
+          <View style={styles.statusRow}>
+            <Text variant="caption" tone="secondary" style={{ flex: 1 }}>
+              Publishing: {ping.publishing_mode === 'approval' ? 'approval required' : 'routine autonomous'} · broadcasts always need approval
+            </Text>
+            <Button label="Change" variant="ghost" size="sm" disabled={busy} onPress={() => void changePublishingMode()} />
+          </View>
+        ) : null}
         <Text variant="caption" tone="secondary" style={{ marginTop: space.x2 }}>
           {ping === null
             ? 'Checking the operator…'
             : ping.model_configured
-              ? `Online — model ${ping.model} · tools: ${ping.tools.join(', ')}`
-              : 'Connected, but Rork AI Cloud is not reachable from the backend yet (the RORK_TOOLKIT_SECRET_KEY function secret is missing). On a Rork-managed backend it is provisioned automatically; otherwise set it once with `supabase secrets set`. This panel will not pretend otherwise.'}
+              ? `Credential configured for ${ping.model}; the first task validates connectivity. ${ping.tools.length} tools are available.`
+              : 'The server has no Rork AI credential. Configure it as a function secret; the panel will not simulate a response.'}
         </Text>
       </View>
 
@@ -170,6 +264,33 @@ export function HallyuAIPanel() {
           />
           <Button label={busy ? 'Thinking…' : 'Ask'} variant="primary" size="sm" disabled={busy || !question.trim()} onPress={() => void ask()} />
         </View>
+        {lastResponse ? <Text variant="caption" tone="secondary" style={styles.response}>{lastResponse}</Text> : null}
+      </View>
+
+      <View style={styles.card}>
+        <Text variant="label">Scheduled intelligence</Text>
+        <Text variant="caption" tone="tertiary">Runs only after the service-role dispatcher invokes schedule.run_due. Failures pause the schedule for staff review.</Text>
+        {schedules.map((schedule) => (
+          <View key={schedule.id} style={styles.subsection}>
+            <Text variant="label">{schedule.name}</Text>
+            <Text variant="caption" tone="secondary">Every {schedule.interval_minutes} minutes · {schedule.enabled ? 'enabled' : 'paused'}{schedule.last_status ? ` · last: ${schedule.last_status}` : ''}</Text>
+            <Text variant="caption" tone="tertiary" numberOfLines={3}>{schedule.prompt}</Text>
+            <Button label={schedule.enabled ? 'Pause schedule' : 'Enable schedule'} variant="ghost" size="sm" disabled={busy} onPress={() => void updateSchedule(schedule)} />
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.card}>
+        <Text variant="label">Drafts and publishing</Text>
+        {publications.length === 0 ? <Text variant="caption" tone="secondary">No durable drafts or AI publications yet.</Text> : publications.map((publication) => (
+          <View key={publication.id} style={styles.subsection}>
+            <Text variant="label">{publication.title ?? publication.action} · {publication.status}</Text>
+            <Text variant="caption" tone="secondary" numberOfLines={5}>{publication.body}</Text>
+            {publication.sources.map((source, index) => <Text key={`${source.url}-${index}`} variant="caption" tone="tertiary">{source.title}: {source.url}</Text>)}
+            {publication.target_id ? <Text variant="caption" tone="tertiary">Published target: {publication.target_id}</Text> : null}
+            {publication.error ? <Text variant="caption" style={{ color: colors.danger }}>{publication.error}</Text> : null}
+          </View>
+        ))}
       </View>
 
       {/* Approvals */}
@@ -208,7 +329,7 @@ export function HallyuAIPanel() {
         ) : null}
         <ScrollView scrollEnabled={false} refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void loadAll()} />}>
           {tasks.map((task) => (
-            <View key={task.id} style={[styles.card, { borderLeftColor: STATUS_TONE[task.status] ?? '#8e8e93' }]}>
+            <Pressable key={task.id} onPress={() => void toggleToolCalls(task.id)} style={[styles.card, { borderLeftColor: STATUS_TONE[task.status] ?? '#8e8e93' }]}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Text variant="caption" tone="tertiary">{task.kind.toUpperCase()}</Text>
                 <Text variant="caption" tone="tertiary">·</Text>
@@ -227,7 +348,15 @@ export function HallyuAIPanel() {
                   {task.error.slice(0, 300)}
                 </Text>
               ) : null}
-            </View>
+              <Text variant="caption" tone="tertiary" style={{ marginTop: 4 }}>{toolCalls[task.id] ? 'Hide' : 'Show'} tool audit</Text>
+              {toolCalls[task.id]?.map((call) => (
+                <View key={call.id} style={styles.subsection}>
+                  <Text variant="caption">#{call.seq} {call.tool} · {call.status}</Text>
+                  {call.error ? <Text variant="caption" style={{ color: colors.danger }}>{call.error}</Text> : null}
+                  {call.result !== null ? <Text variant="caption" tone="tertiary" numberOfLines={6}>{JSON.stringify(call.result)}</Text> : null}
+                </View>
+              ))}
+            </Pressable>
           ))}
         </ScrollView>
       </View>
@@ -243,6 +372,9 @@ const styles = StyleSheet.create({
     padding: space.x3,
     gap: 2,
   },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: space.x2, marginTop: space.x2 },
+  response: { marginTop: space.x3, padding: space.x2, backgroundColor: colors.canvas, borderRadius: radius.sm },
+  subsection: { marginTop: space.x2, paddingTop: space.x2, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderSubtle, gap: 4 },
   input: {
     flex: 1,
     minHeight: 44,

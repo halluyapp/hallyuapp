@@ -13,9 +13,168 @@
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
+type HallyuAiTaskRow = {
+  id: string; kind: string; status: string; title: string; prompt: string;
+  requester_profile_id: string | null; requester_role: string | null; plan: Json;
+  result: Json | null; error: string | null; model: string | null;
+  created_at: string; updated_at: string; finished_at: string | null; agent_state: Json;
+  attempt_count: number; max_attempts: number; not_before: string; idempotency_key: string | null;
+};
+type HallyuAiToolCallRow = {
+  id: string; task_id: string; seq: number; tool: string; args: Json; result: Json | null;
+  status: string; error: string | null; started_at: string; finished_at: string | null;
+};
+type HallyuAiApprovalRow = {
+  id: string; task_id: string; tool: string; args: Json; reason: string; status: string;
+  requested_at: string; decided_by: string | null; decided_at: string | null;
+};
+type HallyuAiScheduleRow = {
+  id: string; name: string; kind: string; interval_minutes: number; enabled: boolean;
+  config: Json; last_run_at: string | null; last_status: string | null; created_at: string;
+  prompt: string; next_run_at: string | null; last_task_id: string | null;
+};
+type HallyuAiMemoryRow = {
+  kind: string; key: string; value: Json; task_id: string | null; created_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
+      hallyu_ai_task: {
+        Row: {
+          id: string;
+          kind: string;
+          status: string;
+          title: string;
+          prompt: string;
+          requester_profile_id: string | null;
+          requester_role: string | null;
+          plan: Json;
+          result: Json | null;
+          error: string | null;
+          model: string | null;
+          created_at: string;
+          updated_at: string;
+          finished_at: string | null;
+          agent_state: Json;
+          attempt_count: number;
+          max_attempts: number;
+          not_before: string;
+          idempotency_key: string | null;
+        };
+        Insert: Partial<HallyuAiTaskRow> & Pick<HallyuAiTaskRow, 'prompt'>;
+        Update: Partial<HallyuAiTaskRow>;
+        Relationships: [];
+      };
+      hallyu_ai_tool_call: {
+        Row: {
+          id: string;
+          task_id: string;
+          seq: number;
+          tool: string;
+          args: Json;
+          result: Json | null;
+          status: string;
+          error: string | null;
+          started_at: string;
+          finished_at: string | null;
+        };
+        Insert: Partial<HallyuAiToolCallRow> & Pick<HallyuAiToolCallRow, 'task_id' | 'seq' | 'tool'>;
+        Update: Partial<HallyuAiToolCallRow>;
+        Relationships: [];
+      };
+      hallyu_ai_approval: {
+        Row: {
+          id: string;
+          task_id: string;
+          tool: string;
+          args: Json;
+          reason: string;
+          status: string;
+          requested_at: string;
+          decided_by: string | null;
+          decided_at: string | null;
+        };
+        Insert: Partial<HallyuAiApprovalRow> & Pick<HallyuAiApprovalRow, 'task_id' | 'tool' | 'reason'>;
+        Update: Partial<HallyuAiApprovalRow>;
+        Relationships: [];
+      };
+      hallyu_ai_schedule: {
+        Row: {
+          id: string;
+          name: string;
+          kind: string;
+          interval_minutes: number;
+          enabled: boolean;
+          config: Json;
+          last_run_at: string | null;
+          last_status: string | null;
+          created_at: string;
+          prompt: string;
+          next_run_at: string | null;
+          last_task_id: string | null;
+        };
+        Insert: Partial<HallyuAiScheduleRow> & Pick<HallyuAiScheduleRow, 'name' | 'kind'>;
+        Update: Partial<HallyuAiScheduleRow>;
+        Relationships: [];
+      };
+      hallyu_ai_memory: {
+        Row: {
+          kind: string;
+          key: string;
+          value: Json;
+          task_id: string | null;
+          created_at: string;
+        };
+        Insert: Partial<HallyuAiMemoryRow> & Pick<HallyuAiMemoryRow, 'kind' | 'key' | 'value'>;
+        Update: Partial<HallyuAiMemoryRow>;
+        Relationships: [];
+      };
+      hallyu_ai_publication: {
+        Row: {
+          id: string;
+          task_id: string;
+          action: string;
+          title: string | null;
+          body: string;
+          payload: Json;
+          sources: Json;
+          status: string;
+          target_id: string | null;
+          error: string | null;
+          created_at: string;
+          published_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          task_id: string;
+          action: string;
+          title?: string | null;
+          body: string;
+          payload?: Json;
+          sources?: Json;
+          status?: string;
+          target_id?: string | null;
+          error?: string | null;
+          created_at?: string;
+          published_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          task_id?: string;
+          action?: string;
+          title?: string | null;
+          body?: string;
+          payload?: Json;
+          sources?: Json;
+          status?: string;
+          target_id?: string | null;
+          error?: string | null;
+          created_at?: string;
+          published_at?: string | null;
+        };
+        Relationships: [];
+      };
       book_titles: {
         Row: {
           authors: string[];
@@ -1931,6 +2090,7 @@ export type Database = {
           id?: string;
           is_founder: boolean;
           is_private: boolean;
+          is_ai: boolean;
           onboarding_completed: boolean;
           onboarding_genres: string[];
           onboarding_intent: string | null;
@@ -1965,6 +2125,7 @@ export type Database = {
           id: string;
           is_founder?: boolean;
           is_private?: boolean;
+          is_ai?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
           onboarding_intent?: string | null;
@@ -1999,6 +2160,7 @@ export type Database = {
           id?: string;
           is_founder?: boolean;
           is_private?: boolean;
+          is_ai?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
           onboarding_intent?: string | null;

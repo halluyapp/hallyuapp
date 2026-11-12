@@ -139,6 +139,11 @@ verify_jwt = false
 [functions.hallyu-ai-operator]
 verify_jwt = true
 
+# Public only at the transport layer. Full GitHub OIDC signature, audience, repository, exact
+# workflow and refs/heads/main checks are mandatory before the internal service-role dispatch.
+[functions.hallyu-ai-scheduler]
+verify_jwt = false
+
 # Applied by `supabase db reset` after the migrations run. Reference data only: worlds and the
 # catalog providers. No member content is ever seeded.
 [db.seed]

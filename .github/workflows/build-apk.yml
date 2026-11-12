@@ -27,6 +27,11 @@ on:
         description: User-facing What's New notes (one bullet per line, optional)
         required: false
         default: ''
+      publish:
+        description: Publish the APK to production (default is build/artifact verification only)
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main, master, 'arena/**']
     paths:
@@ -158,6 +163,7 @@ jobs:
           echo "Universal APK v$VERSION_NAME ($VERSION_CODE) — sha256 $SHA256, $SIZE bytes"
 
       - name: Publish to the backend (signed upload URL + registration through the gateway)
+        if: github.event_name == 'push' || inputs.publish
         env:
           VERSION_CODE: ${{ steps.meta.outputs.version_code }}
           VERSION_NAME: ${{ steps.meta.outputs.version_name }}
@@ -175,6 +181,7 @@ jobs:
             --commit "${{ github.sha }}"
 
       - name: Remove obsolete APKs through the Storage API
+        if: github.event_name == 'push' || inputs.publish
         env:
           EXPECTED_SHA256: ${{ steps.meta.outputs.sha256 }}
           GITHUB_ACTIONS_OIDC_AUDIENCE: hallyu-release-maintenance
@@ -187,6 +194,7 @@ jobs:
             --data '{"expected_apk":"hallyu-universal-latest.apk"}'
 
       - name: Verify the public download is the newly published APK
+        if: github.event_name == 'push' || inputs.publish
         env:
           EXPECTED_SHA256: ${{ steps.meta.outputs.sha256 }}
           EXPECTED_SIZE: ${{ steps.meta.outputs.size }}
