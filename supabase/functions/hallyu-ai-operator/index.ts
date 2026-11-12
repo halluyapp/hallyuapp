@@ -156,8 +156,10 @@ const TOOLS: Tool[] = [
       const table = args.table === 'comments' ? 'comments' : 'posts';
       const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
       const filters = table === 'posts'
-        ? `select=${encodeURIComponent(`${PUBLIC_POST_COLUMNS},author:profiles!inner(account_status)`)}&state=eq.active&visibility=eq.public&author.account_status=eq.active`
-        : `select=${encodeURIComponent(`${PUBLIC_COMMENT_COLUMNS},author:profiles!inner(account_status),post:posts!inner(state,visibility)`)}&state=eq.active&author.account_status=eq.active&post.state=eq.active&post.visibility=eq.public`;
+        // The foreign key is named explicitly: `comments` has two links to profiles (author_id and
+        // reply_to_user_id), so an unqualified embed is ambiguous and PostgREST answers 300.
+        ? `select=${encodeURIComponent(`${PUBLIC_POST_COLUMNS},author:profiles!posts_author_id_fkey!inner(account_status)`)}&state=eq.active&visibility=eq.public&author.account_status=eq.active`
+        : `select=${encodeURIComponent(`${PUBLIC_COMMENT_COLUMNS},author:profiles!comments_author_id_fkey!inner(account_status),post:posts!inner(state,visibility)`)}&state=eq.active&author.account_status=eq.active&post.state=eq.active&post.visibility=eq.public`;
       const res = await db(`${table}?${filters}&order=created_at.desc&limit=${limit}`);
       if (!res.ok) throw new Error(`could not read public ${table} (HTTP ${res.status})`);
       const rows = (await res.json()) as Record<string, unknown>[];
