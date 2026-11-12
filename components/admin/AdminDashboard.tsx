@@ -1,4 +1,3 @@
-successfully downloaded text file (SHA: 3aa200b86f12ee6ffc2d9eb7183adf1ade324991)
 import { hasAdminAccess, type AppRole } from '../../lib/roles';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';

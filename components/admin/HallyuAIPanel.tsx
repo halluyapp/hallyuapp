@@ -49,6 +49,7 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 function invoke<T>(body: Record<string, unknown>): Promise<T> {
+  if (!supabase) return Promise.reject(new Error('This build has no backend connection.'));
   return supabase.functions.invoke<T>('hallyu-ai-operator', { body }).then(({ data, error }) => {
     if (error) throw new Error(error.message);
     return data as T;
@@ -70,10 +71,12 @@ export function HallyuAIPanel() {
     setLoading(true);
     setError(null);
     try {
+      if (!supabase) throw new Error('This build has no backend connection.');
+      const client = supabase;
       const [pingState, taskRows, approvalRows] = await Promise.all([
         invoke<Ping>({ action: 'ping' }),
-        supabase.rpc('hallyu_ai_admin_tasks', { p_limit: 30 }),
-        supabase.rpc('hallyu_ai_admin_approvals'),
+        client.rpc('hallyu_ai_admin_tasks', { p_limit: 30 }),
+        client.rpc('hallyu_ai_admin_approvals'),
       ]);
       setPing(pingState);
       setTasks((taskRows.data as AiTask[]) ?? []);
@@ -93,7 +96,7 @@ export function HallyuAIPanel() {
     const prompt = question.trim();
     if (!prompt || busy) return;
     setBusy(true);
-    haptic('light');
+    haptic.light();
     try {
       const answer = await invoke<{ answer?: string; status?: string; detail?: string; error?: string }>({
         action: 'chat',
@@ -107,7 +110,10 @@ export function HallyuAIPanel() {
       setQuestion('');
       await loadAll();
     } catch (e) {
-      toast.show(e instanceof Error ? e.message : 'Hallyu AI could not answer right now.', 'danger');
+      toast.show({
+        message: e instanceof Error ? e.message : 'Hallyu AI could not answer right now.',
+        tone: 'danger',
+      });
       await loadAll();
     } finally {
       setBusy(false);
@@ -116,7 +122,7 @@ export function HallyuAIPanel() {
 
   const decide = async (approvalId: string, approve: boolean) => {
     setBusy(true);
-    haptic('medium');
+    haptic.medium();
     try {
       await invoke({ action: 'approval.decide', approval_id: approvalId, approve });
       toast.show({ message: approve ? 'Approved — the AI resumes its plan.' : 'Rejected — the AI was told no.', tone: 'success' });

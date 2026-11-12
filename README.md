@@ -9,15 +9,13 @@
 | Platform / Surface | Live URL | Details |
 |---|---|---|
 | **Web App & Premiere Landing Page** | **[https://halluyapp.github.io/hallyuapp/](https://halluyapp.github.io/hallyuapp/)** | Live web app, interactive screen previews, smart deep links & iOS Home-Screen PWA installer |
-| **Android Phone APK — Slim (`arm64-v8a`, Recommended)** | **[Direct Download (`hallyu-arm64.apk` · ~32.7 MB)](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/hallyu-arm64.apk)** | Hosted on public Supabase Global CDN (`app-releases`), signed with Hallyu's permanent 4096-bit RSA release certificate |
-| **Android Legacy 32-bit APK (`armeabi-v7a`)** | **[Direct Download (`hallyu-armeabi-v7a.apk` · ~27.8 MB)](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/hallyu-armeabi-v7a.apk)** | Signed ARMv7 split for 32-bit Android phones |
-| **Android Desktop / Emulator APK (`x86_64`)** | **[Direct Download (`hallyu-x86_64.apk` · ~34.0 MB)](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/hallyu-x86_64.apk)** | Signed x86_64 split for Chromebooks, Google Play Games PC & Android emulators |
+| **Android APK — Universal (every ABI)** | **[Direct Download (`hallyu-universal-latest.apk` · ~38.1 MB)](https://ltyymanoidagwsapgiql.supabase.co/storage/v1/object/public/app-releases/hallyu-universal-latest.apk)** | ONE signed package carrying `arm64-v8a` + `armeabi-v7a` + `x86_64` + `x86`, hosted on public Supabase Storage `app-releases` and signed with Hallyu's permanent 4096-bit RSA release certificate |
 | **Android Universal Release Archive** | **[Latest GitHub Releases (`hallyu.apk`)](https://github.com/halluyapp/hallyuapp/releases/latest)** | Full multi-architecture release archive |
-| **Self-Updater Release Manifest** | **[latest/manifest.json](https://kzxlbscfkixnswurpkzb.supabase.co/storage/v1/object/public/app-releases/latest/manifest.json)** | Per-ABI URLs, SHA-256 checksums, `versionCode`, release notes & sizes consumed by the in-app updater |
+| **In-App Update Release Channel** | **`public.get_latest_app_release()`** | The single source of truth the updater reads: `version_code`, `version_name`, the APK URL above, `sha256`, `file_size_bytes` and release notes. Per-ABI `latest/*.apk` and `latest/manifest.json` are **no longer published** — the universal-only pipeline and `release-maintenance` keep exactly one object. |
 | **iPhone / iPad (iOS 16.4+)** | Open **[https://halluyapp.github.io/hallyuapp/](https://halluyapp.github.io/hallyuapp/)** in **Safari** → tap **Share** → **Add to Home Screen** | Full-screen standalone black status-bar launch + native Apple Web Push notifications (`VAPID`) |
 | **Official Support & Inquiries** | **`fixhallyu@gmail.com`** | In-app bug reports & show requests route directly to the `@ceohallyu` Admin Studio |
 
-> **Deployment Architecture:** `.github/workflows/deploy-web.yml` compiles the production web & PWA bundle (`EXPO_PUBLIC_BASE_PATH="/hallyuapp"`) to **`https://halluyapp.github.io/hallyuapp/`** (plus builds clean root bundles for custom domains), while `.github/workflows/build-apk.yml` compiles, verifies, emulator-boots, and publishes signed CPU split APKs (`arm64-v8a`, `armeabi-v7a`, `x86_64`) + `latest/manifest.json` directly to public Supabase Storage `app-releases`.
+> **Deployment Architecture:** `.github/workflows/deploy-web.yml` compiles the production web & PWA bundle (`EXPO_PUBLIC_BASE_PATH="/hallyuapp"`) to **`https://halluyapp.github.io/hallyuapp/`** (plus builds clean root bundles for custom domains), while `.github/workflows/build-apk.yml` compiles, verifies, emulator-boots, and publishes ONE signed universal APK (`hallyu-universal-latest.apk`) plus its `public.app_releases` row directly to public Supabase Storage `app-releases`.
 
 ---
 
@@ -52,7 +50,7 @@
    - **Languages (`lib/i18n.ts`):** Live UI localization across **English**, **한국어**, **中文**, **日本語**, and **Español**.
    - **Data Saver:** Adaptive TMDB poster/backdrop resolution (`w342` vs `w780`/`original`) and media preload throttling.
    - **Account & Privacy:** Change Handle (`change_my_handle`), Change Password, Export Account Data JSON, Blocked/Muted management, and Account Deletion.
-   - **In-App Self-Updater (`lib/appUpdater.ts` · `app/settings/updates.tsx`):** Checks `public.get_latest_app_release()`, downloads the slim `arm64-v8a` APK with a live progress bar, verifies its **SHA-256** digest before installation, and hands off seamlessly to Android's package installer for in-place upgrades (`SHA-256` signing cert: `64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA`).
+   - **In-App Self-Updater (`lib/appUpdater.ts` · `app/settings/updates.tsx`):** Checks `public.get_latest_app_release()`, downloads the signed universal APK with a live progress bar, verifies its **SHA-256** digest before installation, and hands off seamlessly to Android's package installer for in-place upgrades (`SHA-256` signing cert: `64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA`).
    - **Native Bug & Show Request Triage (`app/settings/bug-report.tsx`):** One-tap bug reporting (with automatic `ErrorBoundary` crash prefill) synced straight to `public.support_tickets`.
 
 ---
@@ -61,17 +59,18 @@
 
 Hallyu runs against a live connected **Supabase (`PostgreSQL 16 + Auth + Storage + Realtime + Edge Functions + pg_cron + pg_net`)** backend with **zero secrets stored in Git**:
 
-- **`supabase/migrations/` (`47` ordered SQL migrations):**
-  - `51` RLS-protected tables (`row level security` enforced across every public table and partition).
-  - `239` SQL functions/RPCs with pinned `search_path = public, pg_temp` on every `SECURITY DEFINER` routine.
+- **`supabase/migrations/` (`70` ordered SQL migrations):**
+  - `65` RLS-protected tables (`row level security` enforced across every public table and partition, each with an explicit policy).
+  - `373` SQL functions/RPCs with pinned `search_path = public, pg_temp` on every `SECURITY DEFINER` routine.
   - Partitioned analytics events, full-text search indexes, rate limiters, content moderation queues, `public.hallyu_events`, `public.support_tickets`, `public.app_releases`, and `service_role`-only `public.ci_build_vault`.
 - **Supabase Storage Buckets:**
   - `media` (private): Signed upload & playback URLs for member avatars, post images, and short-form creator videos.
-  - `app-releases` (public CDN): Hosts `latest/hallyu-arm64.apk` and `latest/manifest.json` so self-updates and direct APK downloads work even when the GitHub repository is set to private.
-- **`supabase/functions/` (`6` Deno Edge Functions):**
-  - `catalog-sync`: Automated TMDB ingestion, non-scripted noise filtering, episode refresh, `end_year` reconciliation, and Bayesian score recalculation.
+     - `app-releases` (public CDN): Hosts the single `hallyu-universal-latest.apk` object so self-updates and direct APK downloads work even when the GitHub repository is set to private; `public.app_releases` carries its version, SHA-256 and size.
+- **`supabase/functions/` (`10` Deno Edge Functions):**
+  - `catalog-sync` / `catalog-jobs`: Automated TMDB ingestion, non-scripted noise filtering, episode refresh, `end_year` reconciliation, and Bayesian score recalculation.
   - `push-dispatch`: Dual-engine Firebase FCM HTTP v1 + Web Push (`VAPID`) notification dispatcher.
-  - `rork-auth`, `account-purge`, `moderation-digest`, plus shared world/TMDB classifiers (`_shared/`).
+  - `hallyu-ai-operator`: The autonomous AI executive (Gemini-first model adapter, fixed tool allowlist, full audit trail).
+  - `auth-broker` (web sign-in relay), `release-maintenance`, `media-cleanup`, `moderation-digest`, `purge-deleted-accounts`, `moviebox`, plus shared world/TMDB classifiers (`_shared/`).
 - **`supabase/types/database.ts`:** Strictly typed client-to-DB contract verified automatically against every SQL migration.
 
 ---

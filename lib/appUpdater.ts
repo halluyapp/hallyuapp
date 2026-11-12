@@ -870,8 +870,11 @@ export async function openUnknownSourcesSettings(): Promise<void> {
 }
 
 /**
- * Checks live Android runtime environment + `public.get_latest_app_release()` + live CDN
- * `latest/manifest.json` (cache-busted) and verifies actual running build honestly.
+ * Checks live Android runtime environment + `public.get_latest_app_release()` (the authoritative
+ * release channel CI registers on every publish) and verifies the running build honestly. The CDN
+ * `latest/manifest.json` is only consulted when the RPC answers nothing: the universal-only
+ * pipeline publishes ONE object at the bucket root and `release-maintenance` deletes the rest, so
+ * that manifest legitimately does not exist any more.
  */
 export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
   const deviceEnv = await resolveAndroidDeviceEnvironment();
@@ -886,11 +889,8 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
   let rpcLatest: AppReleaseInfo | null = null;
   let cdnLatest: AppReleaseInfo | null = null;
 
-  const [rpcOutcome, manifestOutcome] = await Promise.allSettled([
+  const [rpcOutcome] = await Promise.allSettled([
     supabase ? supabase.rpc('get_latest_app_release') : Promise.resolve({ data: null, error: null }),
-    fetch(`${SUPABASE_PUBLIC_STORAGE_BASE}/latest/manifest.json?t=${Date.now()}`, {
-      headers: { 'Cache-Control': 'no-cache' },
-    }).then((r) => (r.ok ? r.json() : null)),
   ]);
 
   if (
@@ -930,8 +930,13 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
     }
   }
 
-  if (manifestOutcome.status === 'fulfilled' && manifestOutcome.value) {
-    const m = manifestOutcome.value as Record<string, unknown>;
+  if (!rpcLatest) {
+    const manifest = await fetch(`${SUPABASE_PUBLIC_STORAGE_BASE}/latest/manifest.json?t=${Date.now()}`, {
+      headers: { 'Cache-Control': 'no-cache' },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    const m = (manifest ?? {}) as Record<string, unknown>;
     const mCode = Number(m.versionCode ?? 0);
     if (mCode > 0) {
       const perAbi = parseManifestAbis(m.perAbi);

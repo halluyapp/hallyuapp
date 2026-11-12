@@ -8,10 +8,10 @@
 // AUTONOMOUS BY DEFAULT: the AI does not wait for staff permission. Broadcasts go out immediately.
 // Staff approval can be re-enabled per backend with one config row (see approvalMode()).
 //
-// Model: Rork AI Cloud (the Rork Toolkit gateway → the AI gateway). A Rork-managed backend carries
-// the toolkit envs natively, so no secrets are required from the owner. On a self-owned Supabase
-// project, copy ONE secret: `supabase secrets set RORK_TOOLKIT_SECRET_KEY=…`. Until it is present,
-// every action answers 503 naming exactly that — the operator does not pretend to run without a model.
+// Model: Gemini (the server-side AI capability this app declares in `metadata.json`) when its key is
+// present, otherwise the Rork Toolkit gateway (`RORK_TOOLKIT_SECRET_KEY`). Until ONE of those two
+// credentials exists, every action answers 503 naming exactly what is missing — the operator never
+// pretends to run without a model.
 
 import { corsHeaders } from '../_shared/cors.ts';
 
@@ -20,6 +20,28 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const TOOLKIT_URL = (Deno.env.get('TOOLKIT_URL') ?? Deno.env.get('EXPO_PUBLIC_TOOLKIT_URL') ?? 'https://toolkit.rork.com').replace(/\/$/, '');
 const TOOLKIT_KEY = Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('RORK_AI_API_KEY') ?? '';
 const AI_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'anthropic/claude-sonnet-5';
+// Server-side Gemini capability (metadata.json MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API). Accept the
+// names the platform and the Google SDKs use, so provisioning one of them is enough.
+const GEMINI_KEY =
+  Deno.env.get('GEMINI_API_KEY') ??
+  Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY') ??
+  Deno.env.get('GOOGLE_API_KEY') ??
+  '';
+const GEMINI_MODEL = Deno.env.get('GEMINI_MODEL') ?? 'gemini-2.5-flash';
+const GEMINI_API_BASE = (Deno.env.get('GEMINI_API_BASE') ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
+
+type ModelProvider = 'gemini' | 'rork' | 'none';
+
+/** Which credential the operator will actually use — the same answer every call must report. */
+function modelProvider(): ModelProvider {
+  if (GEMINI_KEY) return 'gemini';
+  if (TOOLKIT_KEY) return 'rork';
+  return 'none';
+}
+
+function activeModel(): string {
+  return modelProvider() === 'gemini' ? GEMINI_MODEL : AI_MODEL;
+}
 
 const MAX_STEPS = 5;
 
@@ -189,17 +211,52 @@ async function approvalMode(): Promise<'on' | 'off'> {
   }
 }
 
-// ── model adapter (Rork AI Cloud) ──────────────────────────────────────────────────────────────
+// ── model adapters ────────────────────────────────────────────────────────────────────────────
 
-async function callModel(messages: { role: string; content: string }[]): Promise<string> {
-  if (!TOOLKIT_KEY) {
+async function callGemini(messages: { role: string; content: string }[]): Promise<string> {
+  const system = messages
+    .filter((m) => m.role === 'system')
+    .map((m) => m.content)
+    .join('\n\n');
+  const contents = messages
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+
+  const res = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
+    body: JSON.stringify({
+      ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+      contents,
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
+    }),
+  });
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 300);
     throw Object.assign(
-      new Error(
-        'Rork AI Cloud is not reachable from this backend: the RORK_TOOLKIT_SECRET_KEY function secret is missing. On a Rork-managed backend it is provisioned automatically; otherwise set it once with `supabase secrets set RORK_TOOLKIT_SECRET_KEY=…`.',
-      ),
-      { statusCode: 503 },
+      new Error(`Gemini call failed (HTTP ${res.status})${detail ? `: ${detail}` : '.'}`),
+      { statusCode: 502 },
     );
   }
+  const data = (await res.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+    promptFeedback?: { blockReason?: string };
+  };
+  const content = (data.candidates?.[0]?.content?.parts ?? [])
+    .map((part) => part.text ?? '')
+    .join('')
+    .trim();
+  if (!content) {
+    const blocked = data.promptFeedback?.blockReason;
+    throw Object.assign(
+      new Error(blocked ? `Gemini blocked this request (${blocked}).` : 'model returned an empty answer.'),
+      { statusCode: 502 },
+    );
+  }
+  return content;
+}
+
+async function callRork(messages: { role: string; content: string }[]): Promise<string> {
   const res = await fetch(`${TOOLKIT_URL}/v2/vercel/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOOLKIT_KEY}` },
@@ -213,6 +270,18 @@ async function callModel(messages: { role: string; content: string }[]): Promise
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw Object.assign(new Error('model returned an empty answer.'), { statusCode: 502 });
   return content;
+}
+
+async function callModel(messages: { role: string; content: string }[]): Promise<string> {
+  const provider = modelProvider();
+  if (provider === 'gemini') return callGemini(messages);
+  if (provider === 'rork') return callRork(messages);
+  throw Object.assign(
+    new Error(
+      'No AI model credential on this backend. Set ONE function secret: GEMINI_API_KEY (server-side Gemini capability declared in metadata.json) or RORK_TOOLKIT_SECRET_KEY (Rork AI Cloud), then redeploy hallyu-ai-operator.',
+    ),
+    { statusCode: 503 },
+  );
 }
 
 /** The operator protocol: either {"tool": "...", "args": {...}} or {"final": "..."} */
@@ -298,7 +367,7 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
   let answer: string | null = null;
   let seq = 0;
 
-  await setTaskStatus(taskId, 'running', { model: AI_MODEL });
+  await setTaskStatus(taskId, 'running', { model: activeModel() });
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -384,8 +453,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     switch (body.action) {
       case 'ping': {
         return json({
-          model_configured: Boolean(TOOLKIT_KEY),
-          model: AI_MODEL,
+          model_configured: modelProvider() !== 'none',
+          provider: modelProvider(),
+          model: activeModel(),
           staff,
           approval_mode: await approvalMode(),
           tools: registryFor(staff).map((tool) => tool.name),

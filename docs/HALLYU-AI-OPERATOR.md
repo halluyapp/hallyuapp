@@ -42,28 +42,38 @@ acts on real data whenever it decides to, day or night.
 - With Rork AI Cloud unreachable, every action answers 503 naming the exact missing secret —
   the panel prints exactly that instead of pretending the AI works.
 
-## The model: Rork AI Cloud, no owner secrets needed
+## The model: Gemini first, Rork AI Cloud as the fallback
 
-The model adapter calls the **Rork Toolkit gateway** (`TOOLKIT_URL`, default
-`https://toolkit.rork.com`, path `/v2/vercel/v1/chat/completions`) with the **Rork toolkit secret
-key** — the same credential Rork Cloud provisions on its own backends. Default model:
-`anthropic/claude-sonnet-5` (override with the `RORK_AI_MODEL` function secret).
-
-On a Rork-managed backend the toolkit envs are provisioned automatically — **nothing to set**.
-On a self-owned Supabase project, copy one secret:
+`metadata.json` declares `MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API`, so the operator runs on that
+Gemini capability:
 
 ```bash
-supabase secrets set RORK_TOOLKIT_SECRET_KEY=<Rork toolkit secret key>
+supabase secrets set GEMINI_API_KEY=<server-side Gemini key>   # then redeploy the function
 ```
+
+- Provider `gemini` — Google Generative Language `generateContent` (`gemini-2.5-flash` by default,
+  override with `GEMINI_MODEL`). Key names accepted: `GEMINI_API_KEY`,
+  `GOOGLE_GENERATIVE_AI_API_KEY`, `GOOGLE_API_KEY`.
+- Provider `rork` — the **Rork Toolkit gateway** (`TOOLKIT_URL`, default `https://toolkit.rork.com`,
+  path `/v2/vercel/v1/chat/completions`) with `RORK_TOOLKIT_SECRET_KEY`; default model
+  `anthropic/claude-sonnet-5` (override with `RORK_AI_MODEL`). Used only when no Gemini key exists.
+- Provider `none` — every action answers 503 naming both secrets. The panel prints that verbatim.
+
+`{"action":"ping"}` reports which provider is live (`provider`, `model`, `model_configured`), so a
+misconfigured deployment is visible before anyone asks it a question.
 
 ## To activate (one-time, after the migration applies)
 
 ```bash
 supabase db push                                          # applies migration 67
-supabase functions deploy hallyu-ai-operator
+supabase secrets set GEMINI_API_KEY=<server-side Gemini key>   # see the section above
+supabase functions deploy hallyu-ai-operator              # the model adapter lives in the function
 supabase functions deploy auth-broker                    # also fixes web sign-in (see docs/WEB-AUTH-CONNECTION-FIX.md)
-# no model secrets needed on a Rork-managed backend — see the section above
 ```
+
+Deploying the web bundle does **not** update the edge function, and redeploying the function does
+**not** update the web bundle: the Admin Command Centre shows the AI panel only after the web/APK
+build that contains it ships (`deploy-web.yml` / `build-apk.yml`).
 
 The adapter speaks the OpenAI chat-completions protocol against the Rork AI Cloud gateway, so the
 model can be swapped with the `RORK_AI_MODEL` secret — no code changes.

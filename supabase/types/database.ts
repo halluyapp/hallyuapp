@@ -306,6 +306,192 @@ export type Database = {
         };
         Relationships: [];
       };
+      hallyu_ai_approval: {
+        Row: {
+          args: Json;
+          decided_at: string | null;
+          decided_by: string | null;
+          id: string;
+          reason: string;
+          requested_at: string;
+          status: string;
+          task_id: string;
+          tool: string;
+        };
+        Insert: {
+          args?: Json;
+          decided_at?: string | null;
+          decided_by?: string | null;
+          id?: string;
+          reason: string;
+          requested_at?: string;
+          status?: string;
+          task_id: string;
+          tool: string;
+        };
+        Update: {
+          args?: Json;
+          decided_at?: string | null;
+          decided_by?: string | null;
+          id?: string;
+          reason?: string;
+          requested_at?: string;
+          status?: string;
+          task_id?: string;
+          tool?: string;
+        };
+        Relationships: [];
+      };
+      hallyu_ai_memory: {
+        Row: {
+          created_at: string;
+          key: string;
+          kind: string;
+          task_id: string | null;
+          value: Json;
+        };
+        Insert: {
+          created_at?: string;
+          key: string;
+          kind: string;
+          task_id?: string | null;
+          value: Json;
+        };
+        Update: {
+          created_at?: string;
+          key?: string;
+          kind?: string;
+          task_id?: string | null;
+          value?: Json;
+        };
+        Relationships: [];
+      };
+      hallyu_ai_schedule: {
+        Row: {
+          config: Json;
+          created_at: string;
+          enabled: boolean;
+          id: string;
+          interval_minutes: number;
+          kind: string;
+          last_run_at: string | null;
+          last_status: string | null;
+          name: string;
+        };
+        Insert: {
+          config?: Json;
+          created_at?: string;
+          enabled?: boolean;
+          id?: string;
+          interval_minutes?: number;
+          kind: string;
+          last_run_at?: string | null;
+          last_status?: string | null;
+          name: string;
+        };
+        Update: {
+          config?: Json;
+          created_at?: string;
+          enabled?: boolean;
+          id?: string;
+          interval_minutes?: number;
+          kind?: string;
+          last_run_at?: string | null;
+          last_status?: string | null;
+          name?: string;
+        };
+        Relationships: [];
+      };
+      hallyu_ai_task: {
+        Row: {
+          created_at: string;
+          error: string | null;
+          finished_at: string | null;
+          id: string;
+          kind: string;
+          model: string | null;
+          plan: Json;
+          prompt: string;
+          requester_profile_id: string | null;
+          requester_role: string | null;
+          result: Json | null;
+          status: string;
+          title: string;
+          updated_at: string;
+        };
+        Insert: {
+          created_at?: string;
+          error?: string | null;
+          finished_at?: string | null;
+          id?: string;
+          kind?: string;
+          model?: string | null;
+          plan?: Json;
+          prompt: string;
+          requester_profile_id?: string | null;
+          requester_role?: string | null;
+          result?: Json | null;
+          status?: string;
+          title?: string;
+          updated_at?: string;
+        };
+        Update: {
+          created_at?: string;
+          error?: string | null;
+          finished_at?: string | null;
+          id?: string;
+          kind?: string;
+          model?: string | null;
+          plan?: Json;
+          prompt?: string;
+          requester_profile_id?: string | null;
+          requester_role?: string | null;
+          result?: Json | null;
+          status?: string;
+          title?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      hallyu_ai_tool_call: {
+        Row: {
+          args: Json;
+          error: string | null;
+          finished_at: string | null;
+          id: string;
+          result: Json | null;
+          seq: number;
+          started_at: string;
+          status: string;
+          task_id: string;
+          tool: string;
+        };
+        Insert: {
+          args?: Json;
+          error?: string | null;
+          finished_at?: string | null;
+          id?: string;
+          result?: Json | null;
+          seq: number;
+          started_at?: string;
+          status?: string;
+          task_id: string;
+          tool: string;
+        };
+        Update: {
+          args?: Json;
+          error?: string | null;
+          finished_at?: string | null;
+          id?: string;
+          result?: Json | null;
+          seq?: number;
+          started_at?: string;
+          status?: string;
+          task_id?: string;
+          tool?: string;
+        };
+        Relationships: [];
+      };
       hallyu_event_rsvps: {
         Row: {
           created_at: string;
