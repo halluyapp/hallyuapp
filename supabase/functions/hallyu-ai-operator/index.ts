@@ -13,7 +13,14 @@
 // credentials exists, every action answers 503 naming exactly what is missing — the operator never
 // pretends to run without a model.
 
-import { corsHeaders } from '../_shared/cors.ts';
+// Inlined rather than imported from `_shared/cors.ts` on purpose: this is the one function the app
+// invokes straight from the client, and keeping it a single self-contained artifact means it can be
+// (re)deployed from its own source URL without the sibling module.
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';

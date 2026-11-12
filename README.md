@@ -50,6 +50,7 @@
    - **Languages (`lib/i18n.ts`):** Live UI localization across **English**, **한국어**, **中文**, **日本語**, and **Español**.
    - **Data Saver:** Adaptive TMDB poster/backdrop resolution (`w342` vs `w780`/`original`) and media preload throttling.
    - **Account & Privacy:** Change Handle (`change_my_handle`), Change Password, Export Account Data JSON, Blocked/Muted management, and Account Deletion.
+   - **Update announcements:** every registered release fires `app_releases_notify_publish`, which writes one inbox row per active member (`public.notify_all_members`, honouring the system-notification preference) and lets the existing delivery trigger push it — so the community hears about a new build the moment it ships, with the deep link `/settings/updates`.
    - **In-App Self-Updater (`lib/appUpdater.ts` · `app/settings/updates.tsx`):** Checks `public.get_latest_app_release()`, downloads the signed universal APK with a live progress bar, verifies its **SHA-256** digest before installation, and hands off seamlessly to Android's package installer for in-place upgrades (`SHA-256` signing cert: `64:20:BE:5B:CF:B5:EA:B5:D7:3A:74:BA:06:B7:94:36:FC:68:B2:69:7E:3E:63:36:16:4B:74:51:CB:15:31:DA`).
    - **Native Bug & Show Request Triage (`app/settings/bug-report.tsx`):** One-tap bug reporting (with automatic `ErrorBoundary` crash prefill) synced straight to `public.support_tickets`.
 
@@ -59,9 +60,9 @@
 
 Hallyu runs against a live connected **Supabase (`PostgreSQL 16 + Auth + Storage + Realtime + Edge Functions + pg_cron + pg_net`)** backend with **zero secrets stored in Git**:
 
-- **`supabase/migrations/` (`70` ordered SQL migrations):**
+- **`supabase/migrations/` (`71` ordered SQL migrations):**
   - `65` RLS-protected tables (`row level security` enforced across every public table and partition, each with an explicit policy).
-  - `373` SQL functions/RPCs with pinned `search_path = public, pg_temp` on every `SECURITY DEFINER` routine.
+  - `376` SQL functions/RPCs with pinned `search_path = public, pg_temp` on every `SECURITY DEFINER` routine.
   - Partitioned analytics events, full-text search indexes, rate limiters, content moderation queues, `public.hallyu_events`, `public.support_tickets`, `public.app_releases`, and `service_role`-only `public.ci_build_vault`.
 - **Supabase Storage Buckets:**
   - `media` (private): Signed upload & playback URLs for member avatars, post images, and short-form creator videos.
