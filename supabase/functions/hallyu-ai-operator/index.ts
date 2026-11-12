@@ -139,10 +139,10 @@ const PUBLIC_COMMENT_COLUMNS = 'id,post_id,created_at,body,loved_count,cried_cou
 const TOOLS: Tool[] = [
   {
     name: 'platform_overview',
-    description: 'Live platform health evidence: bootstrap KPIs, config and counters for the real backend.',
+    description: 'Live platform health evidence: verified member, post, comment and operational counters.',
     args: '{}',
     staff: false,
-    run: async () => rpc('get_bootstrap', {}),
+    run: async () => rpc('hallyu_ai_platform_overview', {}),
   },
   {
     name: 'community_pulse',
@@ -230,6 +230,52 @@ const TOOLS: Tool[] = [
         p_task: ctx.taskId,
         p_args: args,
       }),
+  },
+  {
+    name: 'publish_post',
+    description: 'Publish a public post or update to the Hallyu feed. Gated behind staff approval.',
+    args: '{ "title": "string (optional)", "body": "string", "hashtags": "string[] (optional)" }',
+    staff: true,
+    approval: true,
+    run: async (args, ctx) =>
+      rpc('hallyu_ai_publish', {
+        p_task: ctx.taskId,
+        p_kind: 'publish_post',
+        p_args: args,
+      }),
+  },
+  {
+    name: 'reply_comment',
+    description: 'Post a comment reply to an existing public post. Gated behind staff approval.',
+    args: '{ "post_id": "uuid", "body": "string" }',
+    staff: true,
+    approval: true,
+    run: async (args, ctx) =>
+      rpc('hallyu_ai_publish', {
+        p_task: ctx.taskId,
+        p_kind: 'reply_comment',
+        p_args: args,
+      }),
+  },
+  {
+    name: 'create_poll',
+    description: 'Create a community poll attached to a public post. Gated behind staff approval.',
+    args: '{ "question": "string", "options": "string[]", "body": "string (optional)" }',
+    staff: true,
+    approval: true,
+    run: async (args, ctx) =>
+      rpc('hallyu_ai_publish', {
+        p_task: ctx.taskId,
+        p_kind: 'create_poll',
+        p_args: args,
+      }),
+  },
+  {
+    name: 'list_schedules',
+    description: 'Inspect automated background intelligence schedules.',
+    args: '{}',
+    staff: true,
+    run: async () => rpc('hallyu_ai_admin_schedules', {}),
   },
 ];
 

@@ -148,3 +148,7 @@ verify_jwt = false
 [db.seed]
 enabled = true
 sql_paths = ["./seed.sql"]
+
+# Automated intelligence and scheduled task executor.
+[functions.hallyu-ai-scheduler]
+verify_jwt = true

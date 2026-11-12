@@ -366,6 +366,42 @@ export type Database = {
         };
         Relationships: [];
       };
+      hallyu_ai_publication: {
+        Row: {
+          approved_by: string | null;
+          content: Json;
+          created_at: string;
+          id: string;
+          kind: string;
+          parent_id: string | null;
+          published_by: string;
+          target_id: string | null;
+          task_id: string | null;
+        };
+        Insert: {
+          approved_by?: string | null;
+          content?: Json;
+          created_at?: string;
+          id?: string;
+          kind: string;
+          parent_id?: string | null;
+          published_by?: string;
+          target_id?: string | null;
+          task_id?: string | null;
+        };
+        Update: {
+          approved_by?: string | null;
+          content?: Json;
+          created_at?: string;
+          id?: string;
+          kind?: string;
+          parent_id?: string | null;
+          published_by?: string;
+          target_id?: string | null;
+          task_id?: string | null;
+        };
+        Relationships: [];
+      };
       hallyu_ai_schedule: {
         Row: {
           config: Json;
