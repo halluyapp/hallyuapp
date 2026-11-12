@@ -1,3 +1,4 @@
+successfully downloaded text file (SHA: 3aa200b86f12ee6ffc2d9eb7183adf1ade324991)
 import { hasAdminAccess, type AppRole } from '../../lib/roles';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -61,8 +62,10 @@ import { TextField } from '../ui/TextField';
 import { useToast } from '../ui/Toast';
 import { TopBar } from '../ui/TopBar';
 import { TrackerOverviewPanel } from './TrackerOverviewPanel';
+import { HallyuAIPanel } from './HallyuAIPanel';
 
 export type AdminSection =
+  | 'ai'
   | 'overview'
   | 'launch'
   | 'users'
@@ -80,6 +83,7 @@ export function resolveAdminSection(raw?: string, fallback: AdminSection = 'over
   if (!raw) return fallback;
   const clean = raw.toLowerCase().trim();
   if (clean === 'overview' || clean === 'dashboard' || clean === 'kpis') return 'overview';
+  if (clean === 'ai' || clean === 'hallyu-ai' || clean === 'operator') return 'ai';
   if (clean === 'launch' || clean === 'founding') return 'launch';
   if (clean === 'users' || clean === 'members') return 'users';
   if (clean === 'badges' || clean === 'awards' || clean === 'achievements') return 'badges';
@@ -301,6 +305,7 @@ export function AdminDashboard({
       {
         heading: 'COMMAND',
         items: [
+          { key: 'ai' as AdminSection, label: 'Hallyu AI Operator', short: 'AI', icon: 'sparkles-outline' as const },
           { key: 'overview' as AdminSection, label: 'Executive Overview', short: 'Overview', icon: 'stats-chart-outline' as const },
           { key: 'launch' as AdminSection, label: 'Launch & Founding 10', short: 'Launch', icon: 'rocket-outline' as const },
           { key: 'users' as AdminSection, label: 'User Directory', short: 'Users', icon: 'people-outline' as const },
@@ -731,6 +736,7 @@ export function AdminDashboard({
           },
           { key: 'communities' as AdminSection, label: 'Rooms' },
           { key: 'tracker' as AdminSection, label: 'Tracker' },
+          { key: 'ai' as AdminSection, label: 'AI' },
           { key: 'overview' as AdminSection, label: 'KPIs' },
           { key: 'launch' as AdminSection, label: 'Launch 10' },
           { key: 'users' as AdminSection, label: 'Users' },
@@ -770,6 +776,7 @@ export function AdminDashboard({
           },
           { key: 'communities' as AdminSection, label: 'Rooms' },
           { key: 'tracker' as AdminSection, label: 'Tracker' },
+          { key: 'ai' as AdminSection, label: 'AI' },
           { key: 'audit' as AdminSection, label: 'Audit' },
         ];
 
@@ -1859,6 +1866,9 @@ export function AdminDashboard({
 
               {section === 'tracker' ? <TrackerOverviewPanel /> : null}
 
+              {/* ── HALLYU AI OPERATOR — the AI executive's home: chat, tasks, approvals, log ── */}
+              {section === 'ai' ? <HallyuAIPanel /> : null}
+
               {/* ── 11. UNIFIED IMMUTABLE AUDIT LEDGER ────────────────────────────────── */}
               {section === 'audit' ? (
                 <>
@@ -2336,3 +2346,4 @@ const styles = StyleSheet.create({
     borderColor: colors.glassBorder,
   },
 });
+
