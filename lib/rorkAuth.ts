@@ -26,6 +26,18 @@ const PROJECT_ID = process.env.EXPO_PUBLIC_PROJECT_ID || 'za3mp0mb7b2ipipxalav8'
 const ACCESS_KEY = 'hallyu.rork.access_token';
 const REFRESH_KEY = 'hallyu.rork.refresh_token';
 
+/** This build's backend (web only): hosts the auth-broker edge function. */
+const SUPABASE_URL = (process.env.EXPO_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
+/**
+ * Rork's auth server answers CORS only for allowlisted origins (rork.com, *.rork.app). From any
+ * other web origin — GitHub Pages, localhost, a custom domain — every direct /oauth/* call is
+ * blocked before it leaves the browser, throwing the same "Failed to fetch" a dead network does.
+ * When the build knows its backend, auth traffic is therefore routed through the backend's
+ * auth-broker edge function (server-to-server, no CORS). A 404 from a not-yet-deployed broker
+ * falls back to the direct call, so native and allowlisted origins behave exactly as before.
+ */
+const AUTH_BROKER_URL = Platform.OS === 'web' && SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/auth-broker` : null;
+
 /** The Google identity the app renders: Rork JWT `sub` + profile claims. */
 export interface RorkIdentity {
   sub: string;
@@ -175,6 +187,57 @@ function identityFromStoredToken(token: string): RorkIdentity | null {
   }
 }
 
+/** A rejection Rork actually answered (its HTTP status is kept) versus a call that never left the device. */
+class AuthTransportError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const AUTH_ACTIONS = ['initiate', 'token', 'refresh'] as const;
+type AuthAction = (typeof AUTH_ACTIONS)[number];
+
+/**
+ * One Rork Auth call. On web it is attempted through the backend's auth-broker edge function
+ * first (server-to-server — a browser cannot call api.rork.com from an origin Rork has not
+ * allowlisted) and falls back to the direct call when the broker is not deployed or unreachable.
+ * Rork's own rejection statuses travel on AuthTransportError so callers keep their
+ * clear-on-400/401/403 semantics.
+ */
+async function authPost(action: AuthAction, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const payload = JSON.stringify(body);
+  const parseError = async (res: Response, fallback: string): Promise<never> => {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new AuthTransportError(err.error || fallback, res.status);
+  };
+  if (AUTH_BROKER_URL) {
+    try {
+      const res = await fetch(`${AUTH_BROKER_URL}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (res.ok) return (await res.json()) as Record<string, unknown>;
+      if (res.status !== 404 && res.status !== 405) {
+        await parseError(res, `Rork Auth rejected the request (HTTP ${res.status}).`);
+      }
+      // 404/405: this backend has not deployed the broker yet — use the direct call.
+    } catch (error) {
+      if (error instanceof AuthTransportError) throw error;
+      // The broker itself was unreachable (offline, not deployed): fall through to the direct call.
+    }
+  }
+  const res = await fetch(`${AUTH_URL}/oauth/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+  });
+  if (!res.ok) await parseError(res, `Rork Auth rejected the request (HTTP ${res.status}).`);
+  return (await res.json()) as Record<string, unknown>;
+}
+
 /**
  * Trades the stored refresh token for a fresh access token. Authentication rejections clear the
  * credential; network/5xx failures preserve it. Logout/account-switch generations cannot be overwritten.
@@ -185,23 +248,24 @@ async function requestAccessTokenRefresh(): Promise<StoredTokens | null> {
   if (!stored || !APP_KEY || generation !== custodyGeneration) return null;
   const previousIdentity = identityFromStoredToken(stored.accessToken);
   if (!previousIdentity) return null;
-  let res: Response;
+  let data: { access_token?: string; refresh_token?: string };
   try {
-    res = await fetch(`${AUTH_URL}/oauth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_key: APP_KEY, refresh_token: stored.refreshToken }),
-    });
-  } catch {
-    return null; // offline — keep the stored tokens and retry on the next launch
-  }
-  if (!res.ok) {
-    if ((res.status === 400 || res.status === 401 || res.status === 403) && generation === custodyGeneration) {
+    data = (await authPost('refresh', { app_key: APP_KEY, refresh_token: stored.refreshToken })) as {
+      access_token?: string;
+      refresh_token?: string;
+    };
+  } catch (error) {
+    // A Rork rejection (400/401/403) invalidates the stored credential; a call that never left
+    // the device (offline, CORS-refused) keeps it and retries on the next launch.
+    if (
+      error instanceof AuthTransportError &&
+      [400, 401, 403].includes(error.status) &&
+      generation === custodyGeneration
+    ) {
       await clearStoredTokens();
     }
     return null;
   }
-  const data = (await res.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string };
   const refreshedIdentity = data.access_token ? identityFromAccessToken(data.access_token) : null;
   if (!data.access_token || !refreshedIdentity || refreshedIdentity.sub !== previousIdentity.sub) return null;
   const next: StoredTokens = {
@@ -239,24 +303,14 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
   const verifier = await randomVerifier();
   const challenge = await sha256Base64Url(verifier);
 
-  let authUrl: string;
-  const init = await fetch(`${AUTH_URL}/oauth/initiate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      app_key: APP_KEY,
-      provider: 'google',
-      code_challenge: challenge,
-      target: 'rn',
-      env: Platform.OS === 'web' ? 'preview' : 'native',
-    }),
-  });
-  if (!init.ok) {
-    const body = (await init.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error || `Google sign-in could not start (HTTP ${init.status}).`);
-  }
-  const initiated = (await init.json()) as { auth_url?: string };
-  authUrl = initiated.auth_url ?? '';
+  const initiated = (await authPost('initiate', {
+    app_key: APP_KEY,
+    provider: 'google',
+    code_challenge: challenge,
+    target: 'rn',
+    env: Platform.OS === 'web' ? 'preview' : 'native',
+  })) as { auth_url?: string };
+  const authUrl = initiated.auth_url ?? '';
   if (!authUrl) throw new Error('Google sign-in did not return a consent URL.');
 
   if (Platform.OS === 'web') {
@@ -279,16 +333,10 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
 }
 
 async function exchangeCode(code: string, verifier: string): Promise<StoredTokens> {
-  const res = await fetch(`${AUTH_URL}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ app_key: APP_KEY, code, code_verifier: verifier }),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error || `Google sign-in failed (HTTP ${res.status}).`);
-  }
-  const data = (await res.json()) as { access_token?: string; refresh_token?: string };
+  const data = (await authPost('token', { app_key: APP_KEY, code, code_verifier: verifier })) as {
+    access_token?: string;
+    refresh_token?: string;
+  };
   if (!data.access_token || !data.refresh_token) {
     throw new Error('Google sign-in returned no session tokens.');
   }
@@ -344,3 +392,5 @@ async function exchangeViaPopup(authUrl: string, verifier: string): Promise<Stor
     window.addEventListener('message', onMessage);
   });
 }
+
+

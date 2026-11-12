@@ -245,10 +245,16 @@ function isQuotaRestriction(message: string): boolean {
 /** Classify any failure into exactly one of the five gate states. */
 export function classifyBackendError(error: unknown, online = true): ConnectionStatus {
   if (!backendConfigured) return 'misconfigured';
-  if (!online) return 'offline';
+  // The browser's own verdict is the only trustworthy offline signal on web: a refused or
+  // origin-blocked request throws the SAME "Failed to fetch" a dead network does, and mapping
+  // that to "offline" told a member on a working connection that their device was the problem.
+  // When the browser says it is online (or on native, where NetInfo already decided), a
+  // transport failure means the backend path could not be reached — a different, actionable state.
+  const browserOnline = typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean' ? navigator.onLine : true;
+  if (!online || !browserOnline) return 'offline';
   const message = errorMessage(error);
   if (/timeout|timed out|abort/i.test(message)) return 'unavailable';
-  if (/network|fetch|connect|socket|offline/i.test(message)) return 'offline';
+  if (/network|fetch|connect|socket|offline/i.test(message)) return 'unavailable';
   if (/schema cache|could not find the (function|table)|relation .* does not exist|invalid api key|invalid jwt|row-level|permission denied|jwt/i.test(message)) {
     return 'misconfigured';
   }
@@ -325,4 +331,6 @@ export async function exchangeRorkToken(refreshToken: string): Promise<string> {
   if (!data.access_token) throw new Error('Rork Auth returned no access token.');
   return data.access_token;
 }
+
+
 

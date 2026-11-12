@@ -155,7 +155,15 @@ async function registerBackendProfile(identity: RorkAuth.RorkIdentity, preferred
     reportError('auth.register_profile', e);
     const message = e instanceof Error ? e.message : String(e);
     if (/network|fetch|timeout|timed out|offline|failed to fetch/i.test(message)) {
-      throw new AuthError('network', 'Google sign-in succeeded, but Hallyu could not finish your account setup while offline. Retry account setup when you are back online.');
+      // "Failed to fetch" is thrown both offline and by a refused/origin-blocked request; when the
+      // browser itself says it is online, the honest message is the second one.
+      const browserOnline = typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean' ? navigator.onLine : true;
+      throw new AuthError(
+        'network',
+        browserOnline
+          ? 'Google sign-in succeeded, but Hallyu could not finish your account setup — the backend connection was refused from this browser. Retry account setup; you will not need to create another Google account.'
+          : 'Google sign-in succeeded, but Hallyu could not finish your account setup while offline. Retry account setup when you are back online.',
+      );
     }
     throw new AuthError('unknown', 'Google sign-in succeeded, but Hallyu could not finish your account setup. Retry account setup; you will not need to create another Google account.');
   }
@@ -165,7 +173,16 @@ function authFailure(e: unknown): AuthError {
   if (e instanceof AuthError) return e;
   if (e instanceof Error && e.message === 'cancelled') return new AuthError('cancelled', 'cancelled');
   if (e instanceof Error && /network|fetch|timeout|timed out|offline/i.test(e.message)) {
-    return new AuthError('network', 'You appear to be offline — try again.');
+    // "Failed to fetch" is thrown by a dead network AND by a request the sign-in server refused
+    // (CORS/origin). When the browser itself says it is online, reporting "offline" pointed the
+    // member at their own device when the device was fine — so name the real failure instead.
+    const browserOnline = typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean' ? navigator.onLine : true;
+    return new AuthError(
+      'network',
+      browserOnline
+        ? 'You’re online, but Hallyu’s sign-in service refused the connection from this browser. Try the Hallyu mobile app, or retry from the app’s published web address.'
+        : 'You appear to be offline — try again.',
+    );
   }
   return new AuthError('unknown', e instanceof Error ? e.message : String(e));
 }
@@ -509,3 +526,5 @@ export function useAuth(): AuthValue {
   if (!v) throw new Error('useAuth must be used inside AuthProvider');
   return v;
 }
+
+
