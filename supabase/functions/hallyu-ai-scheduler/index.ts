@@ -54,6 +54,29 @@ const b64urlToBytes = (input: string): Uint8Array => {
 
 const decodeJson = <T>(part: string): T => JSON.parse(new TextDecoder().decode(b64urlToBytes(part))) as T;
 
+/**
+ * Is this token a service credential? PostgREST decides: only service_role may execute
+ * `hallyu_ai_profile_id`, so a member key or anon key is rejected by the database itself. This also
+ * covers the API-key style credentials that are not JWTs at all.
+ */
+async function isServiceCredential(token: string): Promise<boolean> {
+  if (!token) return false;
+  if (token === SERVICE_ROLE_KEY) return true;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/hallyu_ai_profile_id`, {
+    method: 'POST',
+    headers: {
+      apikey: token,
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: '{}',
+  }).catch(() => null);
+  if (!res?.ok) return false;
+  const id = (await res.json().catch(() => null)) as string | null;
+  return typeof id === 'string' && id.length > 0;
+}
+
 /** Verify a GitHub Actions OIDC token against GitHub's published JWKS and the claims we require. */
 async function verifyGithubOidc(token: string): Promise<{ ok: true } | { ok: false; reason: string }> {
   const parts = token.split('.');
@@ -105,7 +128,7 @@ Deno.serve(async (request: Request) => {
   if (!token) return errorResponse('authorization required', 401);
   if (!SERVICE_ROLE_KEY || !SUPABASE_URL) return errorResponse('scheduler is missing its backend credentials', 503);
 
-  const isServiceRole = token === SERVICE_ROLE_KEY;
+  const isServiceRole = await isServiceCredential(token);
   if (!isServiceRole) {
     const check = await verifyGithubOidc(token);
     if (!check.ok) return errorResponse(`not an authorised scheduler caller: ${check.reason}`, 401);
