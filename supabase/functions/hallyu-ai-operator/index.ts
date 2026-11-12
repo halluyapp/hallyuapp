@@ -5,8 +5,7 @@
 // allowlist, records every call in hallyu_ai_tool_call, and reports failures honestly. It never
 // fakes success: a failed tool is recorded as failed and told to the caller.
 //
-// AUTONOMOUS BY DEFAULT: the AI does not wait for staff permission. Broadcasts go out immediately.
-// Staff approval can be re-enabled per backend with one config row (see approvalMode()).
+// Public-facing actions always require an exact, current staff approval. No configuration can disable this gate.
 //
 // Model: Gemini (the server-side AI capability this app declares in `metadata.json`) when its key is
 // present, otherwise the Rork Toolkit gateway (`RORK_TOOLKIT_SECRET_KEY`). Until ONE of those two
@@ -134,7 +133,8 @@ interface ToolContext {
   taskId: string;
 }
 
-const READ_COLUMNS = 'id, created_at, kind, title, body, author_id, community_id, like_count, comment_count';
+const PUBLIC_POST_COLUMNS = 'id,created_at,type,kind,title,body,community_id,loved_count,cried_count,screamed_count,swooned_count,laughed_count,furious_count,comment_count';
+const PUBLIC_COMMENT_COLUMNS = 'id,post_id,created_at,body,loved_count,cried_count,screamed_count,swooned_count,laughed_count,furious_count';
 
 const TOOLS: Tool[] = [
   {
@@ -152,9 +152,15 @@ const TOOLS: Tool[] = [
     run: async (args) => {
       const table = args.table === 'comments' ? 'comments' : 'posts';
       const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
-      const res = await db(`${table}?select=${READ_COLUMNS}&order=created_at.desc&limit=${limit}`);
-      if (!res.ok) throw new Error(`could not read ${table} (HTTP ${res.status})`);
-      return res.json();
+      const filters = table === 'posts'
+        ? `select=${encodeURIComponent(`${PUBLIC_POST_COLUMNS},author:profiles!inner(account_status)`)}&state=eq.active&visibility=eq.public&author.account_status=eq.active`
+        : `select=${encodeURIComponent(`${PUBLIC_COMMENT_COLUMNS},author:profiles!inner(account_status),post:posts!inner(state,visibility)`)}&state=eq.active&author.account_status=eq.active&post.state=eq.active&post.visibility=eq.public`;
+      const res = await db(`${table}?${filters}&order=created_at.desc&limit=${limit}`);
+      if (!res.ok) throw new Error(`could not read public ${table} (HTTP ${res.status})`);
+      const rows = (await res.json()) as Record<string, unknown>[];
+      // Service-role reads bypass RLS, so visibility and active-account rules are explicit above.
+      // Remove embedded permission-check rows before handing community content to the model.
+      return rows.map(({ author: _author, post: _post, ...row }) => row);
     },
   },
   {
@@ -162,12 +168,15 @@ const TOOLS: Tool[] = [
     description: 'Minimal profile facts for one member id (handle, role, joined date) for personalisation.',
     args: '{ "profile_id": "uuid" }',
     staff: false,
-    run: async (args) => {
+    run: async (args, ctx) => {
       const id = String(args.profile_id ?? '');
       if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('profile_id must be a uuid');
-      const res = await db(`profiles?select=id,handle,display_name,role,created_at&id=eq.${id}&limit=1`);
+      if (!ctx.staff && id !== ctx.profileId) throw new Error('members may only inspect their own profile');
+      const res = await db(`profiles?select=id,handle,display_name,role,created_at,account_status&id=eq.${id}&limit=1`);
       if (!res.ok) throw new Error(`could not read profile (HTTP ${res.status})`);
-      return res.json();
+      const rows = (await res.json()) as Record<string, unknown>[];
+      if (!ctx.staff && rows[0]?.account_status !== 'active') return [];
+      return rows;
     },
   },
   {
@@ -176,11 +185,38 @@ const TOOLS: Tool[] = [
     args: '{ "kind": "decision|campaign_outcome|pattern|note", "key": "short unique key", "value": {} }',
     staff: true,
     run: async (args, ctx) => {
+      const allowedKinds = new Set(['decision', 'campaign_outcome', 'pattern', 'note']);
       const kind = String(args.kind ?? 'note');
-      const key = String(args.key ?? '').slice(0, 120);
+      const key = String(args.key ?? '').trim().slice(0, 120);
+      if (!allowedKinds.has(kind)) throw new Error('memory kind must be decision, campaign_outcome, pattern, or note');
       if (!key) throw new Error('memory key is required');
-      await insertRow('hallyu_ai_memory', { kind, key, value: args.value ?? {}, task_id: ctx.taskId });
-      return { stored: `${kind}/${key}` };
+      const value = args.value ?? {};
+      if (JSON.stringify(value).length > 4000) throw new Error('memory value exceeds 4000 characters');
+      const res = await db('hallyu_ai_memory?on_conflict=kind,key', {
+        method: 'POST',
+        body: JSON.stringify({ kind, key, value, task_id: ctx.taskId }),
+        headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      });
+      if (!res.ok) throw new Error(`could not save memory (HTTP ${res.status})`);
+      return { stored: `${kind}/${key}`, updated_existing: true };
+    },
+  },
+  {
+    name: 'recall_memory',
+    description: 'Search a small, relevant subset of approved operational memories. Staff only; config records are never returned.',
+    args: '{ "query": "topic or question" }',
+    staff: true,
+    run: async (args) => {
+      const res = await db('hallyu_ai_memory?select=kind,key,value,task_id,created_at&kind=in.(decision,campaign_outcome,pattern,note)&order=created_at.desc&limit=100');
+      if (!res.ok) throw new Error(`could not retrieve memories (HTTP ${res.status})`);
+      const rows = (await res.json()) as { kind: string; key: string; value: unknown; task_id: string | null; created_at: string }[];
+      const terms = String(args.query ?? '').toLowerCase().split(/[^a-z0-9]{2,}/).filter((term) => term.length >= 3).slice(0, 8);
+      if (!terms.length) return { matches: [], note: 'Provide a specific query to search memories.' };
+      const ranked = rows.map((row) => {
+        const haystack = `${row.key} ${JSON.stringify(row.value)}`.toLowerCase();
+        return { row, score: terms.reduce((count, term) => count + (haystack.includes(term) ? 1 : 0), 0) };
+      }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || b.row.created_at.localeCompare(a.row.created_at)).slice(0, 5);
+      return { matches: ranked.map(({ row }) => row), scanned: rows.length };
     },
   },
   {
@@ -189,11 +225,10 @@ const TOOLS: Tool[] = [
     args: '{ "title": "...", "body": "...", "path": "/ or /events or /(tabs)/explore" }',
     staff: true,
     approval: true,
-    run: async (args) =>
-      rpc('send_admin_broadcast', {
-        p_title: String(args.title ?? 'Hallyu announcement'),
-        p_body: String(args.body ?? ''),
-        p_path: String(args.path ?? '/'),
+    run: async (args, ctx) =>
+      rpc('hallyu_ai_execute_broadcast', {
+        p_task: ctx.taskId,
+        p_args: args,
       }),
   },
 ];
@@ -208,20 +243,9 @@ function toolManifest(staff: boolean): string {
     .join('\n');
 }
 
-// ── autonomy switch (default OFF = fully autonomous) ──────────────────────────────────────────
-// The owner can park broadcasts behind staff approval by writing one config row
-// (hallyu_ai_memory, kind='config', key='approval_mode', value={"mode":"on"}); the Command Centre
-// then shows the pending action to approve. Default is no approval — the AI works anytime, anyhow.
-
-async function approvalMode(): Promise<'on' | 'off'> {
-  try {
-    const res = await db(`hallyu_ai_memory?select=value&kind=eq.config&key=eq.approval_mode&order=created_at.desc&limit=1`);
-    if (!res.ok) return 'off';
-    const rows = (await res.json()) as { value?: { mode?: string } }[];
-    return rows[0]?.value?.mode === 'on' ? 'on' : 'off';
-  } catch {
-    return 'off';
-  }
+// Public-facing actions always fail closed behind a human approval. Configuration cannot turn this off.
+async function approvalMode(): Promise<'on'> {
+  return 'on';
 }
 
 // ── model adapters ────────────────────────────────────────────────────────────────────────────
@@ -309,9 +333,9 @@ function parseProtocol(content: string): { tool?: string; args?: Record<string, 
   }
 }
 
-const SYSTEM_PROMPT = (staff: boolean, autonomous: boolean) => `You are Hallyu AI, the autonomous AI executive of the Hallyu social platform (K-drama, C-drama, anime, Hollywood fan community).
+const SYSTEM_PROMPT = (staff: boolean) => `You are Hallyu AI, the AI operator of the Hallyu social platform (K-drama, C-drama, anime, Hollywood fan community).
 You are transparent that you are an AI. Never impersonate a human member.
-Rules: investigate real data with your tools before answering; never invent numbers or news; if evidence is missing, say so and name what is missing; report failures honestly.${autonomous ? '' : '\nRestricted tools require staff approval: when you pick one, the task parks until staff approve it in the Command Centre.'}
+Rules: investigate real data with your tools before answering; never invent numbers or news; if evidence is missing, say so and name what is missing; report failures honestly. Public actions require staff approval and will pause in the Command Centre.
 Available tools:\n${toolManifest(staff)}
 Answer ONLY with JSON: either {"tool": "<name>", "args": {...}} to run one tool step, or {"final": "<your answer to the member>"} when you can answer without tools.`;
 
@@ -342,9 +366,9 @@ async function recordToolCall(taskId: string, seq: number, tool: string, args: u
   });
 }
 
-async function approvedFor(taskId: string, tool: string): Promise<boolean> {
-  const res = await db(`hallyu_ai_approval?select=id&task_id=eq.${taskId}&tool=eq.${tool}&status=eq.approved&limit=1`);
-  if (!res.ok) return false;
+async function hasApprovalFor(taskId: string, tool: string, args: Record<string, unknown>): Promise<boolean> {
+  const res = await db(`hallyu_ai_approval?select=id&task_id=eq.${taskId}&tool=eq.${encodeURIComponent(tool)}&args=eq.${encodeURIComponent(JSON.stringify(args ?? {}))}&status=eq.approved&requested_at=gt.${encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())}&limit=1`);
+  if (!res.ok) throw new Error(`could not verify approval (HTTP ${res.status})`);
   const rows = (await res.json()) as { id: string }[];
   return rows.length > 0;
 }
@@ -371,10 +395,9 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
   }
 
   const staff = isStaffRole(task.requester_role);
-  const autonomous = (await approvalMode()) === 'off';
-  const tools = registryFor(staff);
+    const tools = registryFor(staff);
   const history: { role: string; content: string }[] = [
-    { role: 'system', content: SYSTEM_PROMPT(staff, autonomous) },
+    { role: 'system', content: SYSTEM_PROMPT(staff) },
     { role: 'user', content: task.prompt },
   ];
   let answer: string | null = null;
@@ -399,7 +422,7 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
         history.push({ role: 'user', content: `Tool "${protocol.tool}" is not available. Use another tool or answer with {"final": ...}.` });
         continue;
       }
-      if (tool.approval && !autonomous && !(await approvedFor(taskId, tool.name))) {
+      if (tool.approval && !(await hasApprovalFor(taskId, tool.name, protocol.args ?? {}))) {
         await recordToolCall(taskId, seq, tool.name, protocol.args, { status: 'awaiting_approval' });
         await insertRow('hallyu_ai_approval', {
           task_id: taskId,
@@ -511,10 +534,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
       case 'approval.decide': {
         if (!staff) return json({ error: 'admin or ceo role required' }, 403);
         if (!body.approval_id) return json({ error: 'approval_id is required' }, 400);
-        const outcome = await rpc('hallyu_ai_decide_approval', {
+        const outcome = await rpc('hallyu_ai_decide_approval_verified', {
           p_approval: body.approval_id,
           p_approve: Boolean(body.approve),
           p_note: body.note ?? null,
+          p_approver: profile.id,
         });
         return json({ decided: outcome });
       }

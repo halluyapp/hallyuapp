@@ -8,7 +8,7 @@
  * the Bearer credential so Row Level Security resolves the same member on every query.
  *
  * Flow (Rork Auth contract):
- *   1. POST {AUTH_URL}/oauth/initiate { app_key, provider: 'google', code_challenge, target: 'rn', env }
+ *   1. POST {AUTH_URL}/oauth/initiate { app_key, provider: 'google', code_challenge, target: Platform.OS === 'web' ? 'web' : 'rn', env }
  *   2. openAuthSessionAsync(auth_url, `rork-<project>://auth/callback`)
  *   3. POST {AUTH_URL}/oauth/token { app_key, code, code_verifier } → { access_token, refresh_token, user }
  *   4. POST {AUTH_URL}/oauth/refresh { app_key, refresh_token }      → { access_token }
@@ -307,7 +307,7 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
     app_key: APP_KEY,
     provider: 'google',
     code_challenge: challenge,
-    target: 'rn',
+    target: Platform.OS === 'web' ? 'web' : 'rn',
     env: Platform.OS === 'web' ? 'preview' : 'native',
   })) as { auth_url?: string };
   const authUrl = initiated.auth_url ?? '';
