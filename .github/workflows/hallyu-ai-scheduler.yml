@@ -32,15 +32,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+      # The project URL is public and already committed in the app, so the tick never depends on a
+      # repository secret being configured; an explicit secret still wins if one is set.
+      SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || 'https://ltyymanoidagwsapgiql.supabase.co' }}
       SCHEDULER_AUDIENCE: hallyu-ai-scheduler
     steps:
-      - name: Explain a missing backend URL
-        if: env.SUPABASE_URL == ''
-        run: |
-          echo "EXPO_PUBLIC_SUPABASE_URL is not set for this repository, so there is no backend to tick."
-          exit 1
-
       - name: Mint the GitHub OIDC token
         id: oidc
         uses: actions/github-script@v7
