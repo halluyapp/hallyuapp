@@ -28,7 +28,7 @@ async function jwks(issuer: string): Promise<JsonWebKey[]> {
 }
 
 /** Verify RS256 against the published JWK selected by the unverified header's key id. */
-export async function verifyGitHubSchedulerToken(token: string, repository: string): Promise<GitHubActionsIdentity> {
+export async function verifyGitHubSchedulerToken(token: string, repository: string, workflow = 'hallyu-ai-scheduler.yml'): Promise<GitHubActionsIdentity> {
   const [encodedHeader, encodedPayload, encodedSignature] = token.split('.');
   if (!encodedHeader || !encodedPayload || !encodedSignature || token.split('.').length !== 3) throw new Error('invalid GitHub OIDC token');
   const header = decodeJsonPart(encodedHeader, 'header');
@@ -43,7 +43,7 @@ export async function verifyGitHubSchedulerToken(token: string, repository: stri
   if (typeof payload.ref !== 'string' || !payload.ref.startsWith('refs/heads/') || (requiredRef && payload.ref !== requiredRef)) {
     throw new Error('GitHub OIDC branch is not authorized for AI scheduling');
   }
-  if (payload.job_workflow_ref !== `${repository}/.github/workflows/hallyu-ai-scheduler.yml@${payload.ref}`) {
+  if (payload.job_workflow_ref !== `${repository}/.github/workflows/${workflow}@${payload.ref}`) {
     throw new Error('GitHub OIDC workflow is not the AI scheduler');
   }
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];

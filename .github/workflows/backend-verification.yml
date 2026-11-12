@@ -13,6 +13,12 @@ name: Backend verification
 
 on:
   workflow_dispatch:
+    inputs:
+      validate_rork_model:
+        description: Also run one bounded Rork model health check through GitHub OIDC
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main, master, 'arena/**']
   schedule:
@@ -76,6 +82,13 @@ jobs:
           [ "$CODE" = "200" ] || { echo "::error title=Release RPC failed::HTTP $CODE"; exit 1; }
           jq -e '.universal_only == true' /tmp/probe2.json >/dev/null \
             || { echo "::error title=Unexpected release shape::expected universal_only: true"; exit 1; }
+
+      - name: Supervised Rork model validation
+        if: inputs.validate_rork_model
+        run: |
+          TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=hallyu-ai-scheduler" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")
+          curl -fsS -X POST "https://ltyymanoidagwsapgiql.supabase.co/functions/v1/hallyu-ai-scheduler" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{"action":"model.validate"}'
 
       - name: Result
         run: echo "::notice title=Backend live::$EXPO_PUBLIC_SUPABASE_URL answered every probe (universal-only release channel verified)."

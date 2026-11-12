@@ -10,8 +10,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
   try {
     const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
     const repository = Deno.env.get('GITHUB_RELEASE_REPOSITORY') ?? 'halluyapp/hallyuapp';
-    const identity = await verifyGitHubSchedulerToken(token, repository);
     const body = await request.json().catch(() => ({})) as { action?: string };
+    const identity = await verifyGitHubSchedulerToken(token, repository, body.action === 'model.validate' ? 'backend-verification.yml' : 'hallyu-ai-scheduler.yml');
     if (body.action === 'model.validate') {
       const toolkitUrl = (Deno.env.get('TOOLKIT_URL') ?? Deno.env.get('EXPO_PUBLIC_TOOLKIT_URL') ?? 'https://toolkit.rork.com').replace(/\/$/, '');
       const toolkitKey = Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('RORK_AI_API_KEY') ?? '';
