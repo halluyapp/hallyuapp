@@ -128,6 +128,17 @@ verify_jwt = true
 [functions.release-maintenance]
 verify_jwt = false
 
+# Web auth relay for Rork Auth (api.rork.com). Called by the browser BEFORE any session exists
+# (initiate / token / refresh), so JWT verification is off: Rork Auth itself rejects invalid app
+# keys, and the relay adds no credentials and forwards to exactly three fixed endpoints.
+[functions.auth-broker]
+verify_jwt = false
+
+# The Hallyu AI executive agent. Caller JWTs ARE verified; the function re-checks the caller's
+# live profiles.role before every admin action and runs the tool loop with full audit records.
+[functions.hallyu-ai-operator]
+verify_jwt = true
+
 # Applied by `supabase db reset` after the migrations run. Reference data only: worlds and the
 # catalog providers. No member content is ever seeded.
 [db.seed]
