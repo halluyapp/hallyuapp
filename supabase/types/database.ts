@@ -368,37 +368,61 @@ export type Database = {
       };
       hallyu_ai_publication: {
         Row: {
+          action: string | null;
           approved_by: string | null;
+          body: string | null;
           content: Json;
           created_at: string;
+          error: string | null;
           id: string;
           kind: string;
           parent_id: string | null;
+          payload: Json | null;
+          published_at: string | null;
           published_by: string;
+          sources: Json | null;
+          status: string | null;
           target_id: string | null;
           task_id: string | null;
+          title: string | null;
         };
         Insert: {
+          action?: string | null;
           approved_by?: string | null;
+          body?: string | null;
           content?: Json;
           created_at?: string;
+          error?: string | null;
           id?: string;
           kind: string;
           parent_id?: string | null;
+          payload?: Json | null;
+          published_at?: string | null;
           published_by?: string;
+          sources?: Json | null;
+          status?: string | null;
           target_id?: string | null;
           task_id?: string | null;
+          title?: string | null;
         };
         Update: {
+          action?: string | null;
           approved_by?: string | null;
+          body?: string | null;
           content?: Json;
           created_at?: string;
+          error?: string | null;
           id?: string;
           kind?: string;
           parent_id?: string | null;
+          payload?: Json | null;
+          published_at?: string | null;
           published_by?: string;
+          sources?: Json | null;
+          status?: string | null;
           target_id?: string | null;
           task_id?: string | null;
+          title?: string | null;
         };
         Relationships: [];
       };
@@ -412,7 +436,10 @@ export type Database = {
           kind: string;
           last_run_at: string | null;
           last_status: string | null;
+          last_task_id: string | null;
           name: string;
+          next_run_at: string | null;
+          prompt: string | null;
         };
         Insert: {
           config?: Json;
@@ -423,7 +450,10 @@ export type Database = {
           kind: string;
           last_run_at?: string | null;
           last_status?: string | null;
+          last_task_id?: string | null;
           name: string;
+          next_run_at?: string | null;
+          prompt?: string | null;
         };
         Update: {
           config?: Json;
@@ -434,7 +464,10 @@ export type Database = {
           kind?: string;
           last_run_at?: string | null;
           last_status?: string | null;
+          last_task_id?: string | null;
           name?: string;
+          next_run_at?: string | null;
+          prompt?: string | null;
         };
         Relationships: [];
       };

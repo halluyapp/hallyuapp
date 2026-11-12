@@ -599,18 +599,33 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
 // It is not a member: it resolves to the official AI profile, which is how the operator keeps
 // working while the owner and every admin are offline.
 
-function isServiceCall(req: Request): boolean {
+async function systemProfile(req: Request): Promise<{ id: string; role: string } | null> {
   const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
-  return Boolean(SERVICE_ROLE) && token === SERVICE_ROLE;
-}
-
-async function systemProfile(): Promise<{ id: string; role: string } | null> {
-  try {
-    const id = await rpc('hallyu_ai_profile_id', {});
-    return typeof id === 'string' && id ? { id, role: 'system' } : null;
-  } catch {
-    return null;
+  if (!token || token === SERVICE_ROLE) {
+    // The function's own service credential, used with no header at all.
+    try {
+      const id = await rpc('hallyu_ai_profile_id', {});
+      return typeof id === 'string' && id ? { id, role: 'system' } : null;
+    } catch {
+      return null;
+    }
   }
+
+  // Any other credential must prove service privilege to PostgREST: only service_role may execute
+  // `hallyu_ai_profile_id`, so a member or anon token is rejected by the database, not by us.
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/hallyu_ai_profile_id`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_ROLE,
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: '{}',
+  }).catch(() => null);
+  if (!res || !res.ok) return null;
+  const id = (await res.json().catch(() => null)) as string | null;
+  return typeof id === 'string' && id ? { id, role: 'system' } : null;
 }
 
 async function ownerId(): Promise<string | null> {
@@ -730,17 +745,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   try {
-    const system = isServiceCall(req);
-    const profile = system ? await systemProfile() : await callerProfile(req);
-    if (!profile) {
-      return json(
-        system
-          ? { error: 'the official Hallyu AI profile is unavailable on this backend' }
-          : { error: 'sign in required' },
-        system ? 503 : 401,
-      );
-    }
-    const staff = system || isStaffRole(profile.role);
+    // Members resolve as themselves; a credential the database accepts as service_role resolves as
+    // the system (the 24/7 scheduler). Nobody else gets in.
+    const profile = (await callerProfile(req)) ?? (await systemProfile(req));
+    if (!profile) return json({ error: 'sign in required' }, 401);
+    const staff = isStaffRole(profile.role);
 
     const body = (await req.json().catch(() => ({}))) as {
       action?: string;

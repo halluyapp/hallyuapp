@@ -73,6 +73,18 @@ create table if not exists public.hallyu_ai_publication (
   unique (task_id, action)
 );
 
+-- The ledger has existed in more than one shape: migration 72 models it as kind/content/parent_id,
+-- while the live operator's publish path records action/body/payload/sources/status. Both are
+-- legitimate columns of the same ledger, so the table carries the union and neither path breaks.
+alter table public.hallyu_ai_publication add column if not exists action text;
+alter table public.hallyu_ai_publication add column if not exists title text;
+alter table public.hallyu_ai_publication add column if not exists body text;
+alter table public.hallyu_ai_publication add column if not exists payload jsonb;
+alter table public.hallyu_ai_publication add column if not exists sources jsonb;
+alter table public.hallyu_ai_publication add column if not exists status text;
+alter table public.hallyu_ai_publication add column if not exists error text;
+alter table public.hallyu_ai_publication add column if not exists published_at timestamptz;
+
 alter table public.hallyu_ai_publication enable row level security;
 revoke all on public.hallyu_ai_publication from anon, authenticated;
 
