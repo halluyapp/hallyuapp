@@ -1,152 +1,138 @@
-// hallyu-ai-scheduler — background intelligence scheduler.
+// hallyu-ai-scheduler — the bridge that lets the operator run 24/7.
 //
-// Triggered by pg_cron, pg_net, or admin manual trigger with a service-role bearer.
-// Scans `hallyu_ai_schedule` for enabled tasks due to run, creates tasks in `hallyu_ai_task`,
-// updates `last_run_at` and `last_status`.
+// Two kinds of caller are accepted, and nothing else:
+//
+//   1. A GitHub Actions job (.github/workflows/hallyu-ai-scheduler.yml). GitHub mints a short-lived
+//      OIDC token for that exact job; we verify its RS256 signature against GitHub's published keys
+//      and require that the token was issued for THIS workflow in THIS repository with our audience.
+//      No long-lived secret is stored in the repository.
+//   2. A service-role bearer, which is how an admin or the platform triggers a tick by hand.
+//
+// The caller is only ever allowed to ask for a tick. The function then calls `hallyu-ai-operator`
+// with its own service credential and `action: "schedule.run_due"`, so all real work (claiming due
+// schedules, running tasks, publishing, notifying the owner) stays inside the operator, where the
+// model, tools and publication ledger already live. This function never publishes anything itself.
 
-import { adminClient, requireServiceRole } from '../_shared/supabase.ts';
 import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
-import { readObjectBody } from '../_shared/request.ts';
 
-interface ScheduleRow {
-  id: string;
-  name: string;
-  kind: string;
-  interval_minutes: number;
-  enabled: boolean;
-  config: Record<string, unknown> | null;
-  last_run_at: string | null;
-  last_status: string | null;
+const SUPABASE_URL = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const AUDIENCE = Deno.env.get('SCHEDULER_AUDIENCE') ?? 'hallyu-ai-scheduler';
+const REPOSITORY = Deno.env.get('SCHEDULER_REPOSITORY') ?? 'halluyapp/hallyuapp';
+const WORKFLOW_PATH = '.github/workflows/hallyu-ai-scheduler.yml';
+const GITHUB_ISSUER = 'https://token.actions.githubusercontent.com';
+const GITHUB_JWKS = `${GITHUB_ISSUER}/.well-known/jwks`;
+
+interface OidcClaims {
+  iss?: string;
+  aud?: string | string[];
+  exp?: number;
+  iat?: number;
+  repository?: string;
+  job_workflow_ref?: string;
+  event_name?: string;
 }
 
-interface RunOutcome {
-  schedule_id: string;
-  name: string;
-  status: 'ok' | 'skipped' | 'failed';
-  detail?: string;
-  task_id?: string;
+const b64urlToBytes = (input: string): Uint8Array => {
+  const padded = input.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+};
+
+const decodeJson = <T>(part: string): T => JSON.parse(new TextDecoder().decode(b64urlToBytes(part))) as T;
+
+/** Verify a GitHub Actions OIDC token against GitHub's published JWKS and the claims we require. */
+async function verifyGithubOidc(token: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return { ok: false, reason: 'not a jwt' };
+
+  let header: { alg?: string; kid?: string };
+  let claims: OidcClaims;
+  try {
+    header = decodeJson<{ alg?: string; kid?: string }>(parts[0]!);
+    claims = decodeJson<OidcClaims>(parts[1]!);
+  } catch {
+    return { ok: false, reason: 'unreadable jwt' };
+  }
+  if (header.alg !== 'RS256' || !header.kid) return { ok: false, reason: 'unsupported jwt header' };
+
+  const jwksRes = await fetch(GITHUB_JWKS).catch(() => null);
+  if (!jwksRes?.ok) return { ok: false, reason: 'github keys unavailable' };
+  const jwks = (await jwksRes.json().catch(() => null)) as { keys?: { kid?: string; n?: string; e?: string }[] } | null;
+  const jwk = jwks?.keys?.find((key) => key.kid === header.kid);
+  if (!jwk?.n || !jwk?.e) return { ok: false, reason: 'signing key not found' };
+
+  const key = await crypto.subtle
+    .importKey('jwk', { kty: 'RSA', n: jwk.n, e: jwk.e, alg: 'RS256', ext: true }, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify'])
+    .catch(() => null);
+  if (!key) return { ok: false, reason: 'signing key unusable' };
+
+  const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+  const valid = await crypto.subtle
+    .verify('RSASSA-PKCS1-v1_5', key, b64urlToBytes(parts[2]!), signed)
+    .catch(() => false);
+  if (!valid) return { ok: false, reason: 'bad signature' };
+
+  if (claims.iss !== GITHUB_ISSUER) return { ok: false, reason: 'wrong issuer' };
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!audiences.includes(AUDIENCE)) return { ok: false, reason: 'wrong audience' };
+  if (typeof claims.exp !== 'number' || claims.exp * 1000 <= Date.now()) return { ok: false, reason: 'expired' };
+  if (claims.repository !== REPOSITORY) return { ok: false, reason: 'wrong repository' };
+  const workflowRef = claims.job_workflow_ref ?? '';
+  if (!workflowRef.startsWith(`${REPOSITORY}/${WORKFLOW_PATH}@`)) return { ok: false, reason: 'wrong workflow' };
+
+  return { ok: true };
 }
 
 Deno.serve(async (request: Request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (request.method !== 'POST') return errorResponse('POST required', 405);
 
-  const guard = requireServiceRole(request);
-  if (!guard.ok) return guard.response;
+  const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+  if (!token) return errorResponse('authorization required', 401);
+  if (!SERVICE_ROLE_KEY || !SUPABASE_URL) return errorResponse('scheduler is missing its backend credentials', 503);
+
+  const isServiceRole = token === SERVICE_ROLE_KEY;
+  if (!isServiceRole) {
+    const check = await verifyGithubOidc(token);
+    if (!check.ok) return errorResponse(`not an authorised scheduler caller: ${check.reason}`, 401);
+  }
 
   let body: Record<string, unknown> = {};
   try {
-    body = await readObjectBody(request);
+    body = (await request.json()) as Record<string, unknown>;
   } catch {
-    // Empty body is valid: runs all due enabled schedules
+    // An empty body is valid: it means "run whatever is due".
+  }
+  const limit = Math.min(Math.max(Number(body.limit) || 3, 1), 5);
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/hallyu-ai-operator`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ action: 'schedule.run_due', limit }),
+  }).catch(() => null);
+
+  if (!res) return errorResponse('the operator did not answer', 502);
+  const text = await res.text().catch(() => '');
+  let payload: unknown = text;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Keep the raw text so a broken operator response is visible instead of swallowed.
   }
 
-  const supabase = adminClient();
-  const scheduleId = typeof body.schedule_id === 'string' ? body.schedule_id : null;
-  const force = Boolean(body.force);
-
-  let query = supabase.from('hallyu_ai_schedule').select('*');
-  if (scheduleId) {
-    query = query.eq('id', scheduleId);
-  } else if (!force) {
-    query = query.eq('enabled', true);
+  if (!res.ok) {
+    return jsonResponse({ operator_status: res.status, operator_response: payload, ran_at: new Date().toISOString() }, res.status);
   }
 
-  const { data, error } = await query;
-  if (error) return errorResponse(`could not load schedules: ${error.message}`, 500);
-
-  const schedules = (data ?? []) as ScheduleRow[];
-  const outcomes: RunOutcome[] = [];
-  const now = Date.now();
-
-  for (const schedule of schedules) {
-    if (!force && schedule.last_run_at) {
-      const lastRun = new Date(schedule.last_run_at).getTime();
-      const elapsedMinutes = (now - lastRun) / (1000 * 60);
-      if (elapsedMinutes < schedule.interval_minutes) {
-        outcomes.push({
-          schedule_id: schedule.id,
-          name: schedule.name,
-          status: 'skipped',
-          detail: `not due yet (${Math.round(schedule.interval_minutes - elapsedMinutes)}m remaining)`,
-        });
-        continue;
-      }
-    }
-
-    try {
-      let prompt = '';
-      if (schedule.kind === 'daily_intelligence') {
-        prompt = 'Run daily platform intelligence: check platform_overview, community_pulse, and summarize key community trends, engagement, and operational anomalies.';
-      } else if (schedule.kind === 'community_pulse') {
-        prompt = 'Run community pulse watch: inspect recent public posts and comments for emerging fan discussions, sentiment shifts, or community questions.';
-      } else if (schedule.kind === 'entertainment_intelligence') {
-        prompt = 'Review entertainment watchlist and catalog sync status for K-drama and C-drama releases; note any sync failures or missing titles.';
-      } else {
-        prompt = `Execute automated task for schedule: ${schedule.name}`;
-      }
-
-      // Create task in hallyu_ai_task via PostgREST
-      const supabaseUrl = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
-      const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-      const res = await fetch(`${supabaseUrl}/rest/v1/hallyu_ai_task`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${serviceRoleKey}`,
-          apikey: serviceRoleKey,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          Prefer: 'return=representation',
-        },
-        body: JSON.stringify({
-          kind: 'ops',
-          title: `Scheduled: ${schedule.name}`,
-          prompt,
-          requester_role: 'admin',
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`failed to create task: HTTP ${res.status} ${text.slice(0, 100)}`);
-      }
-
-      const rows = (await res.json().catch(() => [])) as { id: string }[];
-      const taskId = rows[0]?.id;
-
-      await supabase.from('hallyu_ai_schedule').update({
-        last_run_at: new Date().toISOString(),
-        last_status: 'ok',
-      }).eq('id', schedule.id);
-
-      outcomes.push({
-        schedule_id: schedule.id,
-        name: schedule.name,
-        status: 'ok',
-        task_id: taskId,
-        detail: 'scheduled run queued successfully',
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await supabase.from('hallyu_ai_schedule').update({
-        last_run_at: new Date().toISOString(),
-        last_status: `failed: ${msg.slice(0, 100)}`,
-      }).eq('id', schedule.id);
-
-      outcomes.push({
-        schedule_id: schedule.id,
-        name: schedule.name,
-        status: 'failed',
-        detail: msg,
-      });
-    }
-  }
-
-  const failures = outcomes.filter((o) => o.status === 'failed');
-  return jsonResponse({
-    ran: outcomes.length,
-    failed: failures.length,
-    outcomes,
-    ran_at: new Date().toISOString(),
-  }, failures.length > 0 ? 207 : 200);
+  return jsonResponse(
+    { triggered_by: isServiceRole ? 'service_role' : 'github_oidc', ...((payload as object) ?? {}), ran_at: new Date().toISOString() },
+    200,
+  );
 });
