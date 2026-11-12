@@ -49,7 +49,9 @@ function activeModel(): string {
   return modelProvider() === 'gemini' ? GEMINI_MODEL : AI_MODEL;
 }
 
-const MAX_STEPS = 5;
+// Grounding, publishing and verification are three distinct steps on top of the reads a careful
+// answer needs; five forced the model to spend its budget and then fail with nothing published.
+const MAX_STEPS = 8;
 
 // ── PostgREST helpers (service role — the only writer to the hallyu_ai_* tables) ───────────────
 
