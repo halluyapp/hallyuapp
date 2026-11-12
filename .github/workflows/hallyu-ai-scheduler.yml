@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      validate_model:
+        description: Run one bounded Rork model health check instead of claiming schedules
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -17,11 +23,13 @@ jobs:
   dispatch:
     # Scheduled workflows only run on the default branch. The edge function independently pins
     # refs/heads/main and this exact workflow before accepting the OIDC token.
-    if: github.ref == 'refs/heads/main'
+    if: (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - name: Dispatch due schedules with GitHub OIDC
         run: |
           TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=hallyu-ai-scheduler" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")
+          PAYLOAD='{"action":"schedule.run_due"}'
+          if [ "${{ inputs.validate_model }}" = "true" ]; then PAYLOAD='{"action":"model.validate"}'; fi
           curl -fsS -X POST "https://ltyymanoidagwsapgiql.supabase.co/functions/v1/hallyu-ai-scheduler" \
-            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{}'
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data "$PAYLOAD"
