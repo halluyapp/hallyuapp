@@ -9,9 +9,9 @@ visible in the Command Centre.
 
 ```text
 Mobile/web Admin Command Centre or signed-in member
-  │ Supabase user JWT
+  │ Rork Auth access token (not a Supabase Auth session)
   ▼
-hallyu-ai-operator (verify_jwt = true)
+hallyu-ai-operator (gateway verify_jwt = false; application auth mandatory)
   │ 1. PostgREST validates the Rork JWT used by all existing app RPCs
   │ 2. current_profile_id() maps its opaque subject; service role reads the live active profile/role
   │ 3. hourly task quota and fixed member/staff tool registry
@@ -109,15 +109,18 @@ records the resulting task.
 The scheduler is not represented as active merely because a table exists:
 
 1. Deploy `hallyu-ai-operator` and `hallyu-ai-scheduler`.
-2. Deploy `.github/workflows/hallyu-ai-scheduler.yml` to the default `main` branch.
+2. Deploy `.github/workflows/hallyu-ai-scheduler.yml` to the repository's actual default branch
+   (`arena/c5e9499c-grok-hallyu`, not `main`).
 3. The workflow runs every 15 minutes and mints a GitHub OIDC token; no Supabase secret is stored
    in GitHub.
 4. `hallyu-ai-scheduler` has transport JWT verification off, but cryptographically verifies the
    GitHub signature, issuer, audience `hallyu-ai-scheduler`, repository, event, exact workflow and
-   `refs/heads/main`. It then makes the internal service-role operator request.
+   the configured `GITHUB_SCHEDULER_REF` (`refs/heads/arena/c5e9499c-grok-hallyu`). It then makes
+   the internal service-role operator request.
 5. Enable only the desired schedules after a successful staff-supervised run.
 
-A schedule is not active before steps 1–2. Manual workflow dispatch is also restricted to main.
+A schedule is not active before steps 1–2. Manual workflow dispatch is also restricted to the
+actual default branch.
 
 ## Command Centre
 

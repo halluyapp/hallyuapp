@@ -284,7 +284,7 @@ jobs:
       # This authenticated browser audit creates/promotes and removes a temporary production account.
       # Run only when explicitly requested; ordinary main deployments remain data-nonmutating.
       - name: Pre-deploy Headless Chrome verification (Landing Page, SW, version.json & 360x800 routes)
-        if: github.ref == 'refs/heads/main' && inputs.run_live_browser_test == true
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu') && inputs.run_live_browser_test == true
         env:
           SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}

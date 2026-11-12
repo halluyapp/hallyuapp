@@ -35,7 +35,7 @@ export async function verifyGitHubSchedulerToken(token: string, repository: stri
   const payload = decodeJsonPart(encodedPayload, 'payload');
   const issuer = 'https://token.actions.githubusercontent.com';
   const audience = Deno.env.get('GITHUB_SCHEDULER_OIDC_AUDIENCE') ?? 'hallyu-ai-scheduler';
-  const requiredRef = Deno.env.get('GITHUB_SCHEDULER_REF') ?? 'refs/heads/main';
+  const requiredRef = Deno.env.get('GITHUB_SCHEDULER_REF') ?? 'refs/heads/arena/c5e9499c-grok-hallyu';
   if (header.alg !== 'RS256' || typeof header.kid !== 'string') throw new Error('invalid GitHub OIDC algorithm');
   if (payload.iss !== issuer || payload.repository !== repository || !['schedule', 'workflow_dispatch'].includes(String(payload.event_name))) {
     throw new Error('GitHub OIDC issuer, repository, or event is not authorized');

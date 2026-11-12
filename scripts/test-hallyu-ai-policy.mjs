@@ -56,15 +56,15 @@ test('new privileged database functions are service-role only and AI tables deny
   assert.match(migration, /revoke all on public\.hallyu_ai_publication from anon, authenticated/);
 });
 
-test('automatic scheduling requires the exact main-branch OIDC workflow', () => {
+test('automatic scheduling requires the exact default-branch OIDC workflow', () => {
   const shared = readFileSync(new URL('../supabase/functions/_shared/githubScheduler.ts', import.meta.url), 'utf8');
   const scheduler = readFileSync(new URL('../supabase/functions/hallyu-ai-scheduler/index.ts', import.meta.url), 'utf8');
   const workflow = readFileSync(new URL('../.github/workflows/hallyu-ai-scheduler.yml', import.meta.url), 'utf8');
   assert.match(shared, /\['schedule', 'workflow_dispatch'\]\.includes\(String\(payload\.event_name\)\)/);
-  assert.match(shared, /refs\/heads\/main/);
+  assert.match(shared, /refs\/heads\/arena\/c5e9499c-grok-hallyu/);
   assert.match(scheduler, /verifyGitHubSchedulerToken/);
   assert.match(scheduler, /status: response\.status/);
-  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /github\.ref == 'refs\/heads\/arena\/c5e9499c-grok-hallyu'/);
 });
 
 test('notifications are queued, never reported as delivered', () => {

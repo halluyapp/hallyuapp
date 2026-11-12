@@ -88,8 +88,21 @@ jobs:
           jq -e '.universal_only == true' /tmp/probe2.json >/dev/null \
             || { echo "::error title=Unexpected release shape::expected universal_only: true"; exit 1; }
 
+      - name: AI operator reaches application-level Rork auth (anonymous rejection)
+        run: |
+          CODE=$(curl -s -o /tmp/ai-anon.json -w '%{http_code}' \
+            -X POST "${EXPO_PUBLIC_SUPABASE_URL}/functions/v1/hallyu-ai-operator" \
+            -H "apikey: ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"action":"ping"}')
+          echo "hallyu-ai-operator anonymous ping → HTTP $CODE: $(cat /tmp/ai-anon.json)"
+          [ "$CODE" = "401" ] || { echo "::error title=AI transport failure::expected application-level 401, got HTTP $CODE"; exit 1; }
+          jq -e '.error == "sign in required"' /tmp/ai-anon.json >/dev/null \
+            || { echo "::error title=AI gateway rejection::the operator's own JSON auth response was not reached"; exit 1; }
+
       - name: Result
-        run: echo "::notice title=Backend live::$EXPO_PUBLIC_SUPABASE_URL answered every probe (universal-only release channel verified)."
+        run: echo "::notice title=Backend live::$EXPO_PUBLIC_SUPABASE_URL answered every probe (universal-only release channel and AI application-auth transport verified)."
 
   validate-ai:
     name: Supervised AI validation

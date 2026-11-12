@@ -134,13 +134,15 @@ verify_jwt = false
 [functions.auth-broker]
 verify_jwt = false
 
-# The Hallyu AI executive agent. Caller JWTs ARE verified; the function re-checks the caller's
-# live profiles.role before every admin action and runs the tool loop with full audit records.
+# The Hallyu AI executive agent uses Rork Auth access tokens, not Supabase Auth sessions. Disable
+# the gateway's Supabase-only JWT check so those tokens reach the function; callerProfile verifies
+# the same bearer through PostgREST/current_profile_id and re-checks live role/account status on
+# every request. The scheduled service-role path has its own independent requireServiceRole guard.
 [functions.hallyu-ai-operator]
-verify_jwt = true
+verify_jwt = false
 
 # Public only at the transport layer. Full GitHub OIDC signature, audience, repository, exact
-# workflow and refs/heads/main checks are mandatory before the internal service-role dispatch.
+# workflow and the configured default-branch ref are mandatory before internal service-role dispatch.
 [functions.hallyu-ai-scheduler]
 verify_jwt = false
 

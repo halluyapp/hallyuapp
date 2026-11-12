@@ -4,7 +4,7 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 import { supabase } from '../../lib/api/client';
 import { colors, radius, space } from '../../constants/theme';
 import { haptic, useApp } from '../../lib/hooks';
@@ -86,15 +86,24 @@ async function invoke<T>(body: Record<string, unknown>): Promise<T> {
   if (!supabase) throw new Error('Hallyu AI is unavailable because this build has no backend connection.');
   const { data, error } = await supabase.functions.invoke<T>('hallyu-ai-operator', { body });
   if (error) {
-    const context = (error as { context?: { json?: () => Promise<{ error?: string }> } }).context;
-    const detail = context?.json ? await context.json().catch(() => null) : null;
-    throw new Error(detail?.error ?? error.message);
+    const context = (error as { context?: Response }).context;
+    let detail: string | null = null;
+    if (context) {
+      const payload = await context.clone().json().catch(() => null) as { error?: unknown; message?: unknown } | null;
+      detail = typeof payload?.error === 'string' ? payload.error : typeof payload?.message === 'string' ? payload.message : null;
+      if (!detail) detail = (await context.text().catch(() => '')).trim().slice(0, 500) || null;
+    }
+    const status = context?.status ? ` (HTTP ${context.status})` : '';
+    throw new Error(detail ?? `${error.message}${status}`);
   }
+  const payload = data as T & { error?: unknown };
+  if (payload && typeof payload === 'object' && typeof payload.error === 'string') throw new Error(payload.error);
   return data as T;
 }
 
 export function HallyuAIPanel() {
   const { me } = useApp();
+  const compact = useWindowDimensions().width < 430;
   const toast = useToast();
   const [ping, setPing] = useState<Ping | null>(null);
   const [tasks, setTasks] = useState<AiTask[]>([]);
@@ -242,8 +251,13 @@ export function HallyuAIPanel() {
       </View>
 
       {error ? (
-        <View style={[styles.card, { borderLeftColor: '#ff453a' }]}>
-          <Text variant="caption" tone="secondary">{error}</Text>
+        <View style={[styles.card, styles.errorCard]}>
+          <View style={styles.errorHeading}>
+            <Ionicons name="alert-circle" size={18} color={colors.danger} />
+            <Text variant="label" style={{ color: colors.danger, flex: 1 }}>AI connection error</Text>
+          </View>
+          <Text variant="caption" style={{ color: colors.textPrimary }}>{error}</Text>
+          <Button label="Retry connection" variant="secondary" size="sm" onPress={() => void loadAll()} />
         </View>
       ) : null}
 
@@ -253,18 +267,35 @@ export function HallyuAIPanel() {
         <Text variant="caption" tone="tertiary" style={{ marginTop: 4 }}>
           It investigates the real backend before answering. Executives can hand it operational tasks.
         </Text>
-        <View style={{ flexDirection: 'row', gap: space.x2, marginTop: space.x3 }}>
+        <View style={[styles.askRow, compact && styles.askRowCompact]}>
           <TextInput
             value={question}
             onChangeText={setQuestion}
             placeholder={me.role === 'ceo' ? 'How is Hallyu performing this week?' : 'Ask about Hallyu…'}
             placeholderTextColor={colors.textTertiary}
             multiline
-            style={styles.input}
+            maxLength={6000}
+            editable={!busy}
+            accessibilityLabel="Ask Hallyu AI"
+            style={[styles.input, compact && styles.inputCompact]}
           />
-          <Button label={busy ? 'Thinking…' : 'Ask'} variant="primary" size="sm" disabled={busy || !question.trim()} onPress={() => void ask()} />
+          <Button
+            label={busy ? 'Thinking…' : 'Ask Hallyu AI'}
+            icon="sparkles"
+            variant="primary"
+            size="md"
+            block={compact}
+            loading={busy}
+            disabled={busy || !question.trim()}
+            onPress={() => void ask()}
+          />
         </View>
-        {lastResponse ? <Text variant="caption" tone="secondary" style={styles.response}>{lastResponse}</Text> : null}
+        {lastResponse ? (
+          <View style={styles.response}>
+            <Text variant="overline" tone="tertiary">HALLYU AI RESPONSE</Text>
+            <Text variant="body" style={{ color: colors.textPrimary }} selectable>{lastResponse}</Text>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.card}>
@@ -373,7 +404,11 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: space.x2, marginTop: space.x2 },
-  response: { marginTop: space.x3, padding: space.x2, backgroundColor: colors.canvas, borderRadius: radius.sm },
+  errorCard: { borderLeftColor: colors.danger, gap: space.x2 },
+  errorHeading: { flexDirection: 'row', alignItems: 'center', gap: space.x2 },
+  askRow: { flexDirection: 'row', alignItems: 'flex-end', gap: space.x2, marginTop: space.x3 },
+  askRowCompact: { flexDirection: 'column', alignItems: 'stretch' },
+  response: { marginTop: space.x3, padding: space.x3, backgroundColor: colors.canvas, borderRadius: radius.sm, gap: space.x2 },
   subsection: { marginTop: space.x2, paddingTop: space.x2, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderSubtle, gap: 4 },
   input: {
     flex: 1,
@@ -387,4 +422,5 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     textAlignVertical: 'top',
   },
+  inputCompact: { minHeight: 96, width: '100%' },
 });

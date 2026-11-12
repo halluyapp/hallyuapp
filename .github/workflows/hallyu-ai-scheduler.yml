@@ -21,9 +21,9 @@ concurrency:
 
 jobs:
   dispatch:
-    # Scheduled workflows only run on the default branch. The edge function independently pins
-    # refs/heads/main and this exact workflow before accepting the OIDC token.
-    if: (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    # Scheduled workflows only run on the repository's actual default branch. The edge function
+    # independently pins this ref and exact workflow before accepting the OIDC token.
+    if: (github.event_name == 'schedule' && github.ref == 'refs/heads/arena/c5e9499c-grok-hallyu') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - name: Dispatch due schedules with GitHub OIDC
