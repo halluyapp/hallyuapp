@@ -13,19 +13,25 @@ Admin Command Centre (components/admin/HallyuAIPanel.tsx, section "ai")
 hallyu-ai-operator edge function   ← verify_jwt, re-checks live profiles.role per call
   • agent loop: model plan → tool call → verify → answer (max 5 steps)
   • fixed tool allowlist (never arbitrary SQL from the model)
-  • approval gate for restricted tools
-  • Rork AI Cloud for the model (OpenAI-compatible adapter)
+  • autonomous by default (approval gate optional, off unless enabled)
+  • Rork AI Cloud for the model (toolkit gateway → OpenAI-compatible chat completions)
         ▼
 Existing backend: get_bootstrap, posts/comments (read-only), send_admin_broadcast,
 hallyu_ai_* state tables (service-role only, RLS deny-all to clients)
 ```
 
-## Permission tiers (spec §6)
+## Autonomy model
 
-- **Autonomous:** `platform_overview`, `community_pulse`, `member_context`, `remember`.
-- **Staff approval required:** `send_broadcast` — the loop parks the task as
-  `awaiting_approval`, creates an `hallyu_ai_approval` row, and resumes only after an admin or
-  the CEO approves in the Command Centre.
+The operator is **fully autonomous by default** — no approval stops. The AI sends broadcasts and
+acts on real data whenever it decides to, day or night.
+
+- **Autonomous tools:** `platform_overview`, `community_pulse`, `member_context`, `remember`, and
+  `send_broadcast` (runs immediately).
+- **Optional approval gate (default off):** write one config row to re-enable it —
+  `insert into hallyu_ai_memory (kind, key, value) values ('config','approval_mode','{"mode":"on"}')`.
+  With the gate on, `send_broadcast` parks as `awaiting_approval` and resumes only after an admin
+  or the CEO approves it in the Command Centre. Delete the row (or set `"mode":"off"`) to return
+  to full autonomy.
 - **Non-staff callers** never see staff tools at all — they are removed from the model's
   registry, not merely blocked at run time.
 
@@ -33,8 +39,22 @@ hallyu_ai_* state tables (service-role only, RLS deny-all to clients)
 
 - Every tool call is recorded (`hallyu_ai_tool_call`) with its real outcome, errors included.
 - A task that fails is set `failed` with the real error, and the panel shows it verbatim.
-- With model credentials unset, every action answers 503 naming the missing configuration —
+- With Rork AI Cloud unreachable, every action answers 503 naming the exact missing secret —
   the panel prints exactly that instead of pretending the AI works.
+
+## The model: Rork AI Cloud, no owner secrets needed
+
+The model adapter calls the **Rork Toolkit gateway** (`TOOLKIT_URL`, default
+`https://toolkit.rork.com`, path `/v2/vercel/v1/chat/completions`) with the **Rork toolkit secret
+key** — the same credential Rork Cloud provisions on its own backends. Default model:
+`anthropic/claude-sonnet-5` (override with the `RORK_AI_MODEL` function secret).
+
+On a Rork-managed backend the toolkit envs are provisioned automatically — **nothing to set**.
+On a self-owned Supabase project, copy one secret:
+
+```bash
+supabase secrets set RORK_TOOLKIT_SECRET_KEY=<Rork toolkit secret key>
+```
 
 ## To activate (one-time, after the migration applies)
 
@@ -42,13 +62,11 @@ hallyu_ai_* state tables (service-role only, RLS deny-all to clients)
 supabase db push                                          # applies migration 67
 supabase functions deploy hallyu-ai-operator
 supabase functions deploy auth-broker                    # also fixes web sign-in (see docs/WEB-AUTH-CONNECTION-FIX.md)
-supabase secrets set RORK_AI_BASE_URL=<rork-ai-cloud endpoint> \
-                    RORK_AI_API_KEY=<gateway key> \
-                    RORK_AI_MODEL=<model id>
+# no model secrets needed on a Rork-managed backend — see the section above
 ```
 
-The adapter speaks the OpenAI chat-completions protocol, so Rork AI Cloud's gateway (or any
-compatible provider) can be swapped by changing these three secrets — no code changes.
+The adapter speaks the OpenAI chat-completions protocol against the Rork AI Cloud gateway, so the
+model can be swapped with the `RORK_AI_MODEL` secret — no code changes.
 
 ## What ships now vs. next
 

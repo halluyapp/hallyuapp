@@ -1,22 +1,25 @@
 // hallyu-ai-operator — the Hallyu AI executive agent, server-side.
 //
 // Spec: docs/HALLYU_AI_PROJECT.md ("a real agent, not hardcoded chat responses"). One endpoint,
-// five actions, one tool-using loop: the model plans, calls real backend tools from a fixed
-// allowlist, records every call in hallyu_ai_tool_call, and asks staff for approval before any
-// restricted action. It never fakes success: a failed tool is recorded as failed and reported.
+// five actions, one tool-using loop: the model plans and calls real backend tools from a fixed
+// allowlist, records every call in hallyu_ai_tool_call, and reports failures honestly. It never
+// fakes success: a failed tool is recorded as failed and told to the caller.
 //
-// Model credentials (set once, never in the repo):
-//   supabase secrets set RORK_AI_BASE_URL=... RORK_AI_API_KEY=... RORK_AI_MODEL=...
-// Until they are set, every action answers 503 with exactly that reason — the operator does not
-// pretend to run without a model.
+// AUTONOMOUS BY DEFAULT: the AI does not wait for staff permission. Broadcasts go out immediately.
+// Staff approval can be re-enabled per backend with one config row (see approvalMode()).
+//
+// Model: Rork AI Cloud (the Rork Toolkit gateway → the AI gateway). A Rork-managed backend carries
+// the toolkit envs natively, so no secrets are required from the owner. On a self-owned Supabase
+// project, copy ONE secret: `supabase secrets set RORK_TOOLKIT_SECRET_KEY=…`. Until it is present,
+// every action answers 503 naming exactly that — the operator does not pretend to run without a model.
 
 import { corsHeaders } from '../_shared/cors.ts';
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const AI_BASE_URL = (Deno.env.get('RORK_AI_BASE_URL') ?? '').replace(/\/$/, '');
-const AI_API_KEY = Deno.env.get('RORK_AI_API_KEY') ?? '';
-const AI_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'gpt-5';
+const TOOLKIT_URL = (Deno.env.get('TOOLKIT_URL') ?? Deno.env.get('EXPO_PUBLIC_TOOLKIT_URL') ?? 'https://toolkit.rork.com').replace(/\/$/, '');
+const TOOLKIT_KEY = Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('RORK_AI_API_KEY') ?? '';
+const AI_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'anthropic/claude-sonnet-5';
 
 const MAX_STEPS = 5;
 
@@ -147,7 +150,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'send_broadcast',
-    description: 'Send an official Hallyu announcement/broadcast to the community. STAFF APPROVAL REQUIRED.',
+    description: 'Send an official Hallyu announcement/broadcast to the whole community.',
     args: '{ "title": "...", "body": "...", "path": "/ or /events or /(tabs)/explore" }',
     staff: true,
     approval: true,
@@ -170,24 +173,41 @@ function toolManifest(staff: boolean): string {
     .join('\n');
 }
 
-// ── model adapter (OpenAI-compatible; Rork AI Cloud endpoint is set via secrets) ───────────────
+// ── autonomy switch (default OFF = fully autonomous) ──────────────────────────────────────────
+// The owner can park broadcasts behind staff approval by writing one config row
+// (hallyu_ai_memory, kind='config', key='approval_mode', value={"mode":"on"}); the Command Centre
+// then shows the pending action to approve. Default is no approval — the AI works anytime, anyhow.
+
+async function approvalMode(): Promise<'on' | 'off'> {
+  try {
+    const res = await db(`hallyu_ai_memory?select=value&kind=eq.config&key=eq.approval_mode&order=created_at.desc&limit=1`);
+    if (!res.ok) return 'off';
+    const rows = (await res.json()) as { value?: { mode?: string } }[];
+    return rows[0]?.value?.mode === 'on' ? 'on' : 'off';
+  } catch {
+    return 'off';
+  }
+}
+
+// ── model adapter (Rork AI Cloud) ──────────────────────────────────────────────────────────────
 
 async function callModel(messages: { role: string; content: string }[]): Promise<string> {
-  if (!AI_BASE_URL || !AI_API_KEY) {
+  if (!TOOLKIT_KEY) {
     throw Object.assign(
       new Error(
-        'Hallyu AI model credentials are not configured on the backend. Set RORK_AI_BASE_URL, RORK_AI_API_KEY and RORK_AI_MODEL with `supabase secrets set`, then retry.',
+        'Rork AI Cloud is not reachable from this backend: the RORK_TOOLKIT_SECRET_KEY function secret is missing. On a Rork-managed backend it is provisioned automatically; otherwise set it once with `supabase secrets set RORK_TOOLKIT_SECRET_KEY=…`.',
       ),
       { statusCode: 503 },
     );
   }
-  const res = await fetch(`${AI_BASE_URL}/chat/completions`, {
+  const res = await fetch(`${TOOLKIT_URL}/v2/vercel/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_API_KEY}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOOLKIT_KEY}` },
     body: JSON.stringify({ model: AI_MODEL, messages, temperature: 0.3 }),
   });
   if (!res.ok) {
-    throw Object.assign(new Error(`model call failed (HTTP ${res.status}).`), { statusCode: 502 });
+    const detail = (await res.text()).slice(0, 300);
+    throw Object.assign(new Error(`Rork AI Cloud call failed (HTTP ${res.status})${detail ? `: ${detail}` : '.'}`), { statusCode: 502 });
   }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
   const content = data.choices?.[0]?.message?.content;
@@ -207,9 +227,9 @@ function parseProtocol(content: string): { tool?: string; args?: Record<string, 
   }
 }
 
-const SYSTEM_PROMPT = (staff: boolean) => `You are Hallyu AI, the autonomous AI executive of the Hallyu social platform (K-drama, C-drama, anime, Hollywood fan community).
+const SYSTEM_PROMPT = (staff: boolean, autonomous: boolean) => `You are Hallyu AI, the autonomous AI executive of the Hallyu social platform (K-drama, C-drama, anime, Hollywood fan community).
 You are transparent that you are an AI. Never impersonate a human member.
-Rules: investigate real data with your tools before answering; never invent numbers or news; if evidence is missing, say so and name what is missing; report failures honestly.
+Rules: investigate real data with your tools before answering; never invent numbers or news; if evidence is missing, say so and name what is missing; report failures honestly.${autonomous ? '' : '\nRestricted tools require staff approval: when you pick one, the task parks until staff approve it in the Command Centre.'}
 Available tools:\n${toolManifest(staff)}
 Answer ONLY with JSON: either {"tool": "<name>", "args": {...}} to run one tool step, or {"final": "<your answer to the member>"} when you can answer without tools.`;
 
@@ -269,9 +289,10 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
   }
 
   const staff = isStaffRole(task.requester_role);
+  const autonomous = (await approvalMode()) === 'off';
   const tools = registryFor(staff);
   const history: { role: string; content: string }[] = [
-    { role: 'system', content: SYSTEM_PROMPT(staff) },
+    { role: 'system', content: SYSTEM_PROMPT(staff, autonomous) },
     { role: 'user', content: task.prompt },
   ];
   let answer: string | null = null;
@@ -296,7 +317,7 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
         history.push({ role: 'user', content: `Tool "${protocol.tool}" is not available. Use another tool or answer with {"final": ...}.` });
         continue;
       }
-      if (tool.approval && !(await approvedFor(taskId, tool.name))) {
+      if (tool.approval && !autonomous && !(await approvedFor(taskId, tool.name))) {
         await recordToolCall(taskId, seq, tool.name, protocol.args, { status: 'awaiting_approval' });
         await insertRow('hallyu_ai_approval', {
           task_id: taskId,
@@ -363,9 +384,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     switch (body.action) {
       case 'ping': {
         return json({
-          model_configured: Boolean(AI_BASE_URL && AI_API_KEY),
+          model_configured: Boolean(TOOLKIT_KEY),
           model: AI_MODEL,
           staff,
+          approval_mode: await approvalMode(),
           tools: registryFor(staff).map((tool) => tool.name),
         });
       }

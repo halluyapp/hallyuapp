@@ -143,7 +143,7 @@ export function HallyuAIPanel() {
             ? 'Checking the operator…'
             : ping.model_configured
               ? `Online — model ${ping.model} · tools: ${ping.tools.join(', ')}`
-              : 'Connected, but the model credentials (RORK_AI_BASE_URL / RORK_AI_API_KEY / RORK_AI_MODEL) are not set on the backend yet, so the AI cannot think until they are. This panel will not pretend otherwise.'}
+              : 'Connected, but Rork AI Cloud is not reachable from the backend yet (the RORK_TOOLKIT_SECRET_KEY function secret is missing). On a Rork-managed backend it is provisioned automatically; otherwise set it once with `supabase secrets set`. This panel will not pretend otherwise.'}
         </Text>
       </View>
 
