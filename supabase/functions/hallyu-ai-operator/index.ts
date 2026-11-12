@@ -112,7 +112,10 @@ async function callerProfile(req: Request): Promise<{ id: string; role: string }
   return profile?.id ? { id: profile.id, role: profile.role } : null;
 }
 
-const isStaffRole = (role: string | undefined) => role === 'admin' || role === 'ceo';
+// `system` is the scheduler's scope. It is never derived from a request body: only a service-role
+// call (the OIDC-authorised scheduler) or a schedule row produces it, so autonomous work can
+// publish while staff tools stay invisible to members.
+const isStaffRole = (role: string | undefined) => role === 'admin' || role === 'ceo' || role === 'system';
 
 // ── tool registry: fixed allowlist, real backend actions only ──────────────────────────────────
 // `staff` tools are removed from the registry entirely for non-admin callers, so the model cannot
@@ -225,50 +228,132 @@ const TOOLS: Tool[] = [
     args: '{ "title": "...", "body": "...", "path": "/ or /events or /(tabs)/explore" }',
     staff: true,
     approval: true,
-    run: async (args, ctx) =>
-      rpc('hallyu_ai_execute_broadcast', {
-        p_task: ctx.taskId,
-        p_args: args,
+    run: async (args) =>
+      rpc('send_admin_broadcast', {
+        p_title: String(args.title ?? 'Hallyu announcement').slice(0, 90),
+        p_body: String(args.body ?? '').slice(0, 4000),
+        p_path: String(args.path ?? '/'),
       }),
   },
   {
     name: 'publish_post',
-    description: 'Publish a public post or update to the Hallyu feed. Gated behind staff approval.',
-    args: '{ "title": "string (optional)", "body": "string", "hashtags": "string[] (optional)" }',
+    description: 'Publish a real feed post as the official Hallyu AI account. Grounded in the catalogue or live discussion only.',
+    args: '{ "title": "<=90 chars (optional)", "body": "<=5000 chars", "world": "kdrama|cdrama|anime|hollywood", "hashtags": "string[] (optional)" }',
     staff: true,
-    approval: true,
-    run: async (args, ctx) =>
-      rpc('hallyu_ai_publish', {
-        p_task: ctx.taskId,
-        p_kind: 'publish_post',
-        p_args: args,
-      }),
+    run: async (args, ctx) => {
+      const body = String(args.body ?? '').trim();
+      if (!body) throw new Error('body is required');
+      return rpc('hallyu_ai_publish', {
+        p_task_id: ctx.taskId,
+        p_action: 'publish_post',
+        p_title: String(args.title ?? '').slice(0, 90),
+        p_body: body.slice(0, 5000),
+        p_payload: {
+          world: args.world ?? null,
+          hashtags: Array.isArray(args.hashtags) ? args.hashtags.slice(0, 8) : [],
+        },
+        p_sources: Array.isArray(args.sources) ? args.sources : [],
+      });
+    },
   },
   {
     name: 'reply_comment',
-    description: 'Post a comment reply to an existing public post. Gated behind staff approval.',
-    args: '{ "post_id": "uuid", "body": "string" }',
+    description: 'Reply to an existing public post as the official Hallyu AI account.',
+    args: '{ "post_id": "uuid", "parent_id": "uuid (optional)", "body": "<=1000 chars" }',
     staff: true,
-    approval: true,
-    run: async (args, ctx) =>
-      rpc('hallyu_ai_publish', {
-        p_task: ctx.taskId,
-        p_kind: 'reply_comment',
-        p_args: args,
-      }),
+    run: async (args, ctx) => {
+      const postId = String(args.post_id ?? '');
+      if (!/^[0-9a-f-]{36}$/i.test(postId)) throw new Error('post_id must be a uuid');
+      const body = String(args.body ?? '').trim();
+      if (!body) throw new Error('body is required');
+      const parentId = typeof args.parent_id === 'string' && /^[0-9a-f-]{36}$/i.test(args.parent_id) ? args.parent_id : null;
+      return rpc('hallyu_ai_publish', {
+        p_task_id: ctx.taskId,
+        p_action: 'reply_comment',
+        p_title: null,
+        p_body: body.slice(0, 1000),
+        p_payload: { post_id: postId, parent_id: parentId },
+        p_sources: [],
+      });
+    },
   },
   {
     name: 'create_poll',
-    description: 'Create a community poll attached to a public post. Gated behind staff approval.',
-    args: '{ "question": "string", "options": "string[]", "body": "string (optional)" }',
+    description: 'Publish a real community poll (2–4 distinct options) as the official Hallyu AI account.',
+    args: '{ "question": "<=240 chars", "options": ["a", "b"], "world": "kdrama|cdrama|anime|hollywood", "hours": 168 }',
     staff: true,
-    approval: true,
-    run: async (args, ctx) =>
-      rpc('hallyu_ai_publish', {
-        p_task: ctx.taskId,
-        p_kind: 'create_poll',
-        p_args: args,
-      }),
+    run: async (args, ctx) => {
+      const options = Array.isArray(args.options)
+        ? args.options.map((option) => String(option).trim()).filter(Boolean).slice(0, 4)
+        : [];
+      if (options.length < 2) throw new Error('a poll needs 2–4 non-empty options');
+      return rpc('hallyu_ai_publish', {
+        p_task_id: ctx.taskId,
+        p_action: 'create_poll',
+        p_title: String(args.question ?? 'Hallyu poll').slice(0, 240),
+        p_body: String(args.question ?? 'Hallyu poll').slice(0, 5000),
+        p_payload: { options, world: args.world ?? null, hours: Number(args.hours) || 168, hashtags: ['poll'] },
+        p_sources: [],
+      });
+    },
+  },
+  {
+    name: 'analytics_snapshot',
+    description: 'Real measured platform numbers (members, posts, comments, reactions, AI output) with the period each covers.',
+    args: '{}',
+    staff: false,
+    run: async () => rpc('hallyu_ai_analytics', {}),
+  },
+  {
+    name: 'publishing_status',
+    description: 'How many items were really published today against the three-per-day target, plus recent attempts and their outcome.',
+    args: '{}',
+    staff: false,
+    run: async () => rpc('hallyu_ai_publication_summary', {}),
+  },
+  {
+    name: 'catalog_digest',
+    description: 'Real catalogue titles the platform already holds (TMDB-backed) to ground content in shows and films that exist.',
+    args: '{ "world": "kdrama|cdrama|anime|hollywood" (optional), "limit": 10 }',
+    staff: false,
+    run: async (args) => {
+      const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 25);
+      const world = typeof args.world === 'string' && args.world.trim() ? String(args.world).trim() : null;
+      return world
+        ? rpc('get_world_discoveries', { p_world: world, p_limit: limit })
+        : rpc('get_home_discovery', { p_limit: limit });
+    },
+  },
+  {
+    name: 'recall',
+    description: 'Read durable operational memory previously stored with remember.',
+    args: '{ "kind": "decision|campaign_outcome|pattern|note" (optional), "limit": 10 }',
+    staff: false,
+    run: async (args) => {
+      const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
+      const kind = typeof args.kind === 'string' && args.kind.trim() ? String(args.kind).trim() : null;
+      const filter = kind ? `&kind=eq.${encodeURIComponent(kind)}` : '';
+      const res = await db(`hallyu_ai_memory?select=kind,key,value,created_at${filter}&order=created_at.desc&limit=${limit}`);
+      if (!res.ok) throw new Error(`could not read memory (HTTP ${res.status})`);
+      return res.json();
+    },
+  },
+  {
+    name: 'notify_owner',
+    description: 'Send one in-app notification to the Hallyu owner with a finding or alert that actually matters.',
+    args: '{ "title": "<=90 chars", "body": "<=400 chars" }',
+    staff: true,
+    run: async (args) => {
+      const owner = await rpc('hallyu_ai_owner_id', {});
+      if (typeof owner !== 'string' || !owner) throw new Error('no active CEO profile to notify');
+      return rpc('notify_recipient', {
+        p_recipient: owner,
+        p_kind: 'system',
+        p_group: 'system',
+        p_title: String(args.title ?? 'Hallyu AI').slice(0, 90),
+        p_body: String(args.body ?? '').slice(0, 400),
+      });
+    },
   },
   {
     name: 'list_schedules',
@@ -379,9 +464,11 @@ function parseProtocol(content: string): { tool?: string; args?: Record<string, 
   }
 }
 
-const SYSTEM_PROMPT = (staff: boolean) => `You are Hallyu AI, the AI operator of the Hallyu social platform (K-drama, C-drama, anime, Hollywood fan community).
+const SYSTEM_PROMPT = (staff: boolean) => `You are Hallyu AI, the operator of the Hallyu social platform (K-drama, C-drama, anime, Hollywood fan community).
 You are transparent that you are an AI. Never impersonate a human member.
-Rules: investigate real data with your tools before answering; never invent numbers or news; if evidence is missing, say so and name what is missing; report failures honestly. Public actions require staff approval and will pause in the Command Centre.
+Rules: investigate real data with your tools before answering; never invent numbers, news, release dates, quotes or sources; if evidence is missing, say so and name what is missing; report failures honestly.
+Publishing is real: publish_post, reply_comment and create_poll create live rows attributed to the official Hallyu AI account. Write original text about titles the catalogue actually holds, never present catalogue metadata as breaking news, and after publishing call publishing_status to confirm the row exists. Never claim an action succeeded that you have not verified.
+Target three genuinely useful published items per day. Never post filler to reach a number; when there is nothing worth saying, say that instead. Ordinary work needs no permission, but never spend money, change permissions, ban or delete accounts, or run destructive operations. Use notify_owner only when a finding actually matters.
 Available tools:\n${toolManifest(staff)}
 Answer ONLY with JSON: either {"tool": "<name>", "args": {...}} to run one tool step, or {"final": "<your answer to the member>"} when you can answer without tools.`;
 
@@ -506,6 +593,131 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
   }
 }
 
+// ── system callers (the 24/7 scheduler) ───────────────────────────────────────────────────────
+// `hallyu-ai-scheduler` holds the project's service credential and is itself authorised by a GitHub
+// OIDC token minted for that exact workflow, so a service-role bearer is a trusted system caller.
+// It is not a member: it resolves to the official AI profile, which is how the operator keeps
+// working while the owner and every admin are offline.
+
+function isServiceCall(req: Request): boolean {
+  const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+  return Boolean(SERVICE_ROLE) && token === SERVICE_ROLE;
+}
+
+async function systemProfile(): Promise<{ id: string; role: string } | null> {
+  try {
+    const id = await rpc('hallyu_ai_profile_id', {});
+    return typeof id === 'string' && id ? { id, role: 'system' } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ownerId(): Promise<string | null> {
+  try {
+    const id = await rpc('hallyu_ai_owner_id', {});
+    return typeof id === 'string' && id ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Run one claimed schedule row as a real task, and record what actually happened on the row. */
+async function runSchedule(row: { id: string; name: string; kind: string; prompt: string }): Promise<Record<string, unknown>> {
+  const task = (await insertRow('hallyu_ai_task', {
+    kind: row.kind,
+    title: String(row.name).slice(0, 80),
+    prompt: row.prompt,
+    requester_role: 'system',
+  })) as { id: string }[];
+  const taskId = task[0]!.id;
+  try {
+    const outcome = await runTask(taskId);
+    await db(`hallyu_ai_schedule?id=eq.${row.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ last_status: String(outcome.status ?? 'completed'), last_task_id: taskId }),
+    }).catch(() => null);
+    return { schedule: row.name, task_id: taskId, status: outcome.status, answer: outcome.answer };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    await db(`hallyu_ai_schedule?id=eq.${row.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ last_status: `failed: ${message}`.slice(0, 200), last_task_id: taskId }),
+    }).catch(() => null);
+    return { schedule: row.name, task_id: taskId, status: 'failed', error: message };
+  }
+}
+
+/** Already answered by the AI? Stops a mention being answered again on every tick. */
+async function alreadyAnswered(commentId: string): Promise<boolean> {
+  try {
+    const ai = await rpc('hallyu_ai_profile_id', {});
+    if (typeof ai !== 'string' || !ai) return true;
+    const res = await db(`comments?select=id&parent_id=eq.${commentId}&author_id=eq.${ai}&state=eq.active&limit=1`);
+    if (!res.ok) return true; // fail closed: never double-post because a read failed
+    return ((await res.json()) as unknown[]).length > 0;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * One autonomous tick. Claims due schedules (claim is SKIP LOCKED in the database, so two ticks can
+ * never run the same row), executes each as a real task, then answers new @hallyu.ai mentions.
+ * Capacity or failures are reported, never hidden: a failed run leaves its error on the row and a
+ * single owner-facing shift report summarises the tick.
+ */
+async function runDueWork(mentionLimit = 2): Promise<Record<string, unknown>> {
+  const due = (await rpc('hallyu_ai_claim_due_schedules', { p_limit: 3 })) as
+    | { id: string; name: string; kind: string; prompt: string }[]
+    | null;
+  const claimed = Array.isArray(due) ? due : [];
+  const runs: Record<string, unknown>[] = [];
+  for (const row of claimed) runs.push(await runSchedule(row));
+
+  // Mentions are handled inside the tick so no second process has to run anywhere.
+  const mentions: Record<string, unknown>[] = [];
+  try {
+    const res = await db(
+      `comments?select=id,post_id,body&state=eq.active&body=ilike.*%40hallyu.ai*&order=created_at.desc&limit=${Math.min(Math.max(mentionLimit, 1), 5)}`,
+    );
+    const candidates = res.ok ? ((await res.json()) as { id: string; post_id: string; body: string }[]) : [];
+    for (const comment of candidates) {
+      if (await alreadyAnswered(comment.id)) continue;
+      const task = (await insertRow('hallyu_ai_task', {
+        kind: 'mention_reply',
+        title: `Reply to mention ${comment.id.slice(0, 8)}`,
+        prompt: `A member addressed you in comment ${comment.id} on post ${comment.post_id}: "${comment.body.slice(0, 500)}". Read the post first if you need context, then answer with reply_comment using post_id ${comment.post_id} and parent_id ${comment.id}. Be useful and accurate; if you cannot help substantively, do not reply and explain why in {"final": ...}.`,
+        requester_role: 'system',
+      })) as { id: string }[];
+      const outcome = await runTask(task[0]!.id).catch((e) => ({ status: 'failed', error: String(e) }));
+      mentions.push({ comment_id: comment.id, task_id: task[0]!.id, status: outcome.status });
+    }
+  } catch (e) {
+    mentions.push({ status: 'failed', error: e instanceof Error ? e.message : String(e) });
+  }
+
+  if (claimed.length === 0 && mentions.length === 0) {
+    return { claimed: 0, runs: [], mentions: [], detail: 'nothing due; the next tick picks up new work' };
+  }
+
+  // One owner-facing summary per tick, so the owner sees the AI working without opening a console.
+  const owner = await ownerId();
+  if (owner) {
+    const completed = runs.filter((run) => run.status === 'completed').length;
+    const failed = runs.filter((run) => run.status === 'failed').length;
+    await rpc('notify_recipient', {
+      p_recipient: owner,
+      p_kind: 'system',
+      p_group: 'system',
+      p_title: 'Hallyu AI shift report',
+      p_body: `${claimed.length} scheduled task(s) ran: ${completed} completed, ${failed} failed; ${mentions.length} mention(s) handled.`,
+    }).catch(() => null);
+  }
+
+  return { claimed: claimed.length, runs, mentions };
+}
+
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -518,9 +730,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
     new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   try {
-    const profile = await callerProfile(req);
-    if (!profile) return json({ error: 'sign in required' }, 401);
-    const staff = isStaffRole(profile.role);
+    const system = isServiceCall(req);
+    const profile = system ? await systemProfile() : await callerProfile(req);
+    if (!profile) {
+      return json(
+        system
+          ? { error: 'the official Hallyu AI profile is unavailable on this backend' }
+          : { error: 'sign in required' },
+        system ? 503 : 401,
+      );
+    }
+    const staff = system || isStaffRole(profile.role);
 
     const body = (await req.json().catch(() => ({}))) as {
       action?: string;
@@ -530,6 +750,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       approval_id?: string;
       approve?: boolean;
       note?: string;
+      limit?: number;
     };
 
     switch (body.action) {
@@ -580,17 +801,41 @@ Deno.serve(async (req: Request): Promise<Response> => {
       case 'approval.decide': {
         if (!staff) return json({ error: 'admin or ceo role required' }, 403);
         if (!body.approval_id) return json({ error: 'approval_id is required' }, 400);
-        const outcome = await rpc('hallyu_ai_decide_approval_verified', {
+        const outcome = await rpc('hallyu_ai_decide_approval', {
           p_approval: body.approval_id,
           p_approve: Boolean(body.approve),
           p_note: body.note ?? null,
-          p_approver: profile.id,
         });
         return json({ decided: outcome });
       }
 
+      case 'schedule.run_due': {
+        if (!staff) return json({ error: 'admin or ceo role required' }, 403);
+        return json(await runDueWork(Number(body.limit) || 2));
+      }
+
+      case 'schedule.list': {
+        if (!staff) return json({ error: 'admin or ceo role required' }, 403);
+        const res = await db(
+          'hallyu_ai_schedule?select=name,kind,interval_minutes,enabled,last_run_at,next_run_at,last_status&order=interval_minutes.asc',
+        );
+        if (!res.ok) return json({ error: `could not read the schedule (HTTP ${res.status})` }, 502);
+        return json({ schedules: await res.json() });
+      }
+
+      case 'mentions.answer': {
+        if (!staff) return json({ error: 'admin or ceo role required' }, 403);
+        return json(await runDueWork(Number(body.limit) || 2));
+      }
+
       default:
-        return json({ error: 'unknown action — use ping, chat, task.create, task.run or approval.decide' }, 400);
+        return json(
+          {
+            error:
+              'unknown action — use ping, chat, task.create, task.run, approval.decide, schedule.run_due, schedule.list or mentions.answer',
+          },
+          400,
+        );
     }
   } catch (e) {
     const status = e instanceof Error && 'statusCode' in e ? Number((e as { statusCode?: number }).statusCode) || 500 : 500;
