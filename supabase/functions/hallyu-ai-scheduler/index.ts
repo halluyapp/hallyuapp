@@ -13,7 +13,18 @@
 // schedules, running tasks, publishing, notifying the owner) stays inside the operator, where the
 // model, tools and publication ledger already live. This function never publishes anything itself.
 
-import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
+// Self-contained on purpose: this function is deployed as a single file, so it cannot rely on a
+// sibling module resolving at bundle time. The policy matches supabase/functions/_shared/cors.ts.
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
+const jsonResponse = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+const errorResponse = (message: string, status = 400): Response => jsonResponse({ error: message }, status);
 
 const SUPABASE_URL = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
