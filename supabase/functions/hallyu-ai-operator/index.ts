@@ -436,6 +436,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       case 'approval.decide': {
         if (!staff) return jsonResponse({ error: 'admin or ceo role required' }, 403);
         if (!validUuid(body.approval_id)) return jsonResponse({ error: 'approval_id is required' }, 400);
+        if (typeof body.approve !== 'boolean') return jsonResponse({ error: 'approve must be a JSON boolean' }, 400);
         const approval = (await rows<{ task_id: string }>(`hallyu_ai_approval?select=task_id&id=eq.${body.approval_id}&limit=1`))[0];
         const outcome = await rpc('hallyu_ai_operator_decide_approval', { p_approval: body.approval_id, p_approve: Boolean(body.approve), p_decider: profile.id, p_note: boundedText(body.note, 500) || null });
         if (body.approve && outcome === 'approved' && approval) return jsonResponse({ decided: outcome, ...(await runTask(approval.task_id)) });
@@ -443,6 +444,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
       case 'schedule.update': {
         if (!staff || !validUuid(body.schedule_id)) return jsonResponse({ error: 'staff role and schedule_id required' }, 403);
+        if (typeof body.enabled !== 'boolean') return jsonResponse({ error: 'enabled must be a JSON boolean' }, 400);
         const interval = Number(body.interval_minutes);
         if (!Number.isInteger(interval) || interval < 15 || interval > 10080) return jsonResponse({ error: 'interval must be 15–10080 minutes' }, 400);
         const prompt = boundedText(body.prompt, 6000);

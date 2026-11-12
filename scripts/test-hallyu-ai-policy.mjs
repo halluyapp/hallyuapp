@@ -43,6 +43,8 @@ test('operator validates Rork JWTs through PostgREST and uses attributable publi
   assert.match(operator, /hallyu_ai_operator_decide_approval/);
   assert.match(operator, /hallyu_ai_publish/);
   assert.doesNotMatch(operator, /send_admin_broadcast/);
+  assert.match(operator, /typeof body\.approve !== 'boolean'/);
+  assert.match(operator, /typeof body\.enabled !== 'boolean'/);
   assert.doesNotMatch(operator, /execute_sql|run_sql|deploy_project|update_schema/);
 });
 
