@@ -88,19 +88,24 @@ jobs:
           jq -e '.universal_only == true' /tmp/probe2.json >/dev/null \
             || { echo "::error title=Unexpected release shape::expected universal_only: true"; exit 1; }
 
-      - name: Supervised Rork model validation
+      - name: Result
+        run: echo "::notice title=Backend live::$EXPO_PUBLIC_SUPABASE_URL answered every probe (universal-only release channel verified)."
+
+  validate-ai:
+    name: Supervised AI validation
+    if: inputs.validate_rork_model || inputs.validate_ai_operator
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Rork model validation
         if: inputs.validate_rork_model
         run: |
           TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=hallyu-ai-scheduler" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")
           curl -fsS -X POST "https://ltyymanoidagwsapgiql.supabase.co/functions/v1/hallyu-ai-scheduler" \
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{"action":"model.validate"}'
 
-      - name: Supervised AI operator validation
+      - name: AI operator validation
         if: inputs.validate_ai_operator
         run: |
           TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=hallyu-ai-scheduler" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value))")
           curl -fsS -X POST "https://ltyymanoidagwsapgiql.supabase.co/functions/v1/hallyu-ai-scheduler" \
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{"action":"operator.validate"}'
-
-      - name: Result
-        run: echo "::notice title=Backend live::$EXPO_PUBLIC_SUPABASE_URL answered every probe (universal-only release channel verified)."
