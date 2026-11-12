@@ -137,7 +137,11 @@ verify_jwt = false
 # The Hallyu AI executive agent. Caller JWTs ARE verified; the function re-checks the caller's
 # live profiles.role before every admin action and runs the tool loop with full audit records.
 [functions.hallyu-ai-operator]
-verify_jwt = true
+# Members sign in through Rork Auth, whose tokens this project's edge gateway cannot verify.
+# `true` rejects every real call at the edge (UNAUTHORIZED_INVALID_JWT_FORMAT) before the function
+# runs. Identity is verified inside the function instead, by PostgREST (hallyu_ai_caller_profile),
+# so a forged or anonymous caller still resolves to no profile.
+verify_jwt = false
 
 # Applied by `supabase db reset` after the migrations run. Reference data only: worlds and the
 # catalog providers. No member content is ever seeded.

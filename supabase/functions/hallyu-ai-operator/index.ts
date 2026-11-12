@@ -81,30 +81,36 @@ async function insertRow(table: string, row: unknown): Promise<unknown> {
   return JSON.parse(text);
 }
 
-// ── caller identity (JWT already verified by the platform; we re-check the live role) ──────────
+// ── caller identity ───────────────────────────────────────────────────────────────────────────
+//
+// This function MUST deploy with `verify_jwt = false` (supabase/config.toml says so): members sign
+// in through Rork Auth, and the edge gateway cannot verify Rork-issued tokens, so `verify_jwt = true`
+// rejects every real call at the edge with UNAUTHORIZED_INVALID_JWT_FORMAT and the function never
+// runs. Turning off the gateway check is not a hole, because identity is verified below by PostgREST:
+// we hand the caller's own Bearer credential to `hallyu_ai_caller_profile()`, PostgREST validates the
+// signature, and only a genuine active member resolves to a profile. Nothing here trusts a claim the
+// caller could write themselves.
 
-function jwtSub(req: Request): string | null {
-  const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-    return typeof payload.sub === 'string' && payload.sub ? payload.sub : null;
-  } catch {
-    return null;
-  }
-}
+async function callerProfile(req: Request): Promise<{ id: string; role: string } | null> {
+  const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+  if (!token) return null;
 
-async function callerProfile(sub: string | null): Promise<{ id: string; role: string } | null> {
-  if (!sub) return null;
-  const rows = (await rpc('hallyu_ai_profile_by_sub', { p_sub: sub }).catch(() => null)) as
-    | { id: string; role: string }[]
-    | null;
-  if (rows && rows[0]?.id) return rows[0];
-  // Fallback: direct read on the canonical column pair.
-  const res = await db(`profiles?select=id,role,account_status&auth_sub=eq.${encodeURIComponent(sub)}&limit=1`);
-  if (!res.ok) return null;
-  const list = (await res.json()) as { id: string; role: string; account_status: string }[];
-  const profile = list[0];
-  return profile && profile.account_status === 'active' ? { id: profile.id, role: profile.role } : null;
+  // PostgREST is the verifier: same JWT validation every RLS-guarded app query already goes through.
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/hallyu_ai_caller_profile`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_ROLE,
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: '{}',
+  }).catch(() => null);
+  if (!res || !res.ok) return null;
+
+  const rows = (await res.json().catch(() => null)) as { id: string; role: string }[] | null;
+  const profile = Array.isArray(rows) ? rows[0] : null;
+  return profile?.id ? { id: profile.id, role: profile.role } : null;
 }
 
 const isStaffRole = (role: string | undefined) => role === 'admin' || role === 'ceo';
@@ -443,7 +449,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   try {
-    const profile = await callerProfile(jwtSub(req));
+    const profile = await callerProfile(req);
     if (!profile) return json({ error: 'sign in required' }, 401);
     const staff = isStaffRole(profile.role);
 
