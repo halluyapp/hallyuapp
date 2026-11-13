@@ -623,7 +623,6 @@ export function HallyuAIPanel() {
                   {ping.gemini_keys.map((k) => {
                     const isHealthy = k.configured && k.status === 'healthy';
                     const isCooling = k.configured && (k.status === 'cooling_down' || k.status === 'rate_limited');
-                    const isError = k.configured && k.status === 'error';
                     const tint = !k.configured ? colors.textDisabled : isHealthy ? colors.success : isCooling ? colors.warning : colors.danger;
                     const bg = !k.configured ? 'rgba(156, 163, 175, 0.1)' : isHealthy ? 'rgba(52, 211, 153, 0.12)' : isCooling ? 'rgba(251, 191, 36, 0.12)' : 'rgba(239, 68, 68, 0.12)';
                     const labelText = !k.configured

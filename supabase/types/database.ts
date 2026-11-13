@@ -306,6 +306,35 @@ export type Database = {
         };
         Relationships: [];
       };
+      hallyu_ai_vault: {
+        Row: {
+          key: string;
+          updated_at: string;
+          updated_by: string | null;
+          value: string;
+        };
+        Insert: {
+          key: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          value: string;
+        };
+        Update: {
+          key?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          value?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "hallyu_ai_vault_updated_by_fkey";
+            columns: ["updated_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
       hallyu_ai_approval: {
         Row: {
           args: Json;
