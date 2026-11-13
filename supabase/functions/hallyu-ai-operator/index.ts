@@ -323,8 +323,9 @@ const TOOLS: Tool[] = [
     run: async (args) => {
       const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 25);
       const world = typeof args.world === 'string' && args.world.trim() ? String(args.world).trim() : null;
+      // get_world_discoveries takes only a limit; the world-filtered reader is discover_catalog.
       return world
-        ? rpc('get_world_discoveries', { p_world: world, p_limit: limit })
+        ? rpc('discover_catalog', { p_world: world, p_limit: limit })
         : rpc('get_home_discovery', { p_limit: limit });
     },
   },
@@ -649,6 +650,9 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
   ];
   let answer: string | null = null;
   let seq = 0;
+  // A broken tool must not eat the whole step budget: after two consecutive failures it is taken
+  // out of this run, and the model is told to finish with what it already verified.
+  const failures = new Map<string, number>();
 
   await setTaskStatus(taskId, 'running', { model: activeModel() });
 
@@ -661,6 +665,17 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
       }
       const tool = tools.find((entry) => entry.name === protocol.tool);
       seq += 1;
+      if (tool && (failures.get(tool.name) ?? 0) >= 2) {
+        await recordToolCall(taskId, seq, tool.name, protocol.args, {
+          status: 'denied',
+          error: 'disabled for this run after repeated failures',
+        });
+        history.push({
+          role: 'user',
+          content: `Tool ${tool.name} keeps failing and is disabled. Work with what you have and answer now with {"final": ...}.`,
+        });
+        continue;
+      }
       if (!tool) {
         await recordToolCall(taskId, seq, String(protocol.tool ?? 'unknown'), protocol.args, {
           status: 'denied',
@@ -687,10 +702,16 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
           taskId,
         });
         await recordToolCall(taskId, seq, tool.name, protocol.args, { status: 'ok', result });
-        history.push({ role: 'user', content: `Tool ${tool.name} returned: ${JSON.stringify(result).slice(0, 4000)}` });
+        failures.delete(tool.name);
+        const stepsLeft = MAX_STEPS - step - 1;
+        history.push({
+          role: 'user',
+          content: `Tool ${tool.name} returned: ${JSON.stringify(result).slice(0, 4000)}${stepsLeft <= 2 ? '. You have almost no steps left: answer now with {"final": ...} using what you verified.' : ''}`,
+        });
       } catch (toolError) {
         // Honest failure: recorded, surfaced to the model, and never masked as success.
         const message = toolError instanceof Error ? toolError.message : String(toolError);
+        failures.set(tool.name, (failures.get(tool.name) ?? 0) + 1);
         await recordToolCall(taskId, seq, tool.name, protocol.args, { status: 'error', error: message });
         history.push({ role: 'user', content: `Tool ${tool.name} FAILED: ${message}. Choose another approach or report the failure in {"final": ...}.` });
       }
