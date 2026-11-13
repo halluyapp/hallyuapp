@@ -113,6 +113,21 @@ type Ping = {
   model_configured: boolean;
   provider: string;
   model: string;
+  gemini_key_count?: number;
+  gemini_keys?: {
+    label: string;
+    configured: boolean;
+    status: string;
+    consecutive_failures: number;
+    cooldown_remaining_sec: number;
+    last_latency_ms: number | null;
+  }[];
+  last_provider_failure?: { at: string; provider: string; error: string } | null;
+  last_successful_inference?: { at: string; provider: string; key_label?: string; latency_ms: number } | null;
+  failover_events?: { timestamp: string; from_key: string; to_key: string; reason: string }[];
+  avg_latency_ms?: number | null;
+  rork_fallback_enabled?: boolean;
+  lovable_ai_configured?: boolean;
   staff: boolean;
   approval_mode: string;
   tools: string[];
@@ -312,14 +327,27 @@ export function HallyuAIPanel() {
     }
   };
 
-  // Manually run a schedule
+  // Manually run a schedule ("Run Now") with full verification
   const handleRunScheduleNow = async (scheduleId: string, scheduleName: string) => {
     setBusy(true);
     haptic.medium();
     try {
-      await invokeScheduler({ schedule_id: scheduleId, force: true });
+      const outcome = await invokeScheduler<{
+        status?: string;
+        schedule?: string;
+        task_id?: string;
+        answer?: string;
+        error?: string;
+        detail?: string;
+      }>({ schedule_id: scheduleId, force: true });
+
+      if (outcome?.error) throw new Error(outcome.error);
+      if (outcome?.status === 'failed') throw new Error(outcome.error || 'Schedule execution failed');
+
       toast.show({
-        message: `Dispatched: ${scheduleName}`,
+        message: outcome?.answer
+          ? `Executed: ${outcome.answer.slice(0, 60)}...`
+          : `Executed ${scheduleName}`,
         tone: 'success',
       });
       await loadAll();
@@ -432,6 +460,113 @@ export function HallyuAIPanel() {
            ───────────────────────────────────────────────────────────── */}
         {section === 'overview' ? (
           <View style={styles.sectionBody}>
+            {/* Provider & Rotation Observability Card */}
+            <View style={styles.providerCard}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x1 }}>
+                  <Ionicons name="hardware-chip-outline" size={18} color={palette.blue400} />
+                  <Text variant="body" style={{ fontWeight: '700', color: colors.textPrimary }}>
+                    Inference & Multi-Key Rotation
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.statusPill,
+                    {
+                      backgroundColor: ping?.model_configured
+                        ? 'rgba(52, 211, 153, 0.15)'
+                        : 'rgba(239, 68, 68, 0.15)',
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.statusDot,
+                      { backgroundColor: ping?.model_configured ? colors.success : colors.danger },
+                    ]}
+                  />
+                  <Text
+                    variant="caption"
+                    style={{
+                      color: ping?.model_configured ? colors.success : colors.danger,
+                      fontSize: 11,
+                      fontWeight: '700',
+                    }}
+                  >
+                    {ping?.provider?.toUpperCase() ?? 'NONE'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.x2, marginTop: space.x1 }}>
+                <View style={{ flex: 1, minWidth: 140 }}>
+                  <Text variant="caption" tone="tertiary">
+                    ACTIVE MODEL
+                  </Text>
+                  <Text variant="body" style={{ fontWeight: '600', color: colors.textPrimary }}>
+                    {ping?.model ?? 'None'}
+                  </Text>
+                </View>
+
+                <View style={{ flex: 1, minWidth: 140 }}>
+                  <Text variant="caption" tone="tertiary">
+                    AVG LATENCY
+                  </Text>
+                  <Text variant="body" style={{ fontWeight: '600', color: colors.textPrimary }}>
+                    {ping?.avg_latency_ms ? `${ping.avg_latency_ms} ms` : '—'}
+                  </Text>
+                </View>
+
+                <View style={{ flex: 1, minWidth: 140 }}>
+                  <Text variant="caption" tone="tertiary">
+                    GEMINI KEYS CONFIGURED
+                  </Text>
+                  <Text variant="body" style={{ fontWeight: '600', color: colors.textPrimary }}>
+                    {ping?.gemini_key_count !== undefined ? `${ping.gemini_key_count} / 3 keys` : '—'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Individual Key Health Badges */}
+              {ping?.gemini_keys && ping.gemini_keys.length > 0 ? (
+                <View style={{ flexDirection: 'row', gap: space.x1, marginTop: space.x2 }}>
+                  {ping.gemini_keys.map((k) => {
+                    const isHealthy = k.configured && k.status === 'healthy';
+                    const isCooling = k.configured && (k.status === 'cooling_down' || k.status === 'rate_limited');
+                    const isError = k.configured && k.status === 'error';
+                    const tint = !k.configured ? colors.textDisabled : isHealthy ? colors.success : isCooling ? colors.warning : colors.danger;
+                    const bg = !k.configured ? 'rgba(156, 163, 175, 0.1)' : isHealthy ? 'rgba(52, 211, 153, 0.12)' : isCooling ? 'rgba(251, 191, 36, 0.12)' : 'rgba(239, 68, 68, 0.12)';
+                    const labelText = !k.configured
+                      ? `${k.label}: not set`
+                      : isCooling
+                      ? `${k.label}: cool (${k.cooldown_remaining_sec}s)`
+                      : `${k.label}: ${k.status}`;
+
+                    return (
+                      <View key={k.label} style={[styles.keyBadge, { backgroundColor: bg, borderColor: tint }]}>
+                        <View style={[styles.statusDot, { backgroundColor: tint }]} />
+                        <Text variant="caption" style={{ color: tint, fontSize: 10, fontWeight: '600' }}>
+                          {labelText}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+
+              {/* Failover and Fallback status */}
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', marginTop: space.x2, paddingTop: space.x1, borderTopWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle }}>
+                <Text variant="caption" tone="secondary">
+                  Failovers: {ping?.failover_events?.length ?? 0} · Lovable AI: {ping?.lovable_ai_configured ? 'Ready' : 'Off'} · Rork: {ping?.rork_fallback_enabled ? 'Enabled' : 'Disabled (Default)'}
+                </Text>
+                {ping?.last_successful_inference ? (
+                  <Text variant="caption" tone="tertiary">
+                    Last success: {new Date(ping.last_successful_inference.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+
             {/* Quick KPI grid from platform_overview */}
             <View style={styles.grid}>
               <View style={styles.kpiCard}>
@@ -1275,6 +1410,23 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
     gap: 2,
+  },
+  providerCard: {
+    backgroundColor: colors.surface1,
+    borderRadius: radius.md,
+    padding: space.x3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    gap: space.x1,
+  },
+  keyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   kpiValue: {
     fontSize: 22,

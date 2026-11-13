@@ -6,10 +6,10 @@
 //      OIDC token for that exact job; we verify its RS256 signature against GitHub's published keys
 //      and require that the token was issued for THIS workflow in THIS repository with our audience.
 //      No long-lived secret is stored in the repository.
-//   2. A service-role bearer, which is how an admin or the platform triggers a tick by hand.
+//   2. A service-role bearer, which is how an admin or the platform triggers a tick or targeted run by hand.
 //
-// The caller is only ever allowed to ask for a tick. The function then calls `hallyu-ai-operator`
-// with its own service credential and `action: "schedule.run_due"`, so all real work (claiming due
+// The caller may ask for a scheduled tick or a targeted manual execution ("Run Now"). The function
+// then calls `hallyu-ai-operator` with its own service credential, so all real work (claiming due
 // schedules, running tasks, publishing, notifying the owner) stays inside the operator, where the
 // model, tools and publication ledger already live. This function never publishes anything itself.
 
@@ -104,8 +104,9 @@ async function verifyGithubOidc(token: string): Promise<{ ok: true } | { ok: fal
   if (!key) return { ok: false, reason: 'signing key unusable' };
 
   const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+  const signatureBytes = b64urlToBytes(parts[2]!);
   const valid = await crypto.subtle
-    .verify('RSASSA-PKCS1-v1_5', key, b64urlToBytes(parts[2]!), signed)
+    .verify('RSASSA-PKCS1-v1_5', key, signatureBytes.buffer as ArrayBuffer, signed)
     .catch(() => false);
   if (!valid) return { ok: false, reason: 'bad signature' };
 
@@ -140,9 +141,8 @@ Deno.serve(async (request: Request) => {
   } catch {
     // An empty body is valid: it means "run whatever is due".
   }
-  const limit = Math.min(Math.max(Number(body.limit) || 3, 1), 5);
 
-  const askOperator = async (action: string) => {
+  const askOperator = async (action: string, extra: Record<string, unknown> = {}) => {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/hallyu-ai-operator`, {
       method: 'POST',
       headers: {
@@ -150,9 +150,9 @@ Deno.serve(async (request: Request) => {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify({ action, limit }),
+      body: JSON.stringify({ action, ...extra }),
     }).catch(() => null);
-    if (!res) return { ok: false as const, status: 0, payload: 'the operator did not answer' };
+    if (!res) return { ok: false as const, status: 0, payload: { error: 'the operator did not answer' } };
     const text = await res.text().catch(() => '');
     let payload: unknown = text;
     try {
@@ -163,9 +163,22 @@ Deno.serve(async (request: Request) => {
     return { ok: res.ok, status: res.status, payload };
   };
 
-  // Talking to members comes first: a waiting DM or mention matters more than the next article.
-  const events = await askOperator('event.process');
-  const schedules = await askOperator('schedule.run_due');
+  // Targeted execution ("Run Now"): when a specific schedule is selected, execute it directly
+  // and return the genuine execution outcome rather than a generic dispatch acknowledgment.
+  if (typeof body.schedule_id === 'string' && body.schedule_id) {
+    const targeted = await askOperator('schedule.run', {
+      schedule_id: body.schedule_id,
+      force: Boolean(body.force),
+    });
+    return jsonResponse(targeted.payload, targeted.status || (targeted.ok ? 200 : 502));
+  }
+
+  const limit = Math.min(Math.max(Number(body.limit) || 3, 1), 5);
+
+  // Background 24/7 Tick: Talking to members comes first — a waiting DM or mention matters more
+  // than the next scheduled post.
+  const events = await askOperator('event.process', { limit });
+  const schedules = await askOperator('schedule.run_due', { limit });
 
   const failed = [events, schedules].filter((call) => !call.ok);
   const body_ = {

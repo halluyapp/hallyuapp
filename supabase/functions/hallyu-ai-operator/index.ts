@@ -23,30 +23,105 @@ const corsHeaders = {
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const TOOLKIT_URL = (Deno.env.get('TOOLKIT_URL') ?? Deno.env.get('EXPO_PUBLIC_TOOLKIT_URL') ?? 'https://toolkit.rork.com').replace(/\/$/, '');
-const TOOLKIT_KEY = Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('RORK_AI_API_KEY') ?? '';
-const AI_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'anthropic/claude-sonnet-5';
-// Server-side Gemini capability (metadata.json MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API). Accept the
-// names the platform and the Google SDKs use, so provisioning one of them is enough.
-const GEMINI_KEY =
-  Deno.env.get('GEMINI_API_KEY') ??
-  Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY') ??
-  Deno.env.get('GOOGLE_API_KEY') ??
-  '';
+
+// Multi-key Gemini configuration (Phase 1: Multi-Key Rotation and Controlled Failover)
+const GEMINI_KEYS = [
+  (
+    Deno.env.get('GEMINI_API_KEY') ??
+    Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY') ??
+    Deno.env.get('GOOGLE_API_KEY') ??
+    ''
+  ).trim(),
+  (Deno.env.get('GEMINI_API_KEY_2') ?? '').trim(),
+  (Deno.env.get('GEMINI_API_KEY_3') ?? '').trim(),
+];
+
 const GEMINI_MODEL = Deno.env.get('GEMINI_MODEL') ?? 'gemini-2.5-flash';
 const GEMINI_API_BASE = (Deno.env.get('GEMINI_API_BASE') ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
 
-type ModelProvider = 'gemini' | 'rork' | 'none';
+// Lovable Cloud AI integration
+const LOVABLE_AI_KEY = (Deno.env.get('LOVABLE_AI_API_KEY') ?? Deno.env.get('LOVABLE_API_KEY') ?? '').trim();
+const LOVABLE_AI_BASE = (Deno.env.get('LOVABLE_AI_BASE') ?? 'https://ai.lovable.dev/v1').replace(/\/$/, '');
+const LOVABLE_AI_MODEL = Deno.env.get('LOVABLE_AI_MODEL') ?? 'google/gemini-2.5-flash';
+
+// Rork AI Cloud — disabled by default as primary and fallback
+const RORK_FALLBACK_ENABLED = Deno.env.get('RORK_FALLBACK_ENABLED') === 'true';
+const TOOLKIT_URL = (Deno.env.get('TOOLKIT_URL') ?? Deno.env.get('EXPO_PUBLIC_TOOLKIT_URL') ?? 'https://toolkit.rork.com').replace(/\/$/, '');
+const TOOLKIT_KEY = (Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('RORK_AI_API_KEY') ?? '').trim();
+const AI_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'anthropic/claude-sonnet-5';
+
+type ModelProvider = 'gemini' | 'lovable' | 'rork' | 'none';
+
+interface KeyHealthState {
+  index: number;
+  label: string;
+  status: 'healthy' | 'cooling_down' | 'rate_limited' | 'error';
+  cooldownUntil: number | null;
+  consecutiveFailures: number;
+  totalRequests: number;
+  totalSuccesses: number;
+  lastUsedAt: string | null;
+  lastLatencyMs: number | null;
+  lastError: string | null;
+}
+
+const keyStates: KeyHealthState[] = [
+  { index: 0, label: 'key_1', status: 'healthy', cooldownUntil: null, consecutiveFailures: 0, totalRequests: 0, totalSuccesses: 0, lastUsedAt: null, lastLatencyMs: null, lastError: null },
+  { index: 1, label: 'key_2', status: 'healthy', cooldownUntil: null, consecutiveFailures: 0, totalRequests: 0, totalSuccesses: 0, lastUsedAt: null, lastLatencyMs: null, lastError: null },
+  { index: 2, label: 'key_3', status: 'healthy', cooldownUntil: null, consecutiveFailures: 0, totalRequests: 0, totalSuccesses: 0, lastUsedAt: null, lastLatencyMs: null, lastError: null },
+];
+
+interface FailoverEvent {
+  timestamp: string;
+  from_key: string;
+  to_key: string;
+  reason: string;
+}
+
+const failoverEvents: FailoverEvent[] = [];
+function recordFailover(from_key: string, to_key: string, reason: string): void {
+  failoverEvents.unshift({
+    timestamp: new Date().toISOString(),
+    from_key,
+    to_key,
+    reason: reason.slice(0, 200),
+  });
+  if (failoverEvents.length > 10) failoverEvents.pop();
+}
+
+let lastSuccessfulInference: { at: string; provider: string; key_label?: string; latency_ms: number } | null = null;
+let lastProviderFailure: { at: string; provider: string; key_label?: string; error: string } | null = null;
+const latencySamples: number[] = [];
+
+function recordLatency(ms: number): void {
+  latencySamples.push(ms);
+  if (latencySamples.length > 20) latencySamples.shift();
+}
+
+function avgLatency(): number | null {
+  if (latencySamples.length === 0) return null;
+  const sum = latencySamples.reduce((a, b) => a + b, 0);
+  return Math.round(sum / latencySamples.length);
+}
+
+function configuredGeminiKeys(): { key: string; state: KeyHealthState }[] {
+  return GEMINI_KEYS.map((k, i) => ({ key: k, state: keyStates[i]! })).filter((item) => Boolean(item.key));
+}
 
 /** Which credential the operator will actually use — the same answer every call must report. */
 function modelProvider(): ModelProvider {
-  if (GEMINI_KEY) return 'gemini';
-  if (TOOLKIT_KEY) return 'rork';
+  if (configuredGeminiKeys().length > 0) return 'gemini';
+  if (LOVABLE_AI_KEY) return 'lovable';
+  if (RORK_FALLBACK_ENABLED && TOOLKIT_KEY) return 'rork';
   return 'none';
 }
 
 function activeModel(): string {
-  return modelProvider() === 'gemini' ? GEMINI_MODEL : AI_MODEL;
+  const p = modelProvider();
+  if (p === 'gemini') return GEMINI_MODEL;
+  if (p === 'lovable') return LOVABLE_AI_MODEL;
+  if (p === 'rork') return AI_MODEL;
+  return 'none';
 }
 
 // Grounding, publishing and verification are three distinct steps on top of the reads a careful
@@ -493,9 +568,24 @@ async function approvalMode(): Promise<'on'> {
   return 'on';
 }
 
-// ── model adapters ────────────────────────────────────────────────────────────────────────────
+// ── model adapters (Phase 1: Multi-Key Rotation, Controlled Failover & Lovable Fallback) ───────
 
 async function callGemini(messages: { role: string; content: string }[]): Promise<string> {
+  const available = configuredGeminiKeys();
+  if (available.length === 0) {
+    throw Object.assign(new Error('No Gemini API key configured.'), { statusCode: 503 });
+  }
+
+  const now = Date.now();
+  // Sort candidate keys: healthy first (cooldown elapsed), ordered by lowest consecutive failures
+  const candidates = [...available].sort((a, b) => {
+    const aCool = a.state.cooldownUntil && a.state.cooldownUntil > now ? a.state.cooldownUntil : 0;
+    const bCool = b.state.cooldownUntil && b.state.cooldownUntil > now ? b.state.cooldownUntil : 0;
+    if (aCool === 0 && bCool > 0) return -1;
+    if (bCool === 0 && aCool > 0) return 1;
+    return a.state.consecutiveFailures - b.state.consecutiveFailures;
+  });
+
   const system = messages
     .filter((m) => m.role === 'system')
     .map((m) => m.content)
@@ -504,63 +594,229 @@ async function callGemini(messages: { role: string; content: string }[]): Promis
     .filter((m) => m.role !== 'system')
     .map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
 
-  const res = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
+  const payload = JSON.stringify({
+    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+    contents,
+    generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
+  });
+
+  let lastErr = '';
+
+  for (let i = 0; i < candidates.length; i++) {
+    const { key, state } = candidates[i]!;
+    state.totalRequests++;
+    state.lastUsedAt = new Date().toISOString();
+    const startTime = Date.now();
+
+    try {
+      const res = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: payload,
+      });
+
+      const latencyMs = Date.now() - startTime;
+      state.lastLatencyMs = latencyMs;
+
+      if (res.ok) {
+        state.status = 'healthy';
+        state.cooldownUntil = null;
+        state.consecutiveFailures = 0;
+        state.totalSuccesses++;
+        state.lastError = null;
+        recordLatency(latencyMs);
+        lastSuccessfulInference = {
+          at: new Date().toISOString(),
+          provider: 'gemini',
+          key_label: state.label,
+          latency_ms: latencyMs,
+        };
+
+        const data = (await res.json()) as {
+          candidates?: { content?: { parts?: { text?: string }[] } }[];
+          promptFeedback?: { blockReason?: string };
+        };
+        const content = (data.candidates?.[0]?.content?.parts ?? [])
+          .map((part) => part.text ?? '')
+          .join('')
+          .trim();
+        if (!content) {
+          const blocked = data.promptFeedback?.blockReason;
+          throw Object.assign(
+            new Error(blocked ? `Gemini blocked this request (${blocked}).` : 'model returned an empty answer.'),
+            { statusCode: 502 },
+          );
+        }
+        return content;
+      }
+
+      // Handle non-200 responses
+      const detail = (await res.text()).slice(0, 300);
+      const isRateLimit = res.status === 429 || detail.includes('RESOURCE_EXHAUSTED');
+      const isServerError = res.status >= 500 && res.status <= 504;
+
+      if (isRateLimit || isServerError) {
+        const retryHeader = res.headers.get('retry-after');
+        const retrySec = retryHeader ? parseInt(retryHeader, 10) : 60;
+        const cooldownMs = (isNaN(retrySec) ? 60 : Math.max(retrySec, 30)) * 1000;
+        state.status = isRateLimit ? 'rate_limited' : 'cooling_down';
+        state.cooldownUntil = Date.now() + cooldownMs;
+        state.consecutiveFailures++;
+        state.lastError = `HTTP ${res.status}: ${detail}`;
+        lastErr = state.lastError;
+
+        const nextKey = candidates[i + 1]?.state.label ?? 'none';
+        recordFailover(state.label, nextKey, `HTTP ${res.status}: ${isRateLimit ? 'rate limit / quota exhaustion' : 'server error'}`);
+        continue; // Try next configured Gemini key!
+      }
+
+      // If client-side bad request (400), throw immediately without cycling keys
+      if (res.status === 400) {
+        throw Object.assign(new Error(`Gemini invalid request: ${detail}`), { statusCode: 400 });
+      }
+
+      // Auth error (401 / 403) on this specific key
+      state.status = 'error';
+      state.consecutiveFailures++;
+      state.lastError = `HTTP ${res.status}: ${detail}`;
+      lastErr = state.lastError;
+      if (i < candidates.length - 1) {
+        recordFailover(state.label, candidates[i + 1]!.state.label, `HTTP ${res.status}: authentication error`);
+        continue;
+      }
+    } catch (e) {
+      if (e instanceof Error && 'statusCode' in e && (e as { statusCode?: number }).statusCode === 400) {
+        throw e;
+      }
+      const message = e instanceof Error ? e.message : String(e);
+      state.consecutiveFailures++;
+      state.lastError = message;
+      lastErr = message;
+      if (i < candidates.length - 1) {
+        recordFailover(state.label, candidates[i + 1]!.state.label, `network failure: ${message}`);
+        continue;
+      }
+    }
+  }
+
+  lastProviderFailure = {
+    at: new Date().toISOString(),
+    provider: 'gemini',
+    error: lastErr || 'all Gemini keys failed or are cooling down',
+  };
+
+  throw Object.assign(
+    new Error(`All configured Gemini keys encountered errors or rate limits. Last error: ${lastErr}`),
+    { statusCode: 503 },
+  );
+}
+
+async function callLovableAI(messages: { role: string; content: string }[]): Promise<string> {
+  if (!LOVABLE_AI_KEY) {
+    throw Object.assign(new Error('Lovable Cloud AI key is not configured.'), { statusCode: 503 });
+  }
+
+  const startTime = Date.now();
+  const res = await fetch(`${LOVABLE_AI_BASE}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${LOVABLE_AI_KEY}`,
+    },
     body: JSON.stringify({
-      ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-      contents,
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2048 },
+      model: LOVABLE_AI_MODEL,
+      messages,
+      temperature: 0.3,
     }),
   });
+
+  const latencyMs = Date.now() - startTime;
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 300);
-    throw Object.assign(
-      new Error(`Gemini call failed (HTTP ${res.status})${detail ? `: ${detail}` : '.'}`),
-      { statusCode: 502 },
-    );
+    throw Object.assign(new Error(`Lovable Cloud AI call failed (HTTP ${res.status}): ${detail}`), { statusCode: 502 });
   }
-  const data = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
-    promptFeedback?: { blockReason?: string };
+
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  const content = data.choices?.[0]?.message?.content?.trim();
+  if (!content) throw Object.assign(new Error('Lovable Cloud AI returned an empty answer.'), { statusCode: 502 });
+
+  recordLatency(latencyMs);
+  lastSuccessfulInference = {
+    at: new Date().toISOString(),
+    provider: 'lovable',
+    latency_ms: latencyMs,
   };
-  const content = (data.candidates?.[0]?.content?.parts ?? [])
-    .map((part) => part.text ?? '')
-    .join('')
-    .trim();
-  if (!content) {
-    const blocked = data.promptFeedback?.blockReason;
-    throw Object.assign(
-      new Error(blocked ? `Gemini blocked this request (${blocked}).` : 'model returned an empty answer.'),
-      { statusCode: 502 },
-    );
-  }
+
   return content;
 }
 
 async function callRork(messages: { role: string; content: string }[]): Promise<string> {
+  if (!RORK_FALLBACK_ENABLED || !TOOLKIT_KEY) {
+    throw Object.assign(new Error('Rork AI Cloud fallback is disabled or unconfigured.'), { statusCode: 503 });
+  }
+
+  const startTime = Date.now();
   const res = await fetch(`${TOOLKIT_URL}/v2/vercel/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOOLKIT_KEY}` },
     body: JSON.stringify({ model: AI_MODEL, messages, temperature: 0.3 }),
   });
+
+  const latencyMs = Date.now() - startTime;
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 300);
     throw Object.assign(new Error(`Rork AI Cloud call failed (HTTP ${res.status})${detail ? `: ${detail}` : '.'}`), { statusCode: 502 });
   }
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  const content = data.choices?.[0]?.message?.content;
+  const content = data.choices?.[0]?.message?.content?.trim();
   if (!content) throw Object.assign(new Error('model returned an empty answer.'), { statusCode: 502 });
+
+  recordLatency(latencyMs);
+  lastSuccessfulInference = {
+    at: new Date().toISOString(),
+    provider: 'rork',
+    latency_ms: latencyMs,
+  };
   return content;
 }
 
 async function callModel(messages: { role: string; content: string }[]): Promise<string> {
-  const provider = modelProvider();
-  if (provider === 'gemini') return callGemini(messages);
-  if (provider === 'rork') return callRork(messages);
+  const geminiAvailable = configuredGeminiKeys().length > 0;
+
+  if (geminiAvailable) {
+    try {
+      return await callGemini(messages);
+    } catch (e) {
+      if (e instanceof Error && 'statusCode' in e && (e as { statusCode?: number }).statusCode === 400) {
+        throw e;
+      }
+      // If Gemini completely failed/exhausted, attempt Lovable Cloud AI if configured
+      if (LOVABLE_AI_KEY) {
+        try {
+          return await callLovableAI(messages);
+        } catch (_lovErr) {
+          // Continue to Rork if explicitly enabled
+        }
+      }
+      // Or Rork if explicitly enabled
+      if (RORK_FALLBACK_ENABLED && TOOLKIT_KEY) {
+        return await callRork(messages);
+      }
+      throw e;
+    }
+  }
+
+  if (LOVABLE_AI_KEY) {
+    return await callLovableAI(messages);
+  }
+
+  if (RORK_FALLBACK_ENABLED && TOOLKIT_KEY) {
+    return await callRork(messages);
+  }
+
   throw Object.assign(
     new Error(
-      'No AI model credential on this backend. Set ONE function secret: GEMINI_API_KEY (server-side Gemini capability declared in metadata.json) or RORK_TOOLKIT_SECRET_KEY (Rork AI Cloud), then redeploy hallyu-ai-operator.',
+      'No AI model credential configured. Set Supabase Edge Function secret GEMINI_API_KEY (with optional GEMINI_API_KEY_2 and GEMINI_API_KEY_3 for multi-key rotation), or configure Lovable Cloud AI.',
     ),
     { statusCode: 503 },
   );
@@ -798,6 +1054,23 @@ async function ownerId(): Promise<string | null> {
   }
 }
 
+/** Run one specific schedule on demand ("Run Now") with optional force override. */
+async function runSpecificSchedule(scheduleId: string, force = false): Promise<Record<string, unknown>> {
+  const claimed = (await rpc('hallyu_ai_claim_schedule', {
+    p_schedule_id: scheduleId,
+    p_force: force,
+  })) as { id: string; name: string; kind: string; prompt: string }[] | null;
+
+  if (!Array.isArray(claimed) || claimed.length === 0) {
+    return {
+      status: 'skipped',
+      detail: 'schedule was not claimed (either not found, or disabled without force flag)',
+    };
+  }
+
+  return runSchedule(claimed[0]!);
+}
+
 /** Run one claimed schedule row as a real task, and record what actually happened on the row. */
 async function runSchedule(row: { id: string; name: string; kind: string; prompt: string }): Promise<Record<string, unknown>> {
   const task = (await insertRow('hallyu_ai_task', {
@@ -974,7 +1247,7 @@ async function processDmEvent(event: EventRow): Promise<Record<string, unknown>>
 
   const sent = await db('direct_messages', {
     method: 'POST',
-    body: JSON.stringify({ sender_id: ai, recipient_id: sender.id, body: answer.slice(0, 4000) }),
+    body: JSON.stringify({ sender_id: ai, recipient_id: sender.id, body: answer.slice(0, 2000).trim() }),
     headers: { Prefer: 'return=representation' },
   });
   if (!sent.ok) throw new Error(`could not deliver the reply (HTTP ${sent.status})`);
@@ -1081,6 +1354,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       note?: string;
       limit?: number;
       source_id?: string;
+      schedule_id?: string;
+      force?: boolean;
     };
 
     // The event worker is a system caller: the scheduler drains the queue, and nothing else may.
@@ -1098,14 +1373,38 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     switch (body.action) {
       case 'ping': {
+        const configuredCount = configuredGeminiKeys().length;
+        const now = Date.now();
         return json({
           model_configured: modelProvider() !== 'none',
           provider: modelProvider(),
           model: activeModel(),
+          gemini_key_count: configuredCount,
+          gemini_keys: keyStates.map((s) => ({
+            label: s.label,
+            configured: Boolean(GEMINI_KEYS[s.index]),
+            status: s.status,
+            consecutive_failures: s.consecutiveFailures,
+            cooldown_remaining_sec: s.cooldownUntil && s.cooldownUntil > now ? Math.ceil((s.cooldownUntil - now) / 1000) : 0,
+            last_latency_ms: s.lastLatencyMs,
+          })),
+          last_provider_failure: lastProviderFailure,
+          last_successful_inference: lastSuccessfulInference,
+          failover_events: failoverEvents.slice(0, 10),
+          avg_latency_ms: avgLatency(),
+          rork_fallback_enabled: RORK_FALLBACK_ENABLED,
+          lovable_ai_configured: Boolean(LOVABLE_AI_KEY),
           staff,
           approval_mode: await approvalMode(),
           tools: registryFor(staff).map((tool) => tool.name),
         });
+      }
+
+      case 'schedule.run': {
+        if (!staff) return json({ error: 'admin or ceo role required' }, 403);
+        if (!body.schedule_id) return json({ error: 'schedule_id is required' }, 400);
+        const result = await runSpecificSchedule(body.schedule_id, Boolean(body.force));
+        return json(result);
       }
 
       case 'chat': {
