@@ -16,7 +16,9 @@ name: Hallyu AI scheduler
 
 on:
   schedule:
-    - cron: '*/20 * * * *'
+    # Every five minutes is GitHub's floor. It drains the DM and mention queue and runs due
+    # schedules; a database webhook on hallyu_ai_event is the path to sub-second wake-ups.
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:

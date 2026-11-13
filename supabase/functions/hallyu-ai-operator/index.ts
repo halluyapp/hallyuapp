@@ -366,6 +366,115 @@ const TOOLS: Tool[] = [
     staff: true,
     run: async () => rpc('hallyu_ai_admin_schedules', {}),
   },
+  {
+    name: 'get_post',
+    description: 'Read one real post by id (title, body, world, type, author, engagement) when a member or admin refers to it.',
+    args: '{ "post_id": "uuid" }',
+    staff: false,
+    run: async (args) => {
+      const id = String(args.post_id ?? '');
+      if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('post_id must be a uuid');
+      const res = await db(
+        `posts?select=${encodeURIComponent(`${PUBLIC_POST_COLUMNS},world,hashtags,author:profiles!posts_author_id_fkey(handle,display_name,role,account_status)`)}&id=eq.${id}&state=eq.active&visibility=eq.public&limit=1`,
+      );
+      if (!res.ok) throw new Error(`could not read post (HTTP ${res.status})`);
+      const rows = (await res.json()) as Record<string, unknown>[];
+      const post = rows[0];
+      if (!post) throw new Error('that post does not exist or is not public');
+      const author = post.author as { account_status?: string } | undefined;
+      if (author?.account_status !== 'active') throw new Error('that post belongs to an inactive account');
+      return post;
+    },
+  },
+  {
+    name: 'get_comment',
+    description: 'Read one real comment by id, including its post id and parent comment id.',
+    args: '{ "comment_id": "uuid" }',
+    staff: false,
+    run: async (args) => {
+      const id = String(args.comment_id ?? '');
+      if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('comment_id must be a uuid');
+      const res = await db(`comments?select=id,post_id,parent_id,author_id,body,state,created_at&id=eq.${id}&limit=1`);
+      if (!res.ok) throw new Error(`could not read comment (HTTP ${res.status})`);
+      const rows = (await res.json()) as Record<string, unknown>[];
+      if (!rows[0] || rows[0].state !== 'active') throw new Error('that comment does not exist or was removed');
+      return rows[0];
+    },
+  },
+  {
+    name: 'get_post_thread',
+    description: 'Read the real comments on a post, oldest first, to understand what the community actually said.',
+    args: '{ "post_id": "uuid", "limit": 20 }',
+    staff: false,
+    run: async (args) => {
+      const id = String(args.post_id ?? '');
+      if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('post_id must be a uuid');
+      const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
+      const res = await db(
+        `comments?select=id,parent_id,author_id,body,created_at&post_id=eq.${id}&state=eq.active&order=created_at.asc&limit=${limit}`,
+      );
+      if (!res.ok) throw new Error(`could not read the thread (HTTP ${res.status})`);
+      return res.json();
+    },
+  },
+  {
+    name: 'get_dm_context',
+    description: 'Read the real Direct Message history between you and this person (members: only their own).',
+    args: '{ "profile_id": "uuid (staff only)", "limit": 10 }',
+    staff: false,
+    run: async (args, ctx) => {
+      const peer = ctx.staff && typeof args.profile_id === 'string' ? String(args.profile_id) : ctx.profileId;
+      if (!/^[0-9a-f-]{36}$/i.test(peer)) throw new Error('profile_id must be a uuid');
+      const aiId = await rpc('hallyu_ai_profile_id', {});
+      if (typeof aiId !== 'string' || !aiId) throw new Error('the official Hallyu AI profile is unavailable');
+      const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 30);
+      const pair = `or=(and(sender_id.eq.${peer},recipient_id.eq.${aiId}),and(sender_id.eq.${aiId},recipient_id.eq.${peer}))`;
+      const res = await db(`direct_messages?select=sender_id,recipient_id,body,created_at&${pair}&order=created_at.desc&limit=${limit}`);
+      if (!res.ok) throw new Error(`could not read the conversation (HTTP ${res.status})`);
+      return res.json();
+    },
+  },
+  {
+    name: 'send_dm',
+    description: 'Send a real Direct Message from the official Hallyu AI account to one active member. Staff only; use for proactive owner reporting or a considered reply.',
+    args: '{ "recipient_id": "uuid", "body": "<=1500 chars" }',
+    staff: true,
+    run: async (args) => {
+      const to = String(args.recipient_id ?? '');
+      if (!/^[0-9a-f-]{36}$/i.test(to)) throw new Error('recipient_id must be a uuid');
+      const body = String(args.body ?? '').trim();
+      if (!body) throw new Error('body is required');
+      const aiId = await rpc('hallyu_ai_profile_id', {});
+      if (typeof aiId !== 'string' || !aiId) throw new Error('the official Hallyu AI profile is unavailable');
+      const who = await db(`profiles?select=id,account_status&id=eq.${to}&limit=1`);
+      const rows = who.ok ? ((await who.json()) as { account_status?: string }[]) : [];
+      if (rows[0]?.account_status !== 'active') throw new Error('there is no active member with that id');
+      const sent = await db('direct_messages', {
+        method: 'POST',
+        body: JSON.stringify({ sender_id: aiId, recipient_id: to, body: body.slice(0, 1500) }),
+        headers: { Prefer: 'return=representation' },
+      });
+      if (!sent.ok) throw new Error(`could not send the message (HTTP ${sent.status})`);
+      const created = (await sent.json()) as { id: string }[];
+      return { dm_id: created[0]?.id ?? null, delivered_to: to };
+    },
+  },
+  {
+    name: 'find_unanswered_discussions',
+    description: 'Find real public posts that have no comments yet and are old enough that silence is a signal.',
+    args: '{ "hours": 6, "limit": 10 }',
+    staff: false,
+    run: async (args) => {
+      const hours = Math.min(Math.max(Number(args.hours) || 6, 1), 168);
+      const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 25);
+      const since = new Date(Date.now() - hours * 3600_000).toISOString();
+      const res = await db(
+        `posts?select=id,title,body,world,created_at,comment_count&state=eq.active&visibility=eq.public&comment_count=eq.0&created_at=lt.${since}&order=created_at.asc&limit=${limit}`,
+      );
+      if (!res.ok) throw new Error(`could not read discussions (HTTP ${res.status})`);
+      return res.json();
+    },
+  },
 ];
 
 function registryFor(staff: boolean): Tool[] {
@@ -471,6 +580,7 @@ function parseProtocol(content: string): { tool?: string; args?: Record<string, 
 const SYSTEM_PROMPT = (staff: boolean) => `You are Hallyu AI, the operator of the Hallyu social platform (K-drama, C-drama, anime, Hollywood fan community).
 You are transparent that you are an AI. Never impersonate a human member.
 Rules: investigate real data with your tools before answering; never invent numbers, news, release dates, quotes or sources; if evidence is missing, say so and name what is missing; report failures honestly.
+You also answer Direct Messages and comment mentions as the official Hallyu AI account. Your final answer in a DM is delivered to that person as a real message, so write it for them: no internal jargon, no fabricated results, no analytics or staff-only data for ordinary members, and never claim an action succeeded unless a tool confirmed it. For members, be warm, concrete and helpful; recommend only titles you verified through catalog_digest or the community's own posts.
 Publishing is real: publish_post, reply_comment and create_poll create live rows attributed to the official Hallyu AI account. Write original text about titles the catalogue actually holds, never present catalogue metadata as breaking news, and after publishing call publishing_status to confirm the row exists. Never claim an action succeeded that you have not verified.
 Target three genuinely useful published items per day. Never post filler to reach a number; when there is nothing worth saying, say that instead. Ordinary work needs no permission, but never spend money, change permissions, ban or delete accounts, or run destructive operations. Use notify_owner only when a finding actually matters.
 Available tools:\n${toolManifest(staff)}
@@ -586,15 +696,41 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
       }
     }
     if (answer === null) {
+      // A real side effect must not be reported as nothing: if this task already published through
+      // the ledger, the run is a completed-with-partial-report, not a failure.
+      const published = await publishedForTask(taskId);
+      if (published.length > 0) {
+        const note = `Published ${published.length} item(s), then ran out of steps before the final report.`;
+        await setTaskStatus(taskId, 'completed', {
+          result: { partial: true, published, note },
+          finished_at: new Date().toISOString(),
+        });
+        return { status: 'completed', answer: note };
+      }
       throw new Error(`operator stopped after ${MAX_STEPS} steps without a final answer.`);
     }
     await setTaskStatus(taskId, 'completed', { result: { answer }, finished_at: new Date().toISOString() });
     return { status: 'completed', answer };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    const published = await publishedForTask(taskId).catch(() => []);
+    if (published.length > 0) {
+      await setTaskStatus(taskId, 'completed', {
+        result: { partial: true, published, error: message },
+        finished_at: new Date().toISOString(),
+      });
+      return { status: 'completed', answer: `Published ${published.length} item(s) before failing: ${message}` };
+    }
     await setTaskStatus(taskId, 'failed', { error: message, finished_at: new Date().toISOString() });
     throw e;
   }
+}
+
+/** What this task really published, straight from the ledger. */
+async function publishedForTask(taskId: string): Promise<{ action: string; target_id: string }[]> {
+  const res = await db(`hallyu_ai_publication?select=action,target_id&task_id=eq.${taskId}&status=eq.published`);
+  if (!res.ok) return [];
+  return (await res.json()) as { action: string; target_id: string }[];
 }
 
 // ── system callers (the 24/7 scheduler) ───────────────────────────────────────────────────────
@@ -667,16 +803,22 @@ async function runSchedule(row: { id: string; name: string; kind: string; prompt
   }
 }
 
-/** Already answered by the AI? Stops a mention being answered again on every tick. */
-async function alreadyAnswered(commentId: string): Promise<boolean> {
+/**
+ * Has the AI already answered this comment?
+ *
+ * Three outcomes, deliberately: 'yes', 'no', and 'unknown'. Treating a failed read as "already
+ * answered" silently dropped real mentions; treating it as "not answered" risks a duplicate reply.
+ * The caller must retry on 'unknown' instead of guessing.
+ */
+async function aiReplyState(commentId: string): Promise<'yes' | 'no' | 'unknown'> {
   try {
     const ai = await rpc('hallyu_ai_profile_id', {});
-    if (typeof ai !== 'string' || !ai) return true;
+    if (typeof ai !== 'string' || !ai) return 'unknown';
     const res = await db(`comments?select=id&parent_id=eq.${commentId}&author_id=eq.${ai}&state=eq.active&limit=1`);
-    if (!res.ok) return true; // fail closed: never double-post because a read failed
-    return ((await res.json()) as unknown[]).length > 0;
+    if (!res.ok) return 'unknown';
+    return ((await res.json()) as unknown[]).length > 0 ? 'yes' : 'no';
   } catch {
-    return true;
+    return 'unknown';
   }
 }
 
@@ -702,7 +844,9 @@ async function runDueWork(mentionLimit = 2): Promise<Record<string, unknown>> {
     );
     const candidates = res.ok ? ((await res.json()) as { id: string; post_id: string; body: string }[]) : [];
     for (const comment of candidates) {
-      if (await alreadyAnswered(comment.id)) continue;
+      // 'unknown' is not 'already answered': retrying a live mention beats dropping it silently.
+      const state = await aiReplyState(comment.id);
+      if (state !== 'no') continue;
       const task = (await insertRow('hallyu_ai_task', {
         kind: 'mention_reply',
         title: `Reply to mention ${comment.id.slice(0, 8)}`,
@@ -737,6 +881,163 @@ async function runDueWork(mentionLimit = 2): Promise<Record<string, unknown>> {
   return { claimed: claimed.length, runs, mentions };
 }
 
+// ── event workers: a DM or mention is answered in seconds, not on the next tick ───────────────
+const EVENT_MAX_ATTEMPTS = 5;
+
+interface EventRow {
+  id: string;
+  kind: 'dm' | 'mention';
+  source_id: string;
+  profile_id: string | null;
+  attempts: number;
+}
+
+async function patchEvent(id: string, patch: Record<string, unknown>): Promise<void> {
+  await db(`hallyu_ai_event?id=eq.${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }),
+  }).catch(() => null);
+}
+
+const firstRow = async <T>(path: string): Promise<T | null> => {
+  const res = await db(path);
+  if (!res.ok) throw new Error(`read failed (HTTP ${res.status})`);
+  const rows = (await res.json()) as T[];
+  return rows[0] ?? null;
+};
+
+/** Answer one real Direct Message as the official AI account, with the sender's real role. */
+async function processDmEvent(event: EventRow): Promise<Record<string, unknown>> {
+  const ai = await rpc('hallyu_ai_profile_id', {});
+  if (typeof ai !== 'string' || !ai) throw new Error('the official Hallyu AI profile is unavailable');
+
+  const dm = await firstRow<{ id: string; sender_id: string; body: string }>(
+    `direct_messages?select=id,sender_id,body&id=eq.${event.source_id}&limit=1`,
+  );
+  if (!dm) return { skipped: 'the message no longer exists' };
+  if (dm.sender_id === ai) return { skipped: 'the AI does not answer itself' };
+
+  const sender = await firstRow<{ id: string; handle: string; display_name: string | null; role: string; account_status: string }>(
+    `profiles?select=id,handle,display_name,role,account_status&id=eq.${dm.sender_id}&limit=1`,
+  );
+  if (!sender || sender.account_status !== 'active') return { skipped: 'the sender is not an active member' };
+
+  const historyRes = await db(
+    `direct_messages?select=sender_id,body,created_at&or=(and(sender_id.eq.${sender.id},recipient_id.eq.${ai}),and(sender_id.eq.${ai},recipient_id.eq.${sender.id}))&order=created_at.desc&limit=10`,
+  );
+  const history = historyRes.ok ? ((await historyRes.json()) as { sender_id: string; body: string }[]) : [];
+  const transcript = history
+    .slice()
+    .reverse()
+    .map((row) => `${row.sender_id === ai ? 'You' : sender.handle}: ${row.body}`)
+    .join('\n')
+    .slice(-3500);
+
+  const staff = isStaffRole(sender.role);
+  const prompt = staff
+    ? `The ${sender.role === 'ceo' ? 'owner' : 'administrator'} ${sender.handle} is messaging you in Direct Messages, and you have staff tools.\nConversation so far:\n${transcript}\n\nCarry out what they ask with real tools and report what actually happened. Their message: "${dm.body}". Your final answer is delivered to them as your DM.`
+    : `Member ${sender.handle} is messaging you in Direct Messages.\nConversation so far:\n${transcript}\n\nAnswer their message: "${dm.body}". Be genuinely useful and specific; never reveal internal analytics, staff tools, other members' data or private conversations. Your final answer is delivered to them as your DM.`;
+
+  const task = (await insertRow('hallyu_ai_task', {
+    kind: 'dm',
+    title: `DM from ${sender.handle}`.slice(0, 80),
+    prompt,
+    requester_profile_id: sender.id,
+    requester_role: sender.role,
+  })) as { id: string }[];
+  const taskId = task[0]!.id;
+
+  const outcome = await runTask(taskId);
+  const answer = String(outcome.answer ?? '').trim();
+  if (!answer) throw new Error('the model produced no answer to deliver');
+
+  const sent = await db('direct_messages', {
+    method: 'POST',
+    body: JSON.stringify({ sender_id: ai, recipient_id: sender.id, body: answer.slice(0, 4000) }),
+    headers: { Prefer: 'return=representation' },
+  });
+  if (!sent.ok) throw new Error(`could not deliver the reply (HTTP ${sent.status})`);
+  const created = (await sent.json()) as { id: string }[];
+  if (!created[0]?.id) throw new Error('the reply was not stored');
+
+  return { dm_id: created[0].id, task_id: taskId, to: sender.handle, status: outcome.status };
+}
+
+/** Answer one real comment mention under the comment that asked. */
+async function processMentionEvent(event: EventRow): Promise<Record<string, unknown>> {
+  const comment = await firstRow<{ id: string; post_id: string; parent_id: string | null; body: string; author_id: string; state: string }>(
+    `comments?select=id,post_id,parent_id,body,author_id,state&id=eq.${event.source_id}&limit=1`,
+  );
+  if (!comment) return { skipped: 'the comment no longer exists' };
+  if (comment.state !== 'active') return { skipped: 'the comment is not visible' };
+
+  const answered = await aiReplyState(comment.id);
+  if (answered === 'unknown') throw new Error('could not verify whether this mention was already answered');
+  if (answered === 'yes') return { skipped: 'already answered' };
+
+  const post = await firstRow<{ id: string; title: string | null; body: string }>(
+    `posts?select=id,title,body&id=eq.${comment.post_id}&limit=1`,
+  );
+
+  const task = (await insertRow('hallyu_ai_task', {
+    kind: 'mention_reply',
+    title: `Mention ${comment.id.slice(0, 8)}`,
+    prompt: `A member addressed you with @hallyu.ai in comment ${comment.id} on post ${comment.post_id}.\nTheir comment: "${comment.body.slice(0, 800)}"\nPost context: ${post?.title ?? '(no title)'} — ${(post?.body ?? '').slice(0, 800)}\n\nReply with reply_comment using post_id ${comment.post_id} and parent_id ${comment.id}. Use tools to check anything you are unsure about. If a real reply is not appropriate, answer with {\"final\": ...} explaining why and do not publish.`,
+    requester_profile_id: comment.author_id,
+    requester_role: 'system',
+  })) as { id: string }[];
+  const taskId = task[0]!.id;
+
+  const outcome = await runTask(taskId);
+
+  // Verify against the database, not the model's own claim.
+  const after = await aiReplyState(comment.id);
+  if (after === 'unknown') throw new Error('could not verify the reply after publishing');
+  return { task_id: taskId, replied: after === 'yes', status: outcome.status, note: outcome.answer ?? null };
+}
+
+async function processEventRow(event: EventRow): Promise<Record<string, unknown>> {
+  try {
+    const result = event.kind === 'dm' ? await processDmEvent(event) : await processMentionEvent(event);
+    await patchEvent(event.id, { status: 'done', result, last_error: null });
+    return { id: event.id, kind: event.kind, status: 'done', ...result };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const dead = event.attempts >= EVENT_MAX_ATTEMPTS;
+    const backoffMs = Math.min(30_000 * Math.pow(2, Math.max(event.attempts - 1, 0)), 15 * 60_000);
+    await patchEvent(event.id, {
+      status: dead ? 'dead' : 'pending',
+      next_attempt_at: new Date(Date.now() + backoffMs).toISOString(),
+      last_error: message.slice(0, 500),
+    });
+    return { id: event.id, kind: event.kind, status: dead ? 'dead' : 'pending', error: message, retry_in_ms: dead ? null : backoffMs };
+  }
+}
+
+/**
+ * Claim and process queued events. A dispatch wake-up names one event; the fallback path drains
+ * whatever is due, so a missed HTTP call is recovered rather than lost.
+ */
+async function runEvents(input: { kind?: string; source_id?: string; limit?: number }): Promise<Record<string, unknown>> {
+  await rpc('hallyu_ai_recover_stale_events', { p_after: '5 minutes' }).catch(() => null);
+  const limit = Math.min(Math.max(Number(input.limit) || 3, 1), 5);
+
+  if (input.kind && input.source_id) {
+    const named = await firstRow<EventRow & { status: string }>(
+      `hallyu_ai_event?select=id,kind,source_id,profile_id,attempts,status&kind=eq.${encodeURIComponent(input.kind)}&source_id=eq.${encodeURIComponent(input.source_id)}&status=eq.pending&limit=1`,
+    );
+    if (!named) return { processed: [], detail: 'that event is already handled or does not exist' };
+    await patchEvent(named.id, { status: 'processing', attempts: named.attempts + 1 });
+    return { processed: [await processEventRow({ ...named, attempts: named.attempts + 1 })] };
+  }
+
+  const claimed = (await rpc('hallyu_ai_claim_events', { p_limit: limit })) as EventRow[] | null;
+  const rows = Array.isArray(claimed) ? claimed : [];
+  const processed: Record<string, unknown>[] = [];
+  for (const row of rows) processed.push(await processEventRow(row));
+  return { processed, claimed: rows.length, detail: rows.length === 0 ? 'nothing queued' : 'processed queued events' };
+}
+
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -749,12 +1050,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
     new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   try {
-    // Members resolve as themselves; a credential the database accepts as service_role resolves as
-    // the system (the 24/7 scheduler). Nobody else gets in.
-    const profile = (await callerProfile(req)) ?? (await systemProfile(req));
-    if (!profile) return json({ error: 'sign in required' }, 401);
-    const staff = isStaffRole(profile.role);
-
     const body = (await req.json().catch(() => ({}))) as {
       action?: string;
       prompt?: string;
@@ -764,7 +1059,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
       approve?: boolean;
       note?: string;
       limit?: number;
+      source_id?: string;
     };
+
+    // The event worker is a system caller: the scheduler drains the queue, and nothing else may.
+    // Authorised before the member lookup because the caller is a credential, not a person.
+    if (body.action === 'event.process') {
+      if (!(await systemProfile(req))) return json({ error: 'sign in required' }, 401);
+      return json(await runEvents({ kind: body.kind, source_id: body.source_id, limit: body.limit }));
+    }
+
+    // Members resolve as themselves; a credential the database accepts as service_role resolves as
+    // the system (the 24/7 scheduler). Nobody else gets in.
+    const profile = (await callerProfile(req)) ?? (await systemProfile(req));
+    if (!profile) return json({ error: 'sign in required' }, 401);
+    const staff = isStaffRole(profile.role);
 
     switch (body.action) {
       case 'ping': {
@@ -841,11 +1150,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
         return json(await runDueWork(Number(body.limit) || 2));
       }
 
+      case 'event.drain': {
+        if (!staff) return json({ error: 'admin or ceo role required' }, 403);
+        return json(await runEvents({ limit: body.limit }));
+      }
+
       default:
         return json(
           {
             error:
-              'unknown action — use ping, chat, task.create, task.run, approval.decide, schedule.run_due, schedule.list or mentions.answer',
+              'unknown action — use ping, chat, task.create, task.run, approval.decide, schedule.run_due, schedule.list, mentions.answer or event.drain',
           },
           400,
         );

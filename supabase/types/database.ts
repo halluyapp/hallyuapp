@@ -342,6 +342,54 @@ export type Database = {
         };
         Relationships: [];
       };
+      hallyu_ai_event: {
+        Row: {
+          attempts: number;
+          created_at: string;
+          dedupe_key: string;
+          id: string;
+          kind: string;
+          last_error: string | null;
+          next_attempt_at: string;
+          profile_id: string | null;
+          result: Json | null;
+          source_id: string;
+          status: string;
+          task_id: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          attempts?: number;
+          created_at?: string;
+          dedupe_key: string;
+          id?: string;
+          kind: string;
+          last_error?: string | null;
+          next_attempt_at?: string;
+          profile_id?: string | null;
+          result?: Json | null;
+          source_id: string;
+          status?: string;
+          task_id?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          attempts?: number;
+          created_at?: string;
+          dedupe_key?: string;
+          id?: string;
+          kind?: string;
+          last_error?: string | null;
+          next_attempt_at?: string;
+          profile_id?: string | null;
+          result?: Json | null;
+          source_id?: string;
+          status?: string;
+          task_id?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       hallyu_ai_memory: {
         Row: {
           created_at: string;
@@ -2047,8 +2095,10 @@ export type Database = {
           body: string;
           created_at: string;
           id: string;
+          message_type: string;
           read_at: string | null;
           recipient_id: string;
+          rich_content: Json | null;
           sender_id: string;
           shared_drama_id: string | null;
           shared_post_id: string | null;
@@ -2057,8 +2107,10 @@ export type Database = {
           body: string;
           created_at?: string;
           id?: string;
+          message_type?: string;
           read_at?: string | null;
           recipient_id: string;
+          rich_content?: Json | null;
           sender_id: string;
           shared_drama_id?: string | null;
           shared_post_id?: string | null;
@@ -2067,8 +2119,10 @@ export type Database = {
           body?: string;
           created_at?: string;
           id?: string;
+          message_type?: string;
           read_at?: string | null;
           recipient_id?: string;
+          rich_content?: Json | null;
           sender_id?: string;
           shared_drama_id?: string | null;
           shared_post_id?: string | null;

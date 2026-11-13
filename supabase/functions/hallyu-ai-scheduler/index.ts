@@ -142,31 +142,39 @@ Deno.serve(async (request: Request) => {
   }
   const limit = Math.min(Math.max(Number(body.limit) || 3, 1), 5);
 
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/hallyu-ai-operator`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ action: 'schedule.run_due', limit }),
-  }).catch(() => null);
+  const askOperator = async (action: string) => {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/hallyu-ai-operator`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ action, limit }),
+    }).catch(() => null);
+    if (!res) return { ok: false as const, status: 0, payload: 'the operator did not answer' };
+    const text = await res.text().catch(() => '');
+    let payload: unknown = text;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      // Keep the raw text so a broken operator response is visible instead of swallowed.
+    }
+    return { ok: res.ok, status: res.status, payload };
+  };
 
-  if (!res) return errorResponse('the operator did not answer', 502);
-  const text = await res.text().catch(() => '');
-  let payload: unknown = text;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    // Keep the raw text so a broken operator response is visible instead of swallowed.
-  }
+  // Talking to members comes first: a waiting DM or mention matters more than the next article.
+  const events = await askOperator('event.process');
+  const schedules = await askOperator('schedule.run_due');
 
-  if (!res.ok) {
-    return jsonResponse({ operator_status: res.status, operator_response: payload, ran_at: new Date().toISOString() }, res.status);
-  }
+  const failed = [events, schedules].filter((call) => !call.ok);
+  const body_ = {
+    triggered_by: isServiceRole ? 'service_role' : 'github_oidc',
+    events: events.payload,
+    schedules: schedules.payload,
+    ran_at: new Date().toISOString(),
+  };
 
-  return jsonResponse(
-    { triggered_by: isServiceRole ? 'service_role' : 'github_oidc', ...((payload as object) ?? {}), ran_at: new Date().toISOString() },
-    200,
-  );
+  if (failed.length > 0) return jsonResponse({ ...body_, failed_calls: failed.length }, failed[0]!.status || 502);
+  return jsonResponse(body_, 200);
 });
