@@ -36,6 +36,18 @@ type HallyuAiScheduleRow = {
 type HallyuAiMemoryRow = {
   kind: string; key: string; value: Json; task_id: string | null; created_at: string;
 };
+type HallyuAiDmEventRow = {
+  id: string; conversation_id: string; sender_id: string; recipient_id: string;
+  body: string; message_id: string; created_at: string; processed_at: string | null;
+  status: string; error: string | null; attempt_count: number; max_attempts: number;
+  not_before: string;
+};
+type HallyuAiCommentEventRow = {
+  id: string; comment_id: string; post_id: string; author_id: string;
+  mentioned_handle: string; body: string; created_at: string; processed_at: string | null;
+  status: string; error: string | null; attempt_count: number; max_attempts: number;
+  not_before: string;
+};
 
 export type Database = {
   public: {
@@ -173,6 +185,46 @@ export type Database = {
           created_at?: string;
           published_at?: string | null;
         };
+        Relationships: [];
+      };
+      hallyu_ai_dm_event: {
+        Row: {
+          id: string;
+          conversation_id: string;
+          sender_id: string;
+          recipient_id: string;
+          body: string;
+          message_id: string;
+          created_at: string;
+          processed_at: string | null;
+          status: string;
+          error: string | null;
+          attempt_count: number;
+          max_attempts: number;
+          not_before: string;
+        };
+        Insert: Partial<HallyuAiDmEventRow> & Pick<HallyuAiDmEventRow, 'conversation_id' | 'sender_id' | 'recipient_id' | 'body' | 'message_id'>;
+        Update: Partial<HallyuAiDmEventRow>;
+        Relationships: [];
+      };
+      hallyu_ai_comment_event: {
+        Row: {
+          id: string;
+          comment_id: string;
+          post_id: string;
+          author_id: string;
+          mentioned_handle: string;
+          body: string;
+          created_at: string;
+          processed_at: string | null;
+          status: string;
+          error: string | null;
+          attempt_count: number;
+          max_attempts: number;
+          not_before: string;
+        };
+        Insert: Partial<HallyuAiCommentEventRow> & Pick<HallyuAiCommentEventRow, 'comment_id' | 'post_id' | 'author_id' | 'mentioned_handle' | 'body'>;
+        Update: Partial<HallyuAiCommentEventRow>;
         Relationships: [];
       };
       book_titles: {

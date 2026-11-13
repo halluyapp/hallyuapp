@@ -9,8 +9,16 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const SUPABASE_URL = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
 const TOOLKIT_URL = (Deno.env.get('TOOLKIT_URL') ?? Deno.env.get('EXPO_PUBLIC_TOOLKIT_URL') ?? 'https://toolkit.rork.com').replace(/\/$/, '');
 const TOOLKIT_KEY = Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('RORK_AI_API_KEY') ?? '';
-const AI_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'anthropic/claude-sonnet-5';
+const RORK_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'anthropic/claude-sonnet-5';
+const GEMINI_API_KEYS_RAW = Deno.env.get('GEMINI_API_KEYS') ?? '';
+const GEMINI_API_KEYS = GEMINI_API_KEYS_RAW.split(',').map((k) => k.trim()).filter(Boolean);
+const GEMINI_MODEL = Deno.env.get('GEMINI_MODEL') ?? 'gemini-1.5-pro';
+const GEMINI_API_URL = (Deno.env.get('GEMINI_API_URL') ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\\/$/, '');
 const MAX_STEPS = 6;
+
+type Provider = 'rork' | 'gemini';
+type ModelCallResult = { content: string; provider: Provider; model: string };
+let geminiKeyIndex = 0;
 
 type Role = 'member' | 'admin' | 'ceo' | 'moderator' | 'system' | string;
 type Profile = { id: string; role: Role };
@@ -28,7 +36,6 @@ type Task = {
     messages?: Message[]; seq?: number; sources?: Record<string, unknown>[]; pending?: { tool: string; args: Record<string, unknown> };
   };
 };
-
 async function db(path: string, init: RequestInit = {}): Promise<Response> {
   return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...init,
@@ -228,6 +235,51 @@ const TOOLS: Record<string, Tool> = {
       return { ...result, note: 'Queued or already queued only. Device delivery is confirmed separately by push-dispatch.' };
     },
   },
+  dm_send: {
+    args: '{"handle":"@member","body":"message text"}',
+    description: 'Send a direct message to a Hallyu member as Hallyu AI. Never sends unsolicited DMs — only replies to real member-initiated conversations.',
+    run: async (args, ctx) => {
+      if (!ctx.profileId) throw new Error('caller profile required');
+      const handle = boundedText(args.handle, 60).replace(/^@/, '');
+      const body = boundedText(args.body, 1000);
+      if (!handle || !body) throw new Error('handle and body are required');
+      const result = await rpc<Record<string, unknown>>('send_direct_message', {
+        p_recipient_handle: handle,
+        p_body: body,
+        p_shared_drama_id: null,
+        p_shared_post_id: null,
+      });
+      return { ...result, note: 'Message queued for delivery. Delivery confirmation comes from push-dispatch.' };
+    },
+  },
+  dm_conversations: {
+    staff: true, args: '{"limit":20}',
+    description: 'List the Hallyu AI account’s direct-message conversations for staff review.',
+    run: async (args) => {
+      const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
+      return rpc('list_conversations', { p_limit: limit });
+    },
+  },
+  comment_mentions: {
+    staff: true, args: '{"limit":20}',
+    description: 'Find recent active public comments that mention Hallyu AI and need a response.',
+    run: async (args) => {
+      const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
+      return rows(`comments?select=id,post_id,author_id,body,created_at,posts!inner(id,title,author_id,state,visibility)&body=ilike.%@hallyu.ai%&state=eq.active&posts.state=eq.active&posts.visibility=eq.public&order=created_at.desc&limit=${limit}`);
+    },
+  },
+  comment_reply: {
+    staff: true, args: '{"comment_id":"uuid","body":"reply text"}',
+    description: 'Reply as Hallyu AI to a specific comment on an active public post.',
+    run: async (args, ctx) => {
+      if (!validUuid(args.comment_id)) throw new Error('comment_id must be a UUID');
+      const body = boundedText(args.body, 1000);
+      if (!body) throw new Error('reply body required');
+      const comment = (await rows(`comments?select=id,post_id,state&id=eq.${args.comment_id}&limit=1`))[0];
+      if (!comment || comment.state !== 'active') throw new Error('comment not found or not active');
+      return rpc('hallyu_ai_publish', { p_task_id: ctx.taskId, p_action: 'reply_comment', p_title: '', p_body: body, p_payload: { post_id: comment.post_id, parent_id: args.comment_id }, p_sources: [] });
+    },
+  },
 };
 
 function manifest(staff: boolean): string {
@@ -242,18 +294,68 @@ Available tools:\n${manifest(staff)}
 Respond ONLY with JSON: {"tool":"name","args":{...}} for one step, or {"final":"answer"} when finished. Use multiple steps for research, action and verification. If an integration is unavailable, say exactly what is unavailable.`;
 }
 
-async function callModel(messages: Message[]): Promise<string> {
+async function callGemini(messages: Message[]): Promise<ModelCallResult> {
+  if (GEMINI_API_KEYS.length === 0) throw Object.assign(new Error('Gemini is not configured — no GEMINI_API_KEYS secret.'), { statusCode: 503 });
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < GEMINI_API_KEYS.length; attempt += 1) {
+    const key = GEMINI_API_KEYS[geminiKeyIndex % GEMINI_API_KEYS.length];
+    geminiKeyIndex += 1;
+    try {
+      const contents = messages.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
+      const res = await fetch(`${GEMINI_API_URL}/models/${GEMINI_MODEL}:generateContent?key=${key}`, {
+        method: 'POST', signal: AbortSignal.timeout(35_000),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents, generationConfig: { temperature: 0.2, maxOutputTokens: 1400 } }),
+      });
+      if (!res.ok) {
+        const body = await res.text().slice(0, 240);
+        if (res.status === 400 || res.status === 403) continue; // bad key, try next
+        throw Object.assign(new Error(`Gemini call failed (HTTP ${res.status}): ${body}`), { statusCode: 502 });
+      }
+      const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] }[];
+      const text = data?.[0]?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (typeof text !== 'string' || !text.trim()) throw Object.assign(new Error('Gemini returned an empty answer.'), { statusCode: 502 });
+      return { content: text, provider: 'gemini', model: GEMINI_MODEL };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw Object.assign(lastError instanceof Error ? lastError : new Error('Gemini call failed'), { statusCode: 502 });
+}
+
+async function callRork(messages: Message[]): Promise<ModelCallResult> {
   if (!TOOLKIT_KEY) throw Object.assign(new Error('Rork AI Cloud is not configured in the server function secrets.'), { statusCode: 503 });
   const res = await fetch(`${TOOLKIT_URL}/v2/vercel/v1/chat/completions`, {
     method: 'POST', signal: AbortSignal.timeout(35_000),
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOOLKIT_KEY}` },
-    body: JSON.stringify({ model: AI_MODEL, messages, temperature: 0.2, max_tokens: 1400 }),
+    body: JSON.stringify({ model: RORK_MODEL, messages, temperature: 0.2, max_tokens: 1400 }),
   });
   if (!res.ok) throw Object.assign(new Error(`Rork AI Cloud call failed (HTTP ${res.status}): ${(await res.text()).slice(0, 240)}`), { statusCode: 502 });
   const data = await res.json() as { choices?: { message?: { content?: unknown } }[] };
   const content = data.choices?.[0]?.message?.content;
   if (typeof content !== 'string' || !content.trim()) throw Object.assign(new Error('Rork AI Cloud returned an empty or unsupported answer.'), { statusCode: 502 });
-  return content;
+  return { content, provider: 'rork', model: RORK_MODEL };
+}
+
+async function callModel(messages: Message[]): Promise<ModelCallResult> {
+  // Gemini is the primary provider; Rork is the explicit fallback.
+  if (GEMINI_API_KEYS.length > 0) {
+    try { return await callGemini(messages); } catch {
+      // fall through to Rork
+    }
+  }
+  if (TOOLKIT_KEY) {
+    try { return await callRork(messages); } catch {
+      // fall through
+    }
+  }
+  if (GEMINI_API_KEYS.length === 0 && !TOOLKIT_KEY) {
+    throw Object.assign(new Error('No AI provider is configured — set GEMINI_API_KEYS or RORK_TOOLKIT_SECRET_KEY.'), { statusCode: 503 });
+  }
+  throw Object.assign(new Error('All AI providers are unavailable.'), { statusCode: 502 });
 }
 
 async function record(taskId: string, seq: number, tool: string, args: unknown, outcome: { status: string; result?: unknown; error?: string }): Promise<void> {
@@ -330,9 +432,10 @@ async function runTask(taskId: string): Promise<Record<string, unknown>> {
     }
 
     while (seq < MAX_STEPS) {
-      const content = await callModel(history);
-      history.push({ role: 'assistant', content });
-      const protocol = parseAgentProtocol(content);
+<<      const result = await callModel(history);
+      history.push({ role: 'assistant', content: result.content });
+      await setStatus(taskId, 'running', { model: result.model, error: null });
+      const protocol = parseAgentProtocol(result.content);
       if (protocol.final !== undefined) {
         const answer = boundedText(protocol.final, 12_000);
         await setStatus(taskId, 'completed', { result: { answer }, agent_state: snapshot(), finished_at: new Date().toISOString() });
@@ -408,7 +511,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     switch (action) {
       case 'ping':
-        return jsonResponse({ model_configured: Boolean(TOOLKIT_KEY), model: AI_MODEL, staff, publishing_mode: cfg.publishing, tools: Object.entries(TOOLS).filter(([, t]) => staff || !t.staff).map(([name]) => name) });
+        return jsonResponse({
+          gemini_configured: GEMINI_API_KEYS.length > 0,
+          rork_configured: Boolean(TOOLKIT_KEY),
+          primary_provider: GEMINI_API_KEYS.length > 0 ? 'gemini' : TOOLKIT_KEY ? 'rork' : null,
+          model: GEMINI_API_KEYS.length > 0 ? GEMINI_MODEL : TOOLKIT_KEY ? RORK_MODEL : null,
+          staff, publishing_mode: cfg.publishing,
+          tools: Object.entries(TOOLS).filter(([, t]) => staff || !t.staff).map(([name]) => name),
+        });
       case 'chat': {
         const prompt = boundedText(body.prompt, 6000);
         if (!prompt) return jsonResponse({ error: 'a question is required' }, 400);

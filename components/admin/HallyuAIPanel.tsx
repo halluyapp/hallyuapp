@@ -66,8 +66,10 @@ interface AiToolCall {
 }
 
 type Ping = {
-  model_configured: boolean;
-  model: string;
+  gemini_configured: boolean;
+  rork_configured: boolean;
+  primary_provider: 'gemini' | 'rork' | null;
+  model: string | null;
   staff: boolean;
   tools: string[];
   publishing_mode: 'approval' | 'autonomous';
@@ -226,9 +228,9 @@ export function HallyuAIPanel() {
   return (
     <View style={{ gap: space.x4 }}>
       {/* Operator status */}
-      <View style={[styles.card, { borderLeftColor: ping?.model_configured ? '#34c759' : '#ffb340' }]}>
+      <View style={[styles.card, { borderLeftColor: ping?.primary_provider ? '#34c759' : '#ffb340' }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Ionicons name={ping?.model_configured ? 'sparkles' : 'sparkles-outline'} size={18} color={colors.accent} />
+          <Ionicons name={ping?.primary_provider ? 'sparkles' : 'sparkles-outline'} size={18} color={colors.accent} />
           <Text variant="title">Hallyu AI Operator</Text>
           <View style={{ flex: 1 }} />
           {loading ? <ActivityIndicator size="small" color={colors.accent} /> : null}
@@ -236,7 +238,7 @@ export function HallyuAIPanel() {
         {ping ? (
           <View style={styles.statusRow}>
             <Text variant="caption" tone="secondary" style={{ flex: 1 }}>
-              Publishing: {ping.publishing_mode === 'approval' ? 'approval required' : 'routine autonomous'} · broadcasts always need approval
+              Provider: {ping.primary_provider ?? 'none configured'} · Model: {ping.model ?? '—'} · Publishing: {ping.publishing_mode === 'approval' ? 'approval required' : 'routine autonomous'} · broadcasts always need approval
             </Text>
             <Button label="Change" variant="ghost" size="sm" disabled={busy} onPress={() => void changePublishingMode()} />
           </View>
@@ -244,9 +246,9 @@ export function HallyuAIPanel() {
         <Text variant="caption" tone="secondary" style={{ marginTop: space.x2 }}>
           {ping === null
             ? 'Checking the operator…'
-            : ping.model_configured
-              ? `Credential configured for ${ping.model}; the first task validates connectivity. ${ping.tools.length} tools are available.`
-              : 'The server has no Rork AI credential. Configure it as a function secret; the panel will not simulate a response.'}
+            : ping.primary_provider
+              ? `${ping.primary_provider.toUpperCase()} configured for ${ping.model}; ${ping.gemini_configured ? 'Gemini keys ready.' : ''}${ping.rork_configured ? ' Rork fallback ready.' : ''} ${ping.tools.length} tools are available.`
+              : 'No AI provider is configured. Set GEMINI_API_KEYS or RORK_TOOLKIT_SECRET_KEY as function secrets; the panel will not simulate a response.'}
         </Text>
       </View>
 

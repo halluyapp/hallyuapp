@@ -45,5 +45,22 @@ export const RORK_AUTH_URL = env(process.env.EXPO_PUBLIC_RORK_AUTH_URL) ?? 'http
 /** The private `media` bucket created by migration 17 (reads go through signed URLs). */
 export const MEDIA_BUCKET = env(process.env.EXPO_PUBLIC_MEDIA_BUCKET) ?? 'media';
 
+/** Gemini API keys — the primary AI provider. Multiple keys support rotation on quota exhaustion.
+ *  The first non-empty key is used; additional keys are tried in order when a call fails.
+ */
+export const GEMINI_API_KEYS = (() => {
+  const raw = env(process.env.EXPO_PUBLIC_GEMINI_API_KEYS) ?? '';
+  return raw.split(',').map((k) => k.trim()).filter(Boolean);
+})();
+
+/** Default Gemini model. Override with EXPO_PUBLIC_GEMINI_MODEL at build time. */
+export const GEMINI_MODEL = env(process.env.EXPO_PUBLIC_GEMINI_MODEL) ?? 'gemini-1.5-pro';
+
+/** Gemini API base URL. */
+export const GEMINI_API_URL = env(process.env.EXPO_PUBLIC_GEMINI_API_URL) ?? 'https://generativelanguage.googleapis.com/v1beta';
+
+/** True when at least one Gemini key is configured. */
+export const geminiConfigured = GEMINI_API_KEYS.length > 0;
+
 /** True when the build carries a backend connection (URL + anon key both present). */
 export const backendConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
