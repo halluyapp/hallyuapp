@@ -48,6 +48,20 @@ type HallyuAiCommentEventRow = {
   status: string; error: string | null; attempt_count: number; max_attempts: number;
   not_before: string;
 };
+type HallyuAiProviderConfigRow = {
+  id: string; name: string; provider_type: string; endpoint: string;
+  api_key_encrypted: string; model: string; auth_method: string; enabled: boolean;
+  priority: number; cooldown_until: string | null; rate_limit_remaining: number | null;
+  rate_limit_resets_at: string | null; last_successful_at: string | null;
+  last_error: string | null; last_error_at: string | null;
+  total_requests: number; total_failures: number; created_at: string; updated_at: string;
+};
+type HallyuAiProviderUsageRow = {
+  id: string; provider_id: string; provider_name: string; model: string;
+  request_date: string; requests_count: number; failures_count: number;
+  total_tokens_in: number; total_tokens_out: number; avg_latency_ms: number | null;
+  created_at: string; updated_at: string;
+};
 
 export type Database = {
   public: {
@@ -225,6 +239,51 @@ export type Database = {
         };
         Insert: Partial<HallyuAiCommentEventRow> & Pick<HallyuAiCommentEventRow, 'comment_id' | 'post_id' | 'author_id' | 'mentioned_handle' | 'body'>;
         Update: Partial<HallyuAiCommentEventRow>;
+        Relationships: [];
+      };
+      hallyu_ai_provider_configs: {
+        Row: {
+          id: string;
+          name: string;
+          provider_type: string;
+          endpoint: string;
+          api_key_encrypted: string;
+          model: string;
+          auth_method: string;
+          enabled: boolean;
+          priority: number;
+          cooldown_until: string | null;
+          rate_limit_remaining: number | null;
+          rate_limit_resets_at: string | null;
+          last_successful_at: string | null;
+          last_error: string | null;
+          last_error_at: string | null;
+          total_requests: number;
+          total_failures: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<HallyuAiProviderConfigRow>;
+        Update: Partial<HallyuAiProviderConfigRow>;
+        Relationships: [];
+      };
+      hallyu_ai_provider_usage: {
+        Row: {
+          id: string;
+          provider_id: string;
+          provider_name: string;
+          model: string;
+          request_date: string;
+          requests_count: number;
+          failures_count: number;
+          total_tokens_in: number;
+          total_tokens_out: number;
+          avg_latency_ms: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<HallyuAiProviderUsageRow>;
+        Update: Partial<HallyuAiProviderUsageRow>;
         Relationships: [];
       };
       book_titles: {
