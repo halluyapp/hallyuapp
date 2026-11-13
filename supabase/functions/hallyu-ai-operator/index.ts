@@ -24,33 +24,25 @@ const corsHeaders = {
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 
-// Multi-key Gemini configuration (Phase 1: Multi-Key Rotation and Controlled Failover)
-const GEMINI_KEYS = [
-  (
-    Deno.env.get('GEMINI_API_KEY') ??
-    Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY') ??
-    Deno.env.get('GOOGLE_API_KEY') ??
-    ''
-  ).trim(),
-  (Deno.env.get('GEMINI_API_KEY_2') ?? '').trim(),
-  (Deno.env.get('GEMINI_API_KEY_3') ?? '').trim(),
-];
-
-const GEMINI_MODEL = Deno.env.get('GEMINI_MODEL') ?? 'gemini-2.5-flash';
 const GEMINI_API_BASE = (Deno.env.get('GEMINI_API_BASE') ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
-
-// Lovable Cloud AI integration
-const LOVABLE_AI_KEY = (Deno.env.get('LOVABLE_AI_API_KEY') ?? Deno.env.get('LOVABLE_API_KEY') ?? '').trim();
 const LOVABLE_AI_BASE = (Deno.env.get('LOVABLE_AI_BASE') ?? 'https://ai.lovable.dev/v1').replace(/\/$/, '');
-const LOVABLE_AI_MODEL = Deno.env.get('LOVABLE_AI_MODEL') ?? 'google/gemini-2.5-flash';
-
-// Rork AI Cloud — disabled by default as primary and fallback
-const RORK_FALLBACK_ENABLED = Deno.env.get('RORK_FALLBACK_ENABLED') === 'true';
 const TOOLKIT_URL = (Deno.env.get('TOOLKIT_URL') ?? Deno.env.get('EXPO_PUBLIC_TOOLKIT_URL') ?? 'https://toolkit.rork.com').replace(/\/$/, '');
-const TOOLKIT_KEY = (Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ?? Deno.env.get('RORK_AI_API_KEY') ?? '').trim();
 const AI_MODEL = Deno.env.get('RORK_AI_MODEL') ?? 'anthropic/claude-sonnet-5';
 
 type ModelProvider = 'gemini' | 'lovable' | 'rork' | 'none';
+
+interface RuntimeSecrets {
+  geminiKeys: string[];
+  geminiModel: string;
+  lovableKey: string;
+  lovableModel: string;
+  rorkEnabled: boolean;
+  toolkitKey: string;
+  loadedAt: number;
+}
+
+let cachedSecrets: RuntimeSecrets | null = null;
+const CACHE_TTL_MS = 30_000;
 
 interface KeyHealthState {
   index: number;
@@ -104,22 +96,117 @@ function avgLatency(): number | null {
   return Math.round(sum / latencySamples.length);
 }
 
-function configuredGeminiKeys(): { key: string; state: KeyHealthState }[] {
-  return GEMINI_KEYS.map((k, i) => ({ key: k, state: keyStates[i]! })).filter((item) => Boolean(item.key));
+function resetKeyHealthStates(): void {
+  for (let i = 0; i < keyStates.length; i++) {
+    keyStates[i]!.status = 'healthy';
+    keyStates[i]!.cooldownUntil = null;
+    keyStates[i]!.consecutiveFailures = 0;
+    keyStates[i]!.lastError = null;
+  }
+}
+
+async function getRuntimeSecrets(forceRefresh = false): Promise<RuntimeSecrets> {
+  const now = Date.now();
+  if (!forceRefresh && cachedSecrets && (now - cachedSecrets.loadedAt) < CACHE_TTL_MS) {
+    return cachedSecrets;
+  }
+
+  // 1. Initial values from Deno environment variables
+  let k1 = (
+    Deno.env.get('GEMINI_API_KEY') ??
+    Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY') ??
+    Deno.env.get('GOOGLE_API_KEY') ??
+    ''
+  ).trim();
+  let k2 = (Deno.env.get('GEMINI_API_KEY_2') ?? '').trim();
+  let k3 = (Deno.env.get('GEMINI_API_KEY_3') ?? '').trim();
+  let geminiModel = Deno.env.get('GEMINI_MODEL') ?? 'gemini-2.5-flash';
+
+  let lovableKey = (Deno.env.get('LOVABLE_AI_API_KEY') ?? Deno.env.get('LOVABLE_API_KEY') ?? '').trim();
+  let lovableModel = Deno.env.get('LOVABLE_AI_MODEL') ?? 'google/gemini-2.5-flash';
+
+  let rorkEnabled = Deno.env.get('RORK_FALLBACK_ENABLED') === 'true';
+  const toolkitKey = (
+    Deno.env.get('RORK_TOOLKIT_SECRET_KEY') ??
+    Deno.env.get('EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY') ??
+    Deno.env.get('RORK_AI_API_KEY') ??
+    ''
+  ).trim();
+
+  // 2. Query secure runtime database vault (hallyu_ai_vault)
+  try {
+    const res = await db('hallyu_ai_vault?select=key,value');
+    if (res.ok) {
+      const rows = (await res.json().catch(() => [])) as { key: string; value: string }[];
+      for (const row of rows) {
+        const val = (row.value ?? '').trim();
+        if (!val) continue;
+        if (row.key === 'GEMINI_API_KEY') k1 = val;
+        else if (row.key === 'GEMINI_API_KEY_2') k2 = val;
+        else if (row.key === 'GEMINI_API_KEY_3') k3 = val;
+        else if (row.key === 'GEMINI_MODEL') geminiModel = val;
+        else if (row.key === 'LOVABLE_AI_API_KEY' || row.key === 'LOVABLE_API_KEY') lovableKey = val;
+        else if (row.key === 'LOVABLE_AI_MODEL') lovableModel = val;
+        else if (row.key === 'RORK_FALLBACK_ENABLED') rorkEnabled = val === 'true';
+      }
+    }
+  } catch (_e) {
+    // Graceful fallback to env if migration 76 is still deploying
+  }
+
+  // 3. Fallback to ci_build_vault if keys are still unset
+  if (!k1 && !k2 && !k3) {
+    try {
+      const res = await db('ci_build_vault?select=key,value');
+      if (res.ok) {
+        const rows = (await res.json().catch(() => [])) as { key: string; value: string }[];
+        for (const row of rows) {
+          const val = (row.value ?? '').trim();
+          if (!val) continue;
+          if (row.key === 'GEMINI_API_KEY') k1 = val;
+          else if (row.key === 'GEMINI_API_KEY_2') k2 = val;
+          else if (row.key === 'GEMINI_API_KEY_3') k3 = val;
+          else if (row.key === 'LOVABLE_API_KEY' || row.key === 'LOVABLE_AI_API_KEY') lovableKey = val;
+        }
+      }
+    } catch (_e) {
+      // Ignore
+    }
+  }
+
+  cachedSecrets = {
+    geminiKeys: [k1, k2, k3],
+    geminiModel,
+    lovableKey,
+    lovableModel,
+    rorkEnabled,
+    toolkitKey,
+    loadedAt: now,
+  };
+
+  return cachedSecrets;
+}
+
+async function configuredGeminiKeys(): Promise<{ key: string; state: KeyHealthState }[]> {
+  const secrets = await getRuntimeSecrets();
+  return secrets.geminiKeys.map((k, i) => ({ key: k, state: keyStates[i]! })).filter((item) => Boolean(item.key));
 }
 
 /** Which credential the operator will actually use — the same answer every call must report. */
-function modelProvider(): ModelProvider {
-  if (configuredGeminiKeys().length > 0) return 'gemini';
-  if (LOVABLE_AI_KEY) return 'lovable';
-  if (RORK_FALLBACK_ENABLED && TOOLKIT_KEY) return 'rork';
+async function modelProvider(): Promise<ModelProvider> {
+  const keys = await configuredGeminiKeys();
+  if (keys.length > 0) return 'gemini';
+  const secrets = await getRuntimeSecrets();
+  if (secrets.lovableKey) return 'lovable';
+  if (secrets.rorkEnabled && secrets.toolkitKey) return 'rork';
   return 'none';
 }
 
-function activeModel(): string {
-  const p = modelProvider();
-  if (p === 'gemini') return GEMINI_MODEL;
-  if (p === 'lovable') return LOVABLE_AI_MODEL;
+async function activeModel(): Promise<string> {
+  const p = await modelProvider();
+  const secrets = await getRuntimeSecrets();
+  if (p === 'gemini') return secrets.geminiModel;
+  if (p === 'lovable') return secrets.lovableModel;
   if (p === 'rork') return AI_MODEL;
   return 'none';
 }
@@ -570,8 +657,11 @@ async function approvalMode(): Promise<'on'> {
 
 // ── model adapters (Phase 1: Multi-Key Rotation, Controlled Failover & Lovable Fallback) ───────
 
-async function callGemini(messages: { role: string; content: string }[]): Promise<string> {
-  const available = configuredGeminiKeys();
+async function callGemini(
+  messages: { role: string; content: string }[],
+  available: { key: string; state: KeyHealthState }[],
+  geminiModel: string,
+): Promise<string> {
   if (available.length === 0) {
     throw Object.assign(new Error('No Gemini API key configured.'), { statusCode: 503 });
   }
@@ -609,7 +699,7 @@ async function callGemini(messages: { role: string; content: string }[]): Promis
     const startTime = Date.now();
 
     try {
-      const res = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`, {
+      const res = await fetch(`${GEMINI_API_BASE}/models/${encodeURIComponent(geminiModel)}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
         body: payload,
@@ -711,8 +801,12 @@ async function callGemini(messages: { role: string; content: string }[]): Promis
   );
 }
 
-async function callLovableAI(messages: { role: string; content: string }[]): Promise<string> {
-  if (!LOVABLE_AI_KEY) {
+async function callLovableAI(
+  messages: { role: string; content: string }[],
+  lovableKey: string,
+  lovableModel: string,
+): Promise<string> {
+  if (!lovableKey) {
     throw Object.assign(new Error('Lovable Cloud AI key is not configured.'), { statusCode: 503 });
   }
 
@@ -721,10 +815,10 @@ async function callLovableAI(messages: { role: string; content: string }[]): Pro
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${LOVABLE_AI_KEY}`,
+      Authorization: `Bearer ${lovableKey}`,
     },
     body: JSON.stringify({
-      model: LOVABLE_AI_MODEL,
+      model: lovableModel,
       messages,
       temperature: 0.3,
     }),
@@ -744,21 +838,28 @@ async function callLovableAI(messages: { role: string; content: string }[]): Pro
   lastSuccessfulInference = {
     at: new Date().toISOString(),
     provider: 'lovable',
+    key_label: 'Lovable Cloud AI',
     latency_ms: latencyMs,
   };
 
   return content;
 }
 
-async function callRork(messages: { role: string; content: string }[]): Promise<string> {
-  if (!RORK_FALLBACK_ENABLED || !TOOLKIT_KEY) {
-    throw Object.assign(new Error('Rork AI Cloud fallback is disabled or unconfigured.'), { statusCode: 503 });
+async function callRork(
+  messages: { role: string; content: string }[],
+  toolkitKey: string,
+): Promise<string> {
+  if (!toolkitKey) {
+    throw Object.assign(
+      new Error('Rork AI credentials are not configured.'),
+      { statusCode: 503 },
+    );
   }
 
   const startTime = Date.now();
   const res = await fetch(`${TOOLKIT_URL}/v2/vercel/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOOLKIT_KEY}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${toolkitKey}` },
     body: JSON.stringify({ model: AI_MODEL, messages, temperature: 0.3 }),
   });
 
@@ -775,48 +876,50 @@ async function callRork(messages: { role: string; content: string }[]): Promise<
   lastSuccessfulInference = {
     at: new Date().toISOString(),
     provider: 'rork',
+    key_label: 'Rork AI Cloud',
     latency_ms: latencyMs,
   };
   return content;
 }
 
 async function callModel(messages: { role: string; content: string }[]): Promise<string> {
-  const geminiAvailable = configuredGeminiKeys().length > 0;
+  const geminiCandidates = await configuredGeminiKeys();
+  const secrets = await getRuntimeSecrets();
 
-  if (geminiAvailable) {
+  if (geminiCandidates.length > 0) {
     try {
-      return await callGemini(messages);
+      return await callGemini(messages, geminiCandidates, secrets.geminiModel);
     } catch (e) {
       if (e instanceof Error && 'statusCode' in e && (e as { statusCode?: number }).statusCode === 400) {
         throw e;
       }
       // If Gemini completely failed/exhausted, attempt Lovable Cloud AI if configured
-      if (LOVABLE_AI_KEY) {
+      if (secrets.lovableKey) {
         try {
-          return await callLovableAI(messages);
+          return await callLovableAI(messages, secrets.lovableKey, secrets.lovableModel);
         } catch (_lovErr) {
           // Continue to Rork if explicitly enabled
         }
       }
       // Or Rork if explicitly enabled
-      if (RORK_FALLBACK_ENABLED && TOOLKIT_KEY) {
-        return await callRork(messages);
+      if (secrets.rorkEnabled && secrets.toolkitKey) {
+        return await callRork(messages, secrets.toolkitKey);
       }
       throw e;
     }
   }
 
-  if (LOVABLE_AI_KEY) {
-    return await callLovableAI(messages);
+  if (secrets.lovableKey) {
+    return await callLovableAI(messages, secrets.lovableKey, secrets.lovableModel);
   }
 
-  if (RORK_FALLBACK_ENABLED && TOOLKIT_KEY) {
-    return await callRork(messages);
+  if (secrets.rorkEnabled && secrets.toolkitKey) {
+    return await callRork(messages, secrets.toolkitKey);
   }
 
   throw Object.assign(
     new Error(
-      'No AI model credential configured. Set Supabase Edge Function secret GEMINI_API_KEY (with optional GEMINI_API_KEY_2 and GEMINI_API_KEY_3 for multi-key rotation), or configure Lovable Cloud AI.',
+      'No AI model credential configured. Configure Gemini API keys or Lovable Cloud AI in the Operator console or via Supabase Edge Function secrets.',
     ),
     { statusCode: 503 },
   );
@@ -1356,6 +1459,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
       source_id?: string;
       schedule_id?: string;
       force?: boolean;
+      gemini_api_key?: string;
+      gemini_api_key_2?: string;
+      gemini_api_key_3?: string;
+      lovable_api_key?: string;
+      gemini_model?: string;
     };
 
     // The event worker is a system caller: the scheduler drains the queue, and nothing else may.
@@ -1373,16 +1481,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     switch (body.action) {
       case 'ping': {
-        const configuredCount = configuredGeminiKeys().length;
+        const secrets = await getRuntimeSecrets();
+        const geminiAvailable = await configuredGeminiKeys();
+        const configuredCount = geminiAvailable.length;
+        const prov = await modelProvider();
+        const mod = await activeModel();
         const now = Date.now();
         return json({
-          model_configured: modelProvider() !== 'none',
-          provider: modelProvider(),
-          model: activeModel(),
+          model_configured: prov !== 'none',
+          provider: prov,
+          model: mod,
           gemini_key_count: configuredCount,
           gemini_keys: keyStates.map((s) => ({
             label: s.label,
-            configured: Boolean(GEMINI_KEYS[s.index]),
+            configured: Boolean(secrets.geminiKeys[s.index]),
             status: s.status,
             consecutive_failures: s.consecutiveFailures,
             cooldown_remaining_sec: s.cooldownUntil && s.cooldownUntil > now ? Math.ceil((s.cooldownUntil - now) / 1000) : 0,
@@ -1392,12 +1504,96 @@ Deno.serve(async (req: Request): Promise<Response> => {
           last_successful_inference: lastSuccessfulInference,
           failover_events: failoverEvents.slice(0, 10),
           avg_latency_ms: avgLatency(),
-          rork_fallback_enabled: RORK_FALLBACK_ENABLED,
-          lovable_ai_configured: Boolean(LOVABLE_AI_KEY),
+          rork_fallback_enabled: secrets.rorkEnabled,
+          lovable_ai_configured: Boolean(secrets.lovableKey),
           staff,
           approval_mode: await approvalMode(),
           tools: registryFor(staff).map((tool) => tool.name),
         });
+      }
+
+      case 'keys.configure': {
+        if (!staff) return json({ error: 'admin or ceo role required' }, 403);
+        const {
+          gemini_api_key,
+          gemini_api_key_2,
+          gemini_api_key_3,
+          lovable_api_key,
+          gemini_model,
+        } = body;
+
+        const updates: [string, string | undefined][] = [
+          ['GEMINI_API_KEY', gemini_api_key],
+          ['GEMINI_API_KEY_2', gemini_api_key_2],
+          ['GEMINI_API_KEY_3', gemini_api_key_3],
+          ['LOVABLE_API_KEY', lovable_api_key],
+          ['GEMINI_MODEL', gemini_model],
+        ];
+
+        for (const [key, val] of updates) {
+          if (val !== undefined) {
+            const trimmed = val.trim();
+            try {
+              await rpc('hallyu_ai_set_runtime_secret', { p_key: key, p_value: trimmed });
+            } catch (_err) {
+              if (trimmed) {
+                await db('hallyu_ai_vault', {
+                  method: 'POST',
+                  headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+                  body: JSON.stringify({ key, value: trimmed, updated_at: new Date().toISOString() }),
+                });
+              } else {
+                await db(`hallyu_ai_vault?key=eq.${encodeURIComponent(key)}`, { method: 'DELETE' });
+              }
+            }
+          }
+        }
+
+        const fresh = await getRuntimeSecrets(true);
+        resetKeyHealthStates();
+
+        const count = fresh.geminiKeys.filter(Boolean).length;
+        console.log(`[keys.configure] Updated AI runtime credentials (Gemini count: ${count}, Lovable: ${Boolean(fresh.lovableKey)})`);
+
+        return json({
+          success: true,
+          message: 'AI credentials configured successfully in secure runtime vault',
+          gemini_key_count: count,
+          lovable_configured: Boolean(fresh.lovableKey),
+          model: fresh.geminiModel,
+          keys: keyStates.map((s) => ({
+            label: s.label,
+            configured: Boolean(fresh.geminiKeys[s.index]),
+            status: s.status,
+          })),
+        });
+      }
+
+      case 'keys.test': {
+        if (!staff) return json({ error: 'admin or ceo role required' }, 403);
+        const startTime = Date.now();
+        try {
+          const testMessages = [{ role: 'user', content: 'Ping! Reply with just "pong" and nothing else.' }];
+          const reply = await callModel(testMessages);
+          const latency = Date.now() - startTime;
+          return json({
+            success: true,
+            reply,
+            latency_ms: latency,
+            provider: lastSuccessfulInference?.provider ?? 'unknown',
+            key_label: lastSuccessfulInference?.key_label ?? null,
+          });
+        } catch (err) {
+          const latency = Date.now() - startTime;
+          return json(
+            {
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+              latency_ms: latency,
+            },
+            502,
+          );
+        }
       }
 
       case 'schedule.run': {

@@ -176,6 +176,15 @@ export function HallyuAIPanel() {
   const [publications, setPublications] = useState<AiPublication[]>([]);
   const [overview, setOverview] = useState<PlatformOverviewData | null>(null);
 
+  // Runtime Key Configuration State
+  const [showKeyConfig, setShowKeyConfig] = useState(false);
+  const [keyConfigBusy, setKeyConfigBusy] = useState(false);
+  const [geminiKeyInput1, setGeminiKeyInput1] = useState('');
+  const [geminiKeyInput2, setGeminiKeyInput2] = useState('');
+  const [geminiKeyInput3, setGeminiKeyInput3] = useState('');
+  const [lovableKeyInput, setLovableKeyInput] = useState('');
+  const [geminiModelInput, setGeminiModelInput] = useState('gemini-2.5-flash');
+
   // Chat / Composer state
   const [promptInput, setPromptInput] = useState('');
   const [auditFilter, setAuditFilter] = useState<'all' | 'completed' | 'failed' | 'awaiting_approval' | 'publications'>('all');
@@ -248,6 +257,87 @@ export function HallyuAIPanel() {
     ],
     [approvals.length],
   );
+
+  // Key Configuration & Testing
+  const handleSaveKeys = async () => {
+    if (!geminiKeyInput1 && !geminiKeyInput2 && !geminiKeyInput3 && !lovableKeyInput) {
+      toast.show({ message: 'Enter at least one Gemini key or Lovable Cloud AI key.', tone: 'default' });
+      return;
+    }
+    setKeyConfigBusy(true);
+    haptic.medium();
+    try {
+      const res = await invoke<{
+        success: boolean;
+        message: string;
+        gemini_key_count: number;
+        lovable_configured: boolean;
+        model: string;
+        error?: string;
+      }>({
+        action: 'keys.configure',
+        gemini_api_key: geminiKeyInput1 || undefined,
+        gemini_api_key_2: geminiKeyInput2 || undefined,
+        gemini_api_key_3: geminiKeyInput3 || undefined,
+        lovable_api_key: lovableKeyInput || undefined,
+        gemini_model: geminiModelInput || undefined,
+      });
+
+      if (res.error) throw new Error(res.error);
+
+      toast.show({
+        message: `Saved! ${res.gemini_key_count} Gemini key(s) active${res.lovable_configured ? ' + Lovable AI' : ''}.`,
+        tone: 'success',
+      });
+
+      setGeminiKeyInput1('');
+      setGeminiKeyInput2('');
+      setGeminiKeyInput3('');
+      setLovableKeyInput('');
+      setShowKeyConfig(false);
+
+      await loadAll();
+    } catch (e) {
+      toast.show({
+        message: e instanceof Error ? e.message : 'Failed to save runtime keys.',
+        tone: 'danger',
+      });
+    } finally {
+      setKeyConfigBusy(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setKeyConfigBusy(true);
+    haptic.light();
+    try {
+      const res = await invoke<{
+        success: boolean;
+        reply?: string;
+        latency_ms?: number;
+        provider?: string;
+        key_label?: string;
+        error?: string;
+      }>({ action: 'keys.test' });
+
+      if (res.error || !res.success) {
+        throw new Error(res.error ?? 'Model returned an error.');
+      }
+
+      toast.show({
+        message: `Inference verified: ${res.provider?.toUpperCase()} (${res.latency_ms}ms, ${res.key_label ?? 'active key'})`,
+        tone: 'success',
+      });
+      await loadAll();
+    } catch (e) {
+      toast.show({
+        message: e instanceof Error ? e.message : 'Connection test failed.',
+        tone: 'danger',
+      });
+    } finally {
+      setKeyConfigBusy(false);
+    }
+  };
 
   // Send action in Workspace
   const handleSendPrompt = async (presetText?: string) => {
@@ -564,6 +654,114 @@ export function HallyuAIPanel() {
                     Last success: {new Date(ping.last_successful_inference.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </Text>
                 ) : null}
+              </View>
+
+              {/* Configure Runtime Keys Accordion / Form */}
+              <View style={{ marginTop: space.x2, paddingTop: space.x2, borderTopWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text variant="caption" tone="secondary" style={{ fontWeight: '600' }}>
+                    VAULT CONFIGURATION
+                  </Text>
+                  <Button
+                    size="sm"
+                    variant={showKeyConfig ? 'ghost' : 'accentSoft'}
+                    label={showKeyConfig ? 'Hide Config' : 'Configure AI Keys'}
+                    onPress={() => {
+                      haptic.select();
+                      setShowKeyConfig((prev) => !prev);
+                    }}
+                  />
+                </View>
+
+                {showKeyConfig && (
+                  <View style={styles.keyConfigCard}>
+                    <Text variant="caption" tone="tertiary" style={{ marginBottom: 4 }}>
+                      Credentials are saved into the encrypted database vault and loaded at runtime. They are never committed, logged, or sent to client bundles.
+                    </Text>
+
+                    <Text variant="caption" tone="secondary">GEMINI PRIMARY KEY (GEMINI_API_KEY)</Text>
+                    <TextInput
+                      style={styles.keyInput}
+                      secureTextEntry
+                      placeholder="Enter primary Gemini API key..."
+                      placeholderTextColor={colors.textDisabled}
+                      value={geminiKeyInput1}
+                      onChangeText={setGeminiKeyInput1}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text variant="caption" tone="secondary">GEMINI FAILOVER KEY 2 (OPTIONAL)</Text>
+                    <TextInput
+                      style={styles.keyInput}
+                      secureTextEntry
+                      placeholder="Enter second Gemini API key for rotation..."
+                      placeholderTextColor={colors.textDisabled}
+                      value={geminiKeyInput2}
+                      onChangeText={setGeminiKeyInput2}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text variant="caption" tone="secondary">GEMINI FAILOVER KEY 3 (OPTIONAL)</Text>
+                    <TextInput
+                      style={styles.keyInput}
+                      secureTextEntry
+                      placeholder="Enter third Gemini API key for rotation..."
+                      placeholderTextColor={colors.textDisabled}
+                      value={geminiKeyInput3}
+                      onChangeText={setGeminiKeyInput3}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text variant="caption" tone="secondary">LOVABLE CLOUD AI KEY (OPTIONAL FALLBACK)</Text>
+                    <TextInput
+                      style={styles.keyInput}
+                      secureTextEntry
+                      placeholder="Enter Lovable AI key (lov_...)..."
+                      placeholderTextColor={colors.textDisabled}
+                      value={lovableKeyInput}
+                      onChangeText={setLovableKeyInput}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <Text variant="caption" tone="secondary">GEMINI MODEL</Text>
+                    <TextInput
+                      style={styles.keyInput}
+                      placeholder="gemini-2.5-flash"
+                      placeholderTextColor={colors.textDisabled}
+                      value={geminiModelInput}
+                      onChangeText={setGeminiModelInput}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+
+                    <View style={{ flexDirection: 'row', gap: space.x2, marginTop: space.x1 }}>
+                      <View style={{ flex: 1 }}>
+                        <Button
+                          size="md"
+                          variant="primary"
+                          label="Save & Activate Keys"
+                          loading={keyConfigBusy}
+                          disabled={keyConfigBusy}
+                          onPress={handleSaveKeys}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Button
+                          size="md"
+                          variant="secondary"
+                          label="Test Connection"
+                          loading={keyConfigBusy}
+                          disabled={keyConfigBusy}
+                          onPress={handleTestConnection}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                )}
               </View>
             </View>
 
@@ -1553,6 +1751,25 @@ const styles = StyleSheet.create({
     borderRadius: radius.full,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
+  },
+  keyConfigCard: {
+    backgroundColor: colors.surface1,
+    borderRadius: radius.md,
+    padding: space.x3,
+    marginTop: space.x2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    gap: space.x2,
+  },
+  keyInput: {
+    height: 40,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    backgroundColor: colors.canvas,
+    color: colors.textPrimary,
+    paddingHorizontal: space.x2,
+    fontSize: 13,
   },
   kindBadge: {
     paddingHorizontal: 6,
