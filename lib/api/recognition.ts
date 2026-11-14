@@ -7,6 +7,7 @@
  * - Separate 2-tier Account Verification (`blue` = authentic identity, `red` = official authority)
  * - Immutable audit logging in `public.recognition_audit_log` with mandatory reasons
  */
+import { normalizeRole, type AppRole } from '../roles';
 import type {
   BadgeCategory,
   BadgeDefinition,
@@ -282,7 +283,7 @@ export interface AdminUserRecord {
   avatarUrl?: string;
   bio: string | null;
   email: string | null;
-  role: 'member' | 'moderator' | 'admin';
+  role: AppRole;
   accountStatus: 'active' | 'suspended' | 'deleted';
   verified: boolean;
   verificationTier: VerificationTier;
@@ -442,7 +443,7 @@ export async function adminSearchUsers(
       avatarUrl: typeof r.avatar_path === 'string' ? avatars.get(r.avatar_path) : undefined,
       bio: r.bio ? String(r.bio) : null,
       email: r.email ? String(r.email) : null,
-      role: (r.role === 'admin' || r.role === 'moderator' ? r.role : 'member'),
+      role: normalizeRole(r.role),
       accountStatus: (r.account_status === 'suspended' || r.account_status === 'deleted' ? r.account_status : 'active'),
       verified: Boolean(r.verified),
       verificationTier: tier === 'red' || tier === 'blue' ? tier : 'none',
@@ -636,7 +637,7 @@ export async function adminUpdateRecognitionConfig(input: {
 
 export async function adminManageUserAccount(input: {
   targetUserId: string;
-  role?: 'member' | 'moderator' | 'admin';
+  role?: Exclude<AppRole, 'ceo'>;
   accountStatus?: 'active' | 'suspended';
   excludeFromCompetitions?: boolean;
   reason: string;

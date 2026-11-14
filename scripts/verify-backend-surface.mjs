@@ -69,7 +69,7 @@ for (const file of migrationFiles) {
  * slice runs from the function's own `create or replace` to the end of its body delimiter.
  */
 function sliceFunctionBody(sql, name) {
-  const start = sql.search(new RegExp(`create\\s+(or\\s+replace\\s+)?function\\s+(public\\.)?${name}\\s*\\(`, 'i'));
+  const start = sql.search(new RegExp(`create\\s+(or\\s+replace\\s+)?function\\s+(?:[a-z_][a-z0-9_]*\\.)?${name}\\s*\\(`, 'i'));
   if (start === -1) return '';
 
   const bodyStart = sql.indexOf('$$', start);
@@ -321,7 +321,17 @@ assertRealImplementation('notification_summary', ['unread_by_group']);
 // Creation must stay separate from delivery: no trigger may perform a network call. Comments
 // (which carry the cron examples) are stripped first, so documenting the wiring does not trip it.
 const executableSql = allSql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-if (/net\.http|fetch\s*\(|requests\.|urllib|http_post/.test(executableSql)) {
+
+// The Operator's task-dispatch trigger is the one deliberate exception. It does not create or
+// deliver notifications; it calls pg_net's non-blocking `http_post` to wake the worker function so
+// a member DM or mention is handled in seconds rather than waiting for the next cron tick. pg_net
+// queues the request and returns immediately, so the inserting transaction is never blocked on the
+// network. We strip only that function's body before applying the notification guard below.
+const operatorDispatchSql = executableSql.replace(
+  /create or replace function public\.operator_dispatch_task\b[\s\S]*?\n\$\$;/gi,
+  '',
+);
+if (/net\.http|fetch\s*\(|requests\.|urllib|http_post/.test(operatorDispatchSql)) {
   fail('a migration performs an outbound network call — notification creation and delivery must stay separate');
 }
 

@@ -3,6 +3,7 @@
  * profile, preferences, follows, saves, reactions, collections, communities, blocks/mutes,
  * alerts, watchlist and notification inbox.
  */
+import { normalizeRole, type AppRole } from '../roles';
 import type { ReactionKind, User, UserAward, VerificationTier } from '../model';
 import { ensureBackendSessionToken, supabase } from './client';
 import type { ServerPost } from './feed';
@@ -26,7 +27,7 @@ export interface BootstrapProfile {
   exclude_from_competitions?: boolean;
   featured_badge_ids?: string[] | null;
   is_private: boolean;
-  role?: 'member' | 'moderator' | 'admin';
+  role?: AppRole;
   follower_count: number;
   following_count: number;
   onboarding_completed: boolean;
@@ -199,7 +200,7 @@ export function serverProfileToUser(
     featuredBadgeIds: Array.isArray(p.featured_badge_ids) ? p.featured_badge_ids : [],
     ...(resolved?.awards ? { awards: resolved.awards } : {}),
     isPrivate: p.is_private,
-    role: p.role ?? 'member',
+    role: normalizeRole(p.role),
     joinedAt: p.created_at,
   };
 }

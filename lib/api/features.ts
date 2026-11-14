@@ -1,3 +1,4 @@
+import { hasModeratorAccess } from '../roles';
 /**
  * Consumer Product APIs (Phases 1–3) — 100% real Supabase RPCs & Realtime channels:
  *  - Interactive Polls (`create_post_poll`, `vote_post_poll`, `get_post_polls`)
@@ -614,7 +615,7 @@ export async function fetchVideoAccessStatus(): Promise<VideoAccessStatus> {
   }
   const raw = data as Record<string, unknown>;
   const role = String(raw.role ?? 'member');
-  const isStaff = role === 'admin' || role === 'moderator';
+  const isStaff = hasModeratorAccess(role);
   return {
     allowed: Boolean(raw.allowed) || isStaff,
     role,

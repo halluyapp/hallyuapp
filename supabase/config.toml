@@ -124,6 +124,26 @@ verify_jwt = true
 [functions.media-cleanup]
 verify_jwt = true
 
+# GitHub Actions OIDC only; removes obsolete APKs through Storage after a new public upload.
+[functions.release-maintenance]
+verify_jwt = false
+
+# Web auth relay for Rork Auth (api.rork.com). Called by the browser BEFORE any session exists
+# (initiate / token / refresh), so JWT verification is off: Rork Auth itself rejects invalid app
+# keys, and the relay adds no credentials and forwards to exactly three fixed endpoints.
+[functions.auth-broker]
+verify_jwt = false
+
+# Hallyu AI Operator worker. Invoked by the operator_dispatch_task trigger and by the scheduler
+# sweep with an opaque worker token stored in Vault (not a Supabase JWT), so JWT verification is
+# off; the function verifies the token against Vault before claiming any task.
+[functions.operator-worker]
+verify_jwt = false
+
+# Admin-facing operator control API. Called by the Control Centre with a real admin session JWT.
+[functions.operator-admin]
+verify_jwt = true
+
 # Applied by `supabase db reset` after the migrations run. Reference data only: worlds and the
 # catalog providers. No member content is ever seeded.
 [db.seed]

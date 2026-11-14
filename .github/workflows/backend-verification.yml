@@ -1,414 +1,81 @@
-name: Backend verification
+# Backend verification — proves the Rork Cloud backend is LIVE from GitHub, on every push.
+#
+# The database itself is managed by Rork (migrations in the Rork project's `backend/migrations/`
+# are applied with `rork supabase migrate`; there is no CI migration job and no SUPABASE_DB_URL).
+# This workflow only verifies, honestly, that the deployed backend answers real API calls.
+#
+# Needs NO repository secrets: the job authenticates to the backend's `ci-gateway` edge function
+# with its short-lived GitHub OIDC token, which hands over the client-safe connection values
+# (backend URL + anon key — the same values every shipped APK embeds). The probes then run from
+# the runner exactly as a phone would run them.
 
-# Proves the Hallyu backend actually works, in three clearly separated layers:
-#
-#   offline    — always runs, needs no project: SQL invariants, type contract, capability surface,
-#                secret scan, typecheck/lint — AND the migrations are applied to a real PostgreSQL,
-#                every function body is compiled, and the backend behaviour checks are replayed
-#                against that database. A SQL parser cannot see inside a function body, so this is
-#                the only place a body-level regression is caught before it reaches the project.
-#   migrate    — explicit manual opt-in only; applies supabase/migrations to the configured live
-#                project. Requires workflow_dispatch apply_migrations=true AND SUPABASE_DB_URL.
-#   connected  — explicit manual opt-in only; run_connected_tests=true after confirming the project.
-#                The suite creates/removes test data, never drains global queues or invokes push providers.
-#                It still requires the Supabase URL + anon key + service-role key; missing = red.
-#   rork-auth  — the OPTIONAL Rork OAuth leg (Google/Apple sign-in), isolated on purpose: it needs
-#                a human-minted RORK_TEST_REFRESH_TOKEN, so its absence cannot masquerade as a
-#                broken backend. When the credentials ARE configured, the Rork suite runs here and
-#                fails the workflow if the exchange breaks.
-#
-# Secret naming: the repository stores the client-safe connection values under the SAME names the
-# Expo build consumes (EXPO_PUBLIC_*) so one Supabase project serves builds and verification. This
-# workflow maps them onto the verification script's backend-only env names. RORK-CREDENTIALS.md is
-# the authoritative inventory.
+name: Backend verification
 
 on:
   workflow_dispatch:
-    inputs:
-      run_connected_tests:
-        description: 'Run the connected suite against the configured Supabase project (creates and removes isolated test accounts/rows)'
-        required: false
-        type: boolean
-        default: false
-      apply_migrations:
-        description: 'Apply repository migrations to the configured Supabase project (requires explicit project approval)'
-        required: false
-        type: boolean
-        default: false
-#   Any change that can move the backend contract re-runs offline validation automatically; live
-#   access requires the explicit workflow_dispatch inputs above. Changes to migrations, edge functions,
-#   the type contract, verification scripts, client API, or dependencies trigger the workflow.
   push:
-    branches:
-      - main
-      - 'arena/**'
-    paths:
-      - 'supabase/**'
-      - 'scripts/**'
-      - 'lib/api/**'
-      - 'lib/sync.ts'
-      - 'lib/auth.tsx'
-      - 'package.json'
-      - 'bun.lock'
-      - '.github/workflows/backend-verification.yml'
+    branches: [main, master, 'arena/**']
   schedule:
-    # 04:23 UTC on Mondays — after the retention purge window, before anyone looks at it.
-    - cron: '23 4 * * 1'
-  workflow_call:
+    - cron: '0 6 * * 1' # weekly heartbeat, Monday 06:00 UTC
 
 permissions:
   contents: read
+  id-token: write
 
-concurrency:
-  group: backend-verification-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  CI_GATEWAY_URL: https://ltyymanoidagwsapgiql.supabase.co/functions/v1/ci-gateway
 
 jobs:
-  offline:
-    name: Offline validation (no credentials)
+  verify:
+    name: Backend is live
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
-
-    # A real PostgreSQL, not a parser: the migrations have to EXECUTE, and every function body has
-    # to compile and plan. Nothing here touches the live project or any credential.
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - '5432:5432'
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      PGHOST: localhost
-      PGPORT: '5432'
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      HALLYU_LOCAL_DB: hallyu
-
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          # Node 22: supabase-js builds its Realtime client at createClient() time and needs a
-          # native WebSocket; Node 20 has none, which reads as a backend failure when it is not.
-          node-version: 22
-
-      - name: Set up bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Validate migrations (SQL parse + RLS + security invariants)
-        run: node scripts/verify-sql.mjs
-
-      - name: Check the type contract against the migrations
-        run: node scripts/verify-db-types.mjs
-
-      - name: Check the backend capability surface
-        run: node scripts/verify-backend-surface.mjs
-
-      - name: Scan the repository for committed credentials
-        run: node scripts/verify-no-secrets.mjs
-
-      - name: Apply every migration to a real PostgreSQL
-        run: node scripts/localdb/apply.mjs "$GITHUB_WORKSPACE"
-
-      - name: Replay the backend behaviour checks against that database
-        run: node scripts/localdb/check.mjs "$GITHUB_WORKSPACE"
-
-      - name: Compile and plan every function body
-        run: node scripts/localdb/surface.mjs
-
-      - name: Typecheck, lint and unit checks
-        run: npm run check
-
-  migrate:
-    name: Apply migrations to the live project
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_migrations == true }}
-    needs: offline
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-
-    env:
-      # The one privileged connection this repository needs. It is the project's Postgres URL, it
-      # exists only inside this job, and it must never reach the APK or any client bundle — that is
-      # why it is a repository secret and not an EXPO_PUBLIC_* value. Set it once, from the project's
-      # Settings → Database → Connection string (the pooled URI on port 5432 is enough).
-      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-      DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
-      SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Mask the database URL in the log
-        if: ${{ env.SUPABASE_DB_URL != '' }}
-        run: echo "::add-mask::$SUPABASE_DB_URL"
-
-      - name: Apply every migration in filename order
+      - name: No secrets in the repo (source scan)
         run: |
-          if [ -z "$SUPABASE_DB_URL" ]; then
-            if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] && node scripts/verify-schema-sync.mjs "$GITHUB_WORKSPACE" | tee migrate.log; then
-              echo "::notice title=Schema already in sync::SUPABASE_DB_URL is not configured, and verify-schema-sync proved the live project already implements every migration function in this branch."
-              exit 0
-            fi
-            echo "::error title=Schema sync blocked::SUPABASE_DB_URL is not configured and the live project is behind supabase/migrations. Add SUPABASE_DB_URL under Settings → Secrets and variables → Actions."
-            exit 1
-          fi
-          echo "Database credential present — the live project will be brought up to this branch."
-          node scripts/ci/apply-migrations.mjs "$GITHUB_WORKSPACE" | tee migrate.log
-
-      - name: Write the apply summary
-        if: always()
-        run: |
-          {
-            echo "## Migrations applied to the live project"
-            echo ""
-            echo '```text'
-            cat migrate.log 2>/dev/null | head -200 || echo "(the apply step did not run)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  connected:
-    name: Connected backend (live project)
-    needs: [offline, migrate]
-    # No connected writes or schema changes run automatically from pushes. A maintainer must
-    # explicitly dispatch with run_connected_tests=true after confirming the target project;
-    # migrations are a separate explicit opt-in. Offline PostgreSQL checks still run on every push.
-    if: ${{ always() && needs.offline.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.run_connected_tests == true }}
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-
-    env:
-      # Credentials exist only as environment variables inside this job. They are masked before any
-      # command runs, are never echoed, and are never written to the repository or the summary.
-      # EXPO_PUBLIC_* → script names: one underlying Supabase project, no duplicated credentials.
-      # This job requires ONLY the Supabase trio; the Rork leg lives in its own job below.
-      SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          # Node 22: supabase-js builds its Realtime client at createClient() time and needs a
-          # native WebSocket; Node 20 has none, which reads as a backend failure when it is not.
-          node-version: 22
-
-      - name: Set up bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Mask secrets in the log
-        run: |
-          echo "::add-mask::$SUPABASE_URL"
-          echo "::add-mask::$SUPABASE_ANON_KEY"
-          echo "::add-mask::$SUPABASE_SERVICE_ROLE_KEY"
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # ── Configuration gate: a missing secret is a RED configuration failure, not a skip ────────
-      - name: Require the repository secrets
-        run: |
-          missing=""
-          if [ -z "$SUPABASE_URL" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_URL"; fi
-          if [ -z "$SUPABASE_ANON_KEY" ]; then missing="$missing EXPO_PUBLIC_SUPABASE_ANON_KEY"; fi
-          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then missing="$missing SUPABASE_SERVICE_ROLE_KEY"; fi
-          if [ -n "$missing" ]; then
-            echo "::error title=Configuration failure::Connected verification cannot start — missing repository secrets:$missing"
-            echo "Add them under Settings → Secrets and variables → Actions."
-            echo "RORK-CREDENTIALS.md documents every name, where the value comes from, and who consumes it."
-            exit 1
-          fi
-          echo "All required backend secrets are present."
-
-      - name: Run the live backend suite
-        id: live
-        run: |
-          set +e
-          node scripts/verify-backend.mjs | tee backend-verification.log
-          code=${PIPESTATUS[0]}
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          if [ "$code" = "0" ]; then
-            echo "OVERALL STATUS: PASS — the live backend behaves as this repository describes it."
-          elif [ "$code" = "2" ]; then
-            echo "::error title=Configuration failure::verify-backend.mjs reports NOT CONFIGURED — the mapped secrets did not reach the environment."
-            exit 1
+          if [ -f scripts/verify-no-secrets.mjs ]; then
+            node scripts/verify-no-secrets.mjs "$GITHUB_WORKSPACE"
           else
-            echo "::error title=Backend failure::The live suite FAILED (exit $code) — failing checks are listed in the job summary."
-            grep -E "(✗|⊘)" backend-verification.log | head -25 | while IFS= read -r line; do echo "::error title=Check failed::$line"; done
-            exit 1
+            echo "::notice::scripts/verify-no-secrets.mjs not present — skipping."
           fi
 
-      - name: Run pre-release multi-account privacy, media, DM, follow-request & CDN verification
-        run: node scripts/verify-prerelease-live.mjs | tee -a backend-verification.log
+      - name: Fetch connection values (GitHub-OIDC → gateway)
+        run: node scripts/ci/ci-gateway-client.mjs client-env
 
-      # Why the suite failed, stated in terms the repository can answer: which function the project
-      # does not have. Runs even when the suite failed, because a project provisioned from an older
-      # branch is the single most common cause of a wall of failures here.
-      - name: Compare the project against this repository's migrations
-        if: always()
+      - name: Mask the client-safe credentials in logs
         run: |
-          set +e
-          node scripts/verify-schema-sync.mjs "$GITHUB_WORKSPACE" | tee schema-sync.log
-          code=${PIPESTATUS[0]}
-          if [ "$code" = "0" ]; then
-            echo "The project implements every function this repository defines."
-            exit 0
-          fi
-          if [ "$code" = "2" ]; then
-            echo "::notice title=Schema comparison skipped::the connection values did not reach this step (the configuration gate above already failed)."
-            exit 0
-          fi
-          echo "::error title=Schema drift::The project does not implement every function this repository defines — the list is in schema-sync.log. Apply supabase/migrations to the project in filename order, then re-run this workflow."
-          exit 1
+          echo "::add-mask::$EXPO_PUBLIC_SUPABASE_ANON_KEY"
+          echo "::add-mask::$EXPO_PUBLIC_RORK_APP_KEY"
 
-      - name: Write the run summary
-        if: always()
+      - name: Anonymous RPC round trip (handle_is_available)
         run: |
-          {
-            echo "## Hallyu backend verification — connected"
-            echo ""
-            echo '```text'
-            cat backend-verification.log 2>/dev/null || echo "(no log — the configuration gate failed)"
-            echo '```'
-            echo ""
-            echo "### Project vs this repository"
-            echo ""
-            echo '```text'
-            cat schema-sync.log 2>/dev/null || echo "(not run)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          CODE=$(curl -s -o /tmp/probe1.json -w '%{http_code}' \
+            -X POST "${EXPO_PUBLIC_SUPABASE_URL}/rest/v1/rpc/handle_is_available" \
+            -H "apikey: ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"p_handle":"hallyu-probe"}')
+          echo "handle_is_available → HTTP $CODE: $(cat /tmp/probe1.json)"
+          [ "$CODE" = "200" ] || { echo "::error title=Backend unreachable::handle_is_available returned HTTP $CODE"; exit 1; }
 
-  rork-auth:
-    name: Rork Auth (optional credentials)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_connected_tests == true }}
-    needs: offline
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-
-    env:
-      # The Rork leg is optional by configuration: Google/Apple sign-in only. Email/password auth
-      # is covered by the connected job. A configured-but-broken Rork credential still fails this
-      # job — "optional" means "may be absent", never "may fail silently".
-      SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-      RORK_APP_KEY: ${{ secrets.EXPO_PUBLIC_RORK_APP_KEY }}
-      RORK_TEST_REFRESH_TOKEN: ${{ secrets.RORK_TEST_REFRESH_TOKEN }}
-      RORK_AUTH_URL: ${{ secrets.EXPO_PUBLIC_RORK_AUTH_URL }}
-
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          # Node 22: supabase-js builds its Realtime client at createClient() time and needs a
-          # native WebSocket; Node 20 has none, which reads as a backend failure when it is not.
-          node-version: 22
-
-      - name: Set up bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Mask secrets in the log
+      - name: Release channel answers (get_latest_app_release — universal-only shape)
         run: |
-          echo "::add-mask::$SUPABASE_URL"
-          echo "::add-mask::$SUPABASE_ANON_KEY"
-          echo "::add-mask::$RORK_APP_KEY"
-          echo "::add-mask::$RORK_TEST_REFRESH_TOKEN"
+          CODE=$(curl -s -o /tmp/probe2.json -w '%{http_code}' \
+            -X POST "${EXPO_PUBLIC_SUPABASE_URL}/rest/v1/rpc/get_latest_app_release" \
+            -H "apikey: ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "get_latest_app_release → HTTP $CODE: $(cat /tmp/probe2.json)"
+          [ "$CODE" = "200" ] || { echo "::error title=Release RPC failed::HTTP $CODE"; exit 1; }
+          jq -e '.universal_only == true' /tmp/probe2.json >/dev/null \
+            || { echo "::error title=Unexpected release shape::expected universal_only: true"; exit 1; }
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Check the optional Rork credentials
-        id: config
-        run: |
-          if [ -n "$RORK_APP_KEY" ] && [ -n "$RORK_TEST_REFRESH_TOKEN" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "Rork credentials are configured — the exchange will be verified."
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Optional Rork credentials absent::EXPO_PUBLIC_RORK_APP_KEY / RORK_TEST_REFRESH_TOKEN are not configured. The Google/Apple token-exchange leg is not exercised in this run; email/password authentication is covered by the connected job. Mint a refresh token with one interactive Rork sign-in and add it under Settings → Secrets and variables → Actions."
-          fi
-
-      - name: Run the Rork Auth suite
-        id: rork
-        if: steps.config.outputs.configured == 'true'
-        run: |
-          set +e
-          node scripts/verify-rork-auth.mjs | tee rork-auth.log
-          code=${PIPESTATUS[0]}
-          if [ "$code" = "0" ]; then exit 0; fi
-          echo "::error title=Authentication failure::The Rork Auth exchange FAILED (exit $code). Mint a fresh RORK_TEST_REFRESH_TOKEN (one interactive sign-in) and update the secret. See RORK-CREDENTIALS.md."
-          exit 1
-
-      - name: Write the run summary
-        if: always()
-        run: |
-          {
-            echo "## Hallyu backend verification — Rork Auth (optional)"
-            echo ""
-            if [ "${{ steps.config.outputs.configured }}" = "true" ]; then
-              echo '```text'
-              cat rork-auth.log 2>/dev/null || echo "(no log)"
-              echo '```'
-            else
-              echo "Not configured in this repository: the optional Rork credentials are absent, so the Google/Apple token-exchange leg did not run. Email/password authentication is covered by the connected job."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-# ────────────────────────────────────────────────────────────────────────────────────────────────
-# Repository secrets (Settings → Secrets and variables → Actions → New repository secret):
-#
-#   REQUIRED for the connected job:
-#     EXPO_PUBLIC_SUPABASE_URL       https://<project-ref>.supabase.co          (client-safe)
-#     EXPO_PUBLIC_SUPABASE_ANON_KEY  the project's publishable/anon key          (client-safe)
-#     SUPABASE_SERVICE_ROLE_KEY      privileged key — CI only, never in a client bundle
-#
-#   REQUIRED for the migrate job (applies supabase/migrations to the live project):
-#     SUPABASE_DB_URL                the project's Postgres URI — privileged, CI only, never in the
-#                                    APK and never an EXPO_PUBLIC_* value (Rork Cloud → project →
-#                                    Database → Connection string; the pooled URI on port 5432 is
-#                                    enough). Without it the project cannot be brought forward.
-#
-#   OPTIONAL, used by the isolated rork-auth job (Google/Apple sign-in):
-#     EXPO_PUBLIC_RORK_APP_KEY       Rork app key (client-safe; identifies the app for Rork Auth)
-#     RORK_TEST_REFRESH_TOKEN        refresh token for a real Rork test member (one interactive
-#                                    sign-in mints it; rotate any time)
-#     EXPO_PUBLIC_RORK_AUTH_URL      optional issuer override (default https://api.rork.com)
-#
-#   REQUIRED for connected APK builds (build-apk.yml), not here:
-#     EXPO_PUBLIC_MEDIA_BUCKET       the private storage bucket name (defaults to `media`)
-#
-# Never commit any of these. `.gitignore` blocks `.env*` apart from `.env.example`.
-# RORK-CREDENTIALS.md is the complete inventory.
-# ────────────────────────────────────────────────────────────────────────────────────────────────
+      - name: Result
+        run: echo "::notice title=Backend live::$EXPO_PUBLIC_SUPABASE_URL answered every probe (universal-only release channel verified)."

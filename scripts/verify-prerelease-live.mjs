@@ -539,32 +539,27 @@ try {
     assert.equal(deletedProfile?.bio, null);
   });
 
-  await step('P2 #7 & Live Deployment: All 3 signed ABI APKs + manifest + live GitHub Pages serve valid 200 OK artifacts', async () => {
-    const manifestRes = await fetch(`${SUPABASE_URL}/storage/v1/object/public/app-releases/latest/manifest.json`);
-    assert.equal(manifestRes.status, 200);
-    const manifest = await manifestRes.json();
-    assert.ok(manifest.versionCode > 10000);
+  await step('P2 #7 & Live Deployment: the published universal APK + release row + GitHub Pages serve valid 200 OK artifacts', async () => {
+    // The universal-only pipeline publishes ONE object at the bucket root and `release-maintenance`
+    // deletes every other object, so `latest/manifest.json` and per-ABI `latest/*.apk` no longer
+    // exist by design. `public.get_latest_app_release()` is the channel the updater reads.
+    const apkUrl = `${SUPABASE_URL}/storage/v1/object/public/app-releases/hallyu-universal-latest.apk`;
+    const fullRes = await fetch(apkUrl);
+    assert.equal(fullRes.status, 200, `universal APK returned HTTP ${fullRes.status}`);
+    const buf = Buffer.from(await fullRes.arrayBuffer());
+    assert.ok(buf.byteLength > 5_000_000, `universal APK unexpectedly small (${buf.byteLength} bytes)`);
+    assert.equal(buf[0], 0x50, 'universal APK missing ZIP P header');
+    assert.equal(buf[1], 0x4b, 'universal APK missing ZIP K header');
+    assert.equal(buf[2], 0x03, 'universal APK missing ZIP 0x03 header');
+    assert.equal(buf[3], 0x04, 'universal APK missing ZIP 0x04 header');
+    const actualSha256 = crypto.createHash('sha256').update(buf).digest('hex');
 
-    for (const [abiName, apkUrl] of [
-      ['arm64-v8a', `${SUPABASE_URL}/storage/v1/object/public/app-releases/latest/hallyu-arm64.apk`],
-      ['armeabi-v7a', `${SUPABASE_URL}/storage/v1/object/public/app-releases/latest/hallyu-armeabi-v7a.apk`],
-      ['x86_64', `${SUPABASE_URL}/storage/v1/object/public/app-releases/latest/hallyu-x86_64.apk`],
-    ]) {
-      const fullRes = await fetch(apkUrl);
-      assert.equal(fullRes.status, 200, `${abiName} APK returned HTTP ${fullRes.status}`);
-      const buf = Buffer.from(await fullRes.arrayBuffer());
-      assert.ok(buf.byteLength > 5_000_000, `${abiName} APK unexpectedly small (${buf.byteLength} bytes)`);
-      assert.equal(buf[0], 0x50, `${abiName} missing ZIP P header`);
-      assert.equal(buf[1], 0x4b, `${abiName} missing ZIP K header`);
-      assert.equal(buf[2], 0x03, `${abiName} missing ZIP 0x03 header`);
-      assert.equal(buf[3], 0x04, `${abiName} missing ZIP 0x04 header`);
-      const actualSha256 = crypto.createHash('sha256').update(buf).digest('hex');
-      const expectedSha256 = manifest.artifacts?.[abiName]?.sha256;
-      if (expectedSha256) {
-        assert.equal(actualSha256, expectedSha256, `${abiName} SHA-256 mismatch vs manifest.json`);
-      }
-      console.log(`    • ${abiName}: ${buf.byteLength} bytes, sha256=${actualSha256}`);
-    }
+    const { data: release, error: releaseError } = await admin.rpc('get_latest_app_release');
+    assert.equal(releaseError, null, `get_latest_app_release failed: ${releaseError?.message ?? ''}`);
+    assert.ok(release?.version_code > 10000, `release row version_code is ${release?.version_code}`);
+    assert.equal(release?.sha256, actualSha256, 'release row SHA-256 mismatch vs the published APK');
+    assert.equal(release?.file_size_bytes, buf.byteLength, 'release row size mismatch vs the published APK');
+    console.log(`    • universal APK: ${buf.byteLength} bytes, sha256=${actualSha256}, versionCode=${release.version_code}`);
 
     const pagesRes = await fetch('https://halluyapp.github.io/hallyuapp/');
     assert.equal(pagesRes.status, 200, 'Live GitHub Pages site must return HTTP 200 OK');

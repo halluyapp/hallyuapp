@@ -17,28 +17,25 @@
 import { adminClient, requireServiceRole } from '../_shared/supabase.ts';
 import { drainRemovalQueue } from '../_shared/media-removal.ts';
 import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
+import { integerOption, readObjectBody } from '../_shared/request.ts';
 
 const DEFAULT_RETENTION_DAYS = 30;
 
 Deno.serve(async (request: Request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (request.method !== 'POST') return errorResponse('POST required', 405);
 
   const guard = requireServiceRole(request);
   if (!guard.ok) return guard.response;
 
-  let retentionDays = DEFAULT_RETENTION_DAYS;
-  if (request.method === 'POST') {
-    try {
-      const body = await request.json();
-      if (typeof body?.retention_days === 'number') retentionDays = body.retention_days;
-    } catch {
-      // An empty or malformed body simply means "use the default window".
-    }
+  let retentionDays: number | null;
+  try {
+    const body = await readObjectBody(request);
+    retentionDays = integerOption(body.retention_days, DEFAULT_RETENTION_DAYS, 1, 365);
+  } catch {
+    return errorResponse('a valid JSON object body is required', 400);
   }
-
-  if (retentionDays < 1 || retentionDays > 365) {
-    return errorResponse('retention_days must be between 1 and 365');
-  }
+  if (retentionDays === null) return errorResponse('retention_days must be an integer between 1 and 365', 400);
 
   const supabase = adminClient();
 

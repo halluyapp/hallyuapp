@@ -156,6 +156,10 @@ export default function AppUpdatesScreen() {
         toast.show({
           message: 'Verified package staged — tap Update in Android’s prompt to complete installation.',
         });
+      } else if (outcome.status === 'browser_opened') {
+        toast.show({
+          message: `Signed APK download opened in your browser — install it once it finishes (${formatMb(selectedSizeBytes)}).`,
+        });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Download interrupted — tap to retry';

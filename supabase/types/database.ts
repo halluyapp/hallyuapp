@@ -1792,8 +1792,10 @@ export type Database = {
           body: string;
           created_at: string;
           id: string;
+          message_type: string;
           read_at: string | null;
           recipient_id: string;
+          rich_content: Json | null;
           sender_id: string;
           shared_drama_id: string | null;
           shared_post_id: string | null;
@@ -1802,8 +1804,10 @@ export type Database = {
           body: string;
           created_at?: string;
           id?: string;
+          message_type?: string;
           read_at?: string | null;
           recipient_id: string;
+          rich_content?: Json | null;
           sender_id: string;
           shared_drama_id?: string | null;
           shared_post_id?: string | null;
@@ -1812,8 +1816,10 @@ export type Database = {
           body?: string;
           created_at?: string;
           id?: string;
+          message_type?: string;
           read_at?: string | null;
           recipient_id?: string;
+          rich_content?: Json | null;
           sender_id?: string;
           shared_drama_id?: string | null;
           shared_post_id?: string | null;
@@ -1913,6 +1919,7 @@ export type Database = {
       profiles: {
         Row: {
           account_status: Database['public']['Enums']['account_status'];
+          auth_sub: string | null;
           avatar_path: string | null;
           banner_url: string | null;
           bio: string | null;
@@ -1927,8 +1934,9 @@ export type Database = {
           follower_count: number;
           following_count: number;
           handle: string;
-          id: string;
+          id?: string;
           is_founder: boolean;
+          is_banned: boolean;
           is_private: boolean;
           onboarding_completed: boolean;
           onboarding_genres: string[];
@@ -1936,6 +1944,7 @@ export type Database = {
           onboarding_step: number;
           post_count: number;
           role: Database['public']['Enums']['profile_role'];
+          suspended_until: string | null;
           updated_at: string;
           verification_note: string | null;
           verification_tier: string;
@@ -1946,6 +1955,7 @@ export type Database = {
         };
         Insert: {
           account_status?: Database['public']['Enums']['account_status'];
+          auth_sub?: string | null;
           avatar_path?: string | null;
           banner_url?: string | null;
           bio?: string | null;
@@ -1962,6 +1972,7 @@ export type Database = {
           handle: string;
           id: string;
           is_founder?: boolean;
+          is_banned?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -1969,6 +1980,7 @@ export type Database = {
           onboarding_step?: number;
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
+          suspended_until?: string | null;
           updated_at?: string;
           verification_note?: string | null;
           verification_tier?: string;
@@ -1979,6 +1991,7 @@ export type Database = {
         };
         Update: {
           account_status?: Database['public']['Enums']['account_status'];
+          auth_sub?: string | null;
           avatar_path?: string | null;
           banner_url?: string | null;
           bio?: string | null;
@@ -1995,6 +2008,7 @@ export type Database = {
           handle?: string;
           id?: string;
           is_founder?: boolean;
+          is_banned?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -2002,6 +2016,7 @@ export type Database = {
           onboarding_step?: number;
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
+          suspended_until?: string | null;
           updated_at?: string;
           verification_note?: string | null;
           verification_tier?: string;
@@ -2980,6 +2995,921 @@ export type Database = {
         };
         Relationships: [];
       };
+      operator_approval: {
+        Row: {
+          id: string;
+          task_id: string;
+          action: string;
+          requested_by: string;
+          required_role: string;
+          status: string;
+          decided_by: string;
+          decided_at: string;
+          note: string;
+          payload: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          task_id?: string;
+          action: string;
+          requested_by?: string;
+          required_role?: string;
+          status?: string;
+          decided_by?: string;
+          decided_at?: string;
+          note?: string;
+          payload?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          task_id?: string;
+          action?: string;
+          requested_by?: string;
+          required_role?: string;
+          status?: string;
+          decided_by?: string;
+          decided_at?: string;
+          note?: string;
+          payload?: Json;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_audit: {
+        Row: {
+          id: number;
+          task_id: string;
+          actor_profile_id: string;
+          actor_type: string;
+          action: string;
+          outcome: string;
+          resource_type: string;
+          resource_id: string;
+          details: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          task_id?: string;
+          actor_profile_id?: string;
+          actor_type?: string;
+          action: string;
+          outcome: string;
+          resource_type?: string;
+          resource_id?: string;
+          details?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          task_id?: string;
+          actor_profile_id?: string;
+          actor_type?: string;
+          action?: string;
+          outcome?: string;
+          resource_type?: string;
+          resource_id?: string;
+          details?: Json;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_campaign: {
+        Row: {
+          id: string;
+          name: string;
+          kind: string;
+          status: string;
+          starts_at: string;
+          ends_at: string;
+          payload: Json;
+          post_id: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          kind: string;
+          status?: string;
+          starts_at?: string;
+          ends_at?: string;
+          payload?: Json;
+          post_id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          kind?: string;
+          status?: string;
+          starts_at?: string;
+          ends_at?: string;
+          payload?: Json;
+          post_id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_constitution: {
+        Row: {
+          id: string;
+          version: string;
+          body: string;
+          is_active: boolean;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          version: string;
+          body: string;
+          is_active?: boolean;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          version?: string;
+          body?: string;
+          is_active?: boolean;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_knowledge: {
+        Row: {
+          id: string;
+          slug: string;
+          title: string;
+          body: string;
+          tags: string[];
+          world: string | null;
+          version: number;
+          is_active: boolean;
+          updated_by: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          slug: string;
+          title: string;
+          body: string;
+          tags?: string[];
+          world?: string | null;
+          version?: number;
+          is_active?: boolean;
+          updated_by?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          slug?: string;
+          title?: string;
+          body?: string;
+          tags?: string[];
+          world?: string | null;
+          version?: number;
+          is_active?: boolean;
+          updated_by?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_conversation: {
+        Row: {
+          id: string;
+          channel: string;
+          staff_profile_id: string;
+          member_profile_id: string;
+          external_thread_id: string;
+          subject: string;
+          status: string;
+          last_inbound_at: string;
+          last_outbound_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          channel: string;
+          staff_profile_id?: string;
+          member_profile_id?: string;
+          external_thread_id?: string;
+          subject?: string;
+          status?: string;
+          last_inbound_at?: string;
+          last_outbound_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          channel?: string;
+          staff_profile_id?: string;
+          member_profile_id?: string;
+          external_thread_id?: string;
+          subject?: string;
+          status?: string;
+          last_inbound_at?: string;
+          last_outbound_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_event: {
+        Row: {
+          id: string;
+          source: string;
+          event_type: string;
+          external_event_id: string;
+          conversation_id: string;
+          actor_profile_id: string;
+          destination_type: string;
+          destination_id: string;
+          payload: Json;
+          idempotency_key: string;
+          task_id: string;
+          received_at: string;
+          processed_at: string;
+        };
+        Insert: {
+          id?: string;
+          source: string;
+          event_type: string;
+          external_event_id?: string;
+          conversation_id?: string;
+          actor_profile_id?: string;
+          destination_type?: string;
+          destination_id?: string;
+          payload?: Json;
+          idempotency_key: string;
+          task_id?: string;
+          received_at?: string;
+          processed_at?: string;
+        };
+        Update: {
+          id?: string;
+          source?: string;
+          event_type?: string;
+          external_event_id?: string;
+          conversation_id?: string;
+          actor_profile_id?: string;
+          destination_type?: string;
+          destination_id?: string;
+          payload?: Json;
+          idempotency_key?: string;
+          task_id?: string;
+          received_at?: string;
+          processed_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_memory: {
+        Row: {
+          id: string;
+          scope: string;
+          scope_id: string;
+          key: string;
+          value: Json;
+          source: string;
+          confidence: number;
+          expires_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          scope: string;
+          scope_id?: string;
+          key: string;
+          value: Json;
+          source?: string;
+          confidence?: number;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          scope?: string;
+          scope_id?: string;
+          key?: string;
+          value?: Json;
+          source?: string;
+          confidence?: number;
+          expires_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_message: {
+        Row: {
+          id: string;
+          conversation_id: string;
+          direction: string;
+          author_profile_id: string;
+          author_type: string;
+          body: string;
+          external_message_id: string;
+          delivery_status: string;
+          task_id: string;
+          meta: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          conversation_id: string;
+          direction: string;
+          author_profile_id?: string;
+          author_type?: string;
+          body: string;
+          external_message_id?: string;
+          delivery_status?: string;
+          task_id?: string;
+          meta?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          conversation_id?: string;
+          direction?: string;
+          author_profile_id?: string;
+          author_type?: string;
+          body?: string;
+          external_message_id?: string;
+          delivery_status?: string;
+          task_id?: string;
+          meta?: Json;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_moderation_case: {
+        Row: {
+          id: string;
+          report_id: string;
+          target_type: string;
+          target_id: string;
+          rule_code: string;
+          rule_text: string;
+          evidence: Json;
+          confidence: number;
+          decision: string;
+          action_taken: string;
+          moderation_action_id: string;
+          task_id: string;
+          decided_by: string;
+          appeal_status: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          report_id?: string;
+          target_type: string;
+          target_id: string;
+          rule_code: string;
+          rule_text?: string;
+          evidence?: Json;
+          confidence?: number;
+          decision: string;
+          action_taken?: string;
+          moderation_action_id?: string;
+          task_id?: string;
+          decided_by?: string;
+          appeal_status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          report_id?: string;
+          target_type?: string;
+          target_id?: string;
+          rule_code?: string;
+          rule_text?: string;
+          evidence?: Json;
+          confidence?: number;
+          decision?: string;
+          action_taken?: string;
+          moderation_action_id?: string;
+          task_id?: string;
+          decided_by?: string;
+          appeal_status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_notification_run: {
+        Row: {
+          id: string;
+          title: string;
+          body: string;
+          audience: string;
+          audience_filter: Json;
+          kind: string;
+          status: string;
+          target_count: number;
+          delivered_count: number;
+          failed_count: number;
+          task_id: string;
+          created_at: string;
+          finished_at: string;
+        };
+        Insert: {
+          id?: string;
+          title: string;
+          body: string;
+          audience: string;
+          audience_filter?: Json;
+          kind?: string;
+          status?: string;
+          target_count?: number;
+          delivered_count?: number;
+          failed_count?: number;
+          task_id?: string;
+          created_at?: string;
+          finished_at?: string;
+        };
+        Update: {
+          id?: string;
+          title?: string;
+          body?: string;
+          audience?: string;
+          audience_filter?: Json;
+          kind?: string;
+          status?: string;
+          target_count?: number;
+          delivered_count?: number;
+          failed_count?: number;
+          task_id?: string;
+          created_at?: string;
+          finished_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_policy: {
+        Row: {
+          id: boolean;
+          autonomy: Json;
+          moderation: Json;
+          notifications: Json;
+          providers: Json;
+          approval_required: string[];
+          updated_at: string;
+          updated_by: string;
+        };
+        Insert: {
+          id?: boolean;
+          autonomy?: Json;
+          moderation?: Json;
+          notifications?: Json;
+          providers?: Json;
+          approval_required?: string[];
+          updated_at?: string;
+          updated_by?: string;
+        };
+        Update: {
+          id?: boolean;
+          autonomy?: Json;
+          moderation?: Json;
+          notifications?: Json;
+          providers?: Json;
+          approval_required?: string[];
+          updated_at?: string;
+          updated_by?: string;
+        };
+        Relationships: [];
+      };
+      operator_provider: {
+        Row: {
+          provider: string;
+          label: string;
+          model_id: string;
+          base_url: string;
+          enabled: boolean;
+          is_default: boolean;
+          health: string;
+          last_ok_at: string;
+          last_error_at: string;
+          last_error_code: string;
+          last_error_detail: string;
+          rpm_limit: number;
+          notes: string;
+          updated_at: string;
+        };
+        Insert: {
+          provider: string;
+          label: string;
+          model_id: string;
+          base_url: string;
+          enabled?: boolean;
+          is_default?: boolean;
+          health?: string;
+          last_ok_at?: string;
+          last_error_at?: string;
+          last_error_code?: string;
+          last_error_detail?: string;
+          rpm_limit?: number;
+          notes?: string;
+          updated_at?: string;
+        };
+        Update: {
+          provider?: string;
+          label?: string;
+          model_id?: string;
+          base_url?: string;
+          enabled?: boolean;
+          is_default?: boolean;
+          health?: string;
+          last_ok_at?: string;
+          last_error_at?: string;
+          last_error_code?: string;
+          last_error_detail?: string;
+          rpm_limit?: number;
+          notes?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_provider_usage: {
+        Row: {
+          id: number;
+          task_id: string;
+          provider: string;
+          model: string;
+          outcome: string;
+          input_tokens: number;
+          output_tokens: number;
+          total_tokens: number;
+          estimated_cost_usd: number;
+          cost_is_estimate: boolean;
+          latency_ms: number;
+          http_status: number;
+          error_code: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          task_id?: string;
+          provider: string;
+          model: string;
+          outcome: string;
+          input_tokens?: number;
+          output_tokens?: number;
+          total_tokens?: number;
+          estimated_cost_usd?: number;
+          cost_is_estimate?: boolean;
+          latency_ms?: number;
+          http_status?: number;
+          error_code?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          task_id?: string;
+          provider?: string;
+          model?: string;
+          outcome?: string;
+          input_tokens?: number;
+          output_tokens?: number;
+          total_tokens?: number;
+          estimated_cost_usd?: number;
+          cost_is_estimate?: boolean;
+          latency_ms?: number;
+          http_status?: number;
+          error_code?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_research_item: {
+        Row: {
+          id: string;
+          topic: string;
+          headline: string;
+          summary: string;
+          source_name: string;
+          source_url: string;
+          published_at: string;
+          verification: string;
+          world: string;
+          used_in_post_id: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          topic: string;
+          headline: string;
+          summary?: string;
+          source_name?: string;
+          source_url?: string;
+          published_at?: string;
+          verification?: string;
+          world?: string;
+          used_in_post_id?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          topic?: string;
+          headline?: string;
+          summary?: string;
+          source_name?: string;
+          source_url?: string;
+          published_at?: string;
+          verification?: string;
+          world?: string;
+          used_in_post_id?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_schedule: {
+        Row: {
+          id: string;
+          name: string;
+          task_type: string;
+          cron: string;
+          interval_seconds: number;
+          next_run_at: string;
+          enabled: boolean;
+          payload: Json;
+          last_run_at: string;
+          last_task_id: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          task_type: string;
+          cron?: string;
+          interval_seconds?: number;
+          next_run_at?: string;
+          enabled?: boolean;
+          payload?: Json;
+          last_run_at?: string;
+          last_task_id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          task_type?: string;
+          cron?: string;
+          interval_seconds?: number;
+          next_run_at?: string;
+          enabled?: boolean;
+          payload?: Json;
+          last_run_at?: string;
+          last_task_id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_staff: {
+        Row: {
+          id: string;
+          profile_id: string;
+          staff_code: string;
+          display_name: string;
+          is_ai: boolean;
+          active: boolean;
+          capabilities: string[];
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: string;
+          staff_code: string;
+          display_name: string;
+          is_ai?: boolean;
+          active?: boolean;
+          capabilities?: string[];
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          profile_id?: string;
+          staff_code?: string;
+          display_name?: string;
+          is_ai?: boolean;
+          active?: boolean;
+          capabilities?: string[];
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_task: {
+        Row: {
+          id: string;
+          task_type: string;
+          status: string;
+          priority: number;
+          source_event_id: string;
+          conversation_id: string;
+          requester_profile_id: string;
+          destination_type: string;
+          destination_id: string;
+          provider: string;
+          model: string;
+          input: Json;
+          result: Json;
+          error_code: string;
+          error_detail: string;
+          attempt_count: number;
+          max_attempts: number;
+          available_at: string;
+          lease_owner: string;
+          lease_expires_at: string;
+          idempotency_key: string;
+          created_at: string;
+          updated_at: string;
+          started_at: string;
+          finished_at: string;
+        };
+        Insert: {
+          id?: string;
+          task_type: string;
+          status?: string;
+          priority?: number;
+          source_event_id?: string;
+          conversation_id?: string;
+          requester_profile_id?: string;
+          destination_type?: string;
+          destination_id?: string;
+          provider?: string;
+          model?: string;
+          input?: Json;
+          result?: Json;
+          error_code?: string;
+          error_detail?: string;
+          attempt_count?: number;
+          max_attempts?: number;
+          available_at?: string;
+          lease_owner?: string;
+          lease_expires_at?: string;
+          idempotency_key?: string;
+          created_at?: string;
+          updated_at?: string;
+          started_at?: string;
+          finished_at?: string;
+        };
+        Update: {
+          id?: string;
+          task_type?: string;
+          status?: string;
+          priority?: number;
+          source_event_id?: string;
+          conversation_id?: string;
+          requester_profile_id?: string;
+          destination_type?: string;
+          destination_id?: string;
+          provider?: string;
+          model?: string;
+          input?: Json;
+          result?: Json;
+          error_code?: string;
+          error_detail?: string;
+          attempt_count?: number;
+          max_attempts?: number;
+          available_at?: string;
+          lease_owner?: string;
+          lease_expires_at?: string;
+          idempotency_key?: string;
+          created_at?: string;
+          updated_at?: string;
+          started_at?: string;
+          finished_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_tool: {
+        Row: {
+          name: string;
+          description: string;
+          family: string;
+          input_schema: Json;
+          output_schema: Json;
+          permission: string;
+          read_only: boolean;
+          approval_required: boolean;
+          rate_limit_per_min: number;
+          timeout_ms: number;
+          enabled: boolean;
+          updated_at: string;
+        };
+        Insert: {
+          name: string;
+          description: string;
+          family: string;
+          input_schema: Json;
+          output_schema?: Json;
+          permission: string;
+          read_only?: boolean;
+          approval_required?: boolean;
+          rate_limit_per_min?: number;
+          timeout_ms?: number;
+          enabled?: boolean;
+          updated_at?: string;
+        };
+        Update: {
+          name?: string;
+          description?: string;
+          family?: string;
+          input_schema?: Json;
+          output_schema?: Json;
+          permission?: string;
+          read_only?: boolean;
+          approval_required?: boolean;
+          rate_limit_per_min?: number;
+          timeout_ms?: number;
+          enabled?: boolean;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_tool_call: {
+        Row: {
+          id: string;
+          task_id: string;
+          tool: string;
+          args: Json;
+          result: Json;
+          outcome: string;
+          error_code: string;
+          error_detail: string;
+          duration_ms: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          task_id?: string;
+          tool: string;
+          args?: Json;
+          result?: Json;
+          outcome: string;
+          error_code?: string;
+          error_detail?: string;
+          duration_ms?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          task_id?: string;
+          tool?: string;
+          args?: Json;
+          result?: Json;
+          outcome?: string;
+          error_code?: string;
+          error_detail?: string;
+          duration_ms?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_worker_health: {
+        Row: {
+          worker_id: string;
+          last_seen_at: string;
+          version: string;
+          meta: Json;
+          tasks_processed: number;
+          last_error: string;
+        };
+        Insert: {
+          worker_id: string;
+          last_seen_at?: string;
+          version?: string;
+          meta?: Json;
+          tasks_processed?: number;
+          last_error?: string;
+        };
+        Update: {
+          worker_id?: string;
+          last_seen_at?: string;
+          version?: string;
+          meta?: Json;
+          tasks_processed?: number;
+          last_error?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<never, never>;
     Functions: {
@@ -3002,6 +3932,10 @@ export type Database = {
       catalog_begin_run: {
         Args: { p_idempotency_key?: string; p_job: string; p_provider_id?: string };
         Returns: string;
+      };
+      claim_moderation_reports: {
+        Args: { p_limit?: number; p_stale_before?: string };
+        Returns: Database['public']['Tables']['reports']['Row'][];
       };
       catalog_finish_run: {
         Args: {
@@ -3977,7 +4911,7 @@ export type Database = {
         | 'collection_saved'
         | 'system';
       post_type: 'post' | 'reaction' | 'discussion' | 'review' | 'recommendation' | 'short';
-      profile_role: 'member' | 'moderator' | 'admin';
+      profile_role: 'member' | 'moderator' | 'admin' | 'ceo';
       protection_level: 'strict' | 'balanced' | 'off';
       push_platform: 'ios' | 'android' | 'web';
       reaction_kind: 'loved' | 'cried' | 'screamed' | 'swooned' | 'laughed' | 'furious';

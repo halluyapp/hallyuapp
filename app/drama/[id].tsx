@@ -5,7 +5,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Animated, FlatList, Linking, Pressable, StyleSheet, View } from 'react-native';
 import { ShareCardModal } from '../../components/share/ShareCardModal';
 import { fetchTitleRatingSummary, rateTitleOnServer } from '../../lib/api/features';
-import { crossCheckRuntimes } from '../../lib/api/megan';
 import { fetchDramasByUuids } from '../../lib/api/feed';
 import { isUuid } from '../../lib/api/social';
 import { setActiveComposerContext } from '../../lib/tabEvents';
@@ -201,33 +200,6 @@ export default function DramaHub() {
   }, [state, drama, liveRecs.data]);
   const inCollections = useMemo(() => (drama ? collectionsContaining(state, drama.id) : []), [state, drama]);
   const publicCols = useMemo(() => (drama ? state.collections.filter((c) => c.visibility === 'public' && c.items.some((i) => i.dramaId === drama.id)).slice(0, 6) : []), [state.collections, drama]);
-
-  // Runtime cross-check against a second metadata source (Megan, via the server). Informational only.
-  const crossRows = useMemo(
-    () =>
-      drama && !film
-        ? drama.episodes.filter((e) => e.season === season && e.runtime).map((e) => ({ episode: e.number, runtime: e.runtime as number }))
-        : [],
-    [drama, film, season],
-  );
-  const providerId = drama?.provider?.id;
-  const [runtimeNote, setRuntimeNote] = useState<string | null>(null);
-  useEffect(() => {
-    setRuntimeNote(null);
-    if (!providerId || crossRows.length < 2) return;
-    let cancelled = false;
-    crossCheckRuntimes(providerId, season, crossRows).then((r) => {
-      if (cancelled || !r.ok) return;
-      setRuntimeNote(
-        r.value.agrees
-          ? `Runtimes match a second source for ${r.value.compared} episodes.`
-          : `Runtimes differ from a second source for ${r.value.mismatches.length} of ${r.value.compared} episodes.`,
-      );
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [providerId, season, crossRows]);
 
   if (!drama) {
     return (
@@ -867,7 +839,6 @@ export default function DramaHub() {
           <View style={styles.sortRow}>
             <Text variant="caption" tone="secondary">
               {eps.length ? `${eps.length} episodes${item ? ` · ${item.season === season ? item.currentEpisode : 0} watched` : ''}` : enrich.loading ? 'Loading episodes…' : 'Episode list not available yet'}
-              {runtimeNote ? `\n${runtimeNote}` : ''}
             </Text>
             {item && eps.length ? (
               <Button

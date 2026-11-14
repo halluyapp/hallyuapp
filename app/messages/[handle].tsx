@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DramaPickerSheet } from '../../components/create/pickers';
 import { Avatar } from '../../components/ui/Avatar';
 import { IconButton } from '../../components/ui/IconButton';
+import { Markdown } from '../../components/ui/Markdown';
 import { Poster } from '../../components/ui/Poster';
 import { Screen } from '../../components/ui/Screen';
 import { Text } from '../../components/ui/Text';
@@ -30,6 +31,7 @@ export default function DirectMessageThreadScreen() {
   const { handle: rawHandle } = useLocalSearchParams<{ handle: string }>();
   const cleanHandle = (rawHandle ?? '').trim().replace(/^@/, '');
   const { state, me, getDrama, getPost, getUser } = useApp();
+  const isOperator = cleanHandle.toLowerCase() === 'hallyu.ai';
 
   const peer = useMemo(
     () =>
@@ -101,6 +103,7 @@ export default function DirectMessageThreadScreen() {
         <TopBar
           mode="stack"
           title={peer?.displayName ?? `@${cleanHandle}`}
+          subtitle={isOperator ? 'AI STAFF · disclosed Hallyu AI operator' : undefined}
           right={
             peer ? (
               <Pressable onPress={() => router.push(`/user/${peer.handle}`)} hitSlop={8} accessibilityRole="link">
@@ -183,9 +186,13 @@ export default function DirectMessageThreadScreen() {
                 ) : null}
 
                 <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-                  <Text variant="body" style={{ color: mine ? colors.onAccent : colors.textPrimary }}>
-                    {m.body}
-                  </Text>
+                  {!mine && isOperator ? (
+                    <Markdown source={m.body} />
+                  ) : (
+                    <Text variant="body" style={{ color: mine ? colors.onAccent : colors.textPrimary }}>
+                      {m.body}
+                    </Text>
+                  )}
                 </View>
                 <Text variant="caption" tone="tertiary" style={{ fontSize: 10, marginHorizontal: 4 }}>
                   {timeAgo(m.createdAt)}

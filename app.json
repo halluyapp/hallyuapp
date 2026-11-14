@@ -6,7 +6,10 @@
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#000000",
-    "scheme": "hallyu",
+    "scheme": [
+      "hallyu",
+      "rork-za3mp0mb7b2ipipxalav8"
+    ],
     "icon": "./assets/branding/icon.png",
     "splash": {
       "image": "./assets/branding/splash-mark.png",
@@ -76,6 +79,21 @@
             {
               "scheme": "https",
               "host": "hallyu.app",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        },
+        {
+          "action": "VIEW",
+          "autoVerify": false,
+          "data": [
+            {
+              "scheme": "rork-za3mp0mb7b2ipipxalav8",
+              "host": "auth",
               "pathPrefix": "/"
             }
           ],

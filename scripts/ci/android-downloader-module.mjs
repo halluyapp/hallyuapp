@@ -8,17 +8,21 @@ import path from 'node:path';
  *
  * It uses only public Android APIs (android.app.DownloadManager, SharedPreferences) and the React Native bridge
  * already in the project. It does not pause: DownloadManager cannot pause, so the app does not offer pause for these.
- * Files are written to the app's own external files folder (no storage permission needed), then the app moves
- * them into its private document directory when the download succeeds.
+ * Files are written to the app's own external files folder (no storage permission needed) and stay there: they are
+ * app-private, playable in place, and moving them would need a second full copy of the file.
+ *
+ * The request must look like the player. Playback sends a Referer and a browser User-Agent, and the media host
+ * refuses a request without them. DownloadManager would otherwise introduce itself as "AndroidDownloadManager",
+ * which is why a title could stream in the app and still fail to download. `MEDIA_REFERER` and `MEDIA_USER_AGENT`
+ * below are copies of the constants in lib/watchRules.ts; scripts/test-watch.mjs fails if they drift apart.
  */
-export function injectNativeDownloaderModule(androidProjectRoot = path.resolve('android')) {
-  const pkgDir = path.join(androidProjectRoot, 'app/src/main/java/com/hallyu/app');
-  const mainAppPath = path.join(pkgDir, 'MainApplication.kt');
 
-  if (!fs.existsSync(mainAppPath)) {
-    throw new Error(`Expected generated MainApplication.kt at ${mainAppPath}`);
-  }
+export const MEDIA_REFERER = 'https://moviebox.ph/';
+export const MEDIA_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
 
+/** The two Kotlin files, as text. Kept pure so a unit test can assert on them without touching a project. */
+export function buildDownloaderSources() {
   const moduleKt = `package com.hallyu.app
 
 import android.app.DownloadManager
@@ -62,14 +66,21 @@ class HallyuDownloaderModule(private val reactContext: ReactApplicationContext) 
             val file = targetFile(key)
             file.parentFile?.mkdirs()
             if (file.exists()) file.delete()
-            val safeTitle = title.trim().take(80).ifEmpty { "Hallyu download" }
+            val safeTitle = if (title.trim().startsWith("Hallyu")) title.trim().take(80) else "Hallyu · " + title.trim().take(70)
             val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle(safeTitle)
-                .setDescription("Saving for offline viewing")
+                .setTitle(safeTitle.ifEmpty { "Hallyu TV" })
+                .setDescription("Saving for offline viewing in Hallyu")
                 .setMimeType("video/mp4")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setAllowedOverRoaming(false)
+                // DownloadManager.Request has no setUserAgent; header injection is the only way to send
+                // the identity the media host accepts. Referer is the decisive one.
+                .addRequestHeader("User-Agent", "${MEDIA_USER_AGENT}")
+                .addRequestHeader("Referer", "${MEDIA_REFERER}")
                 .setDestinationInExternalFilesDir(reactContext, null, relativePath(key))
+            // setAllowedOverMetered exists from API 24; the app supports API 23, where mobile data is
+            // already allowed by default. Guarded instead of suppressed, so nothing crashes on Android 6.
+            if (android.os.Build.VERSION.SDK_INT >= 24) request.setAllowedOverMetered(true)
             val id = dm.enqueue(request)
             prefs.edit().putLong(key, id).apply()
             promise.resolve(id.toString())
@@ -86,16 +97,21 @@ class HallyuDownloaderModule(private val reactContext: ReactApplicationContext) 
             val id = prefs.getLong(key, -1L)
             if (id < 0) {
                 out.putString("status", "missing")
+                out.putDouble("reason", -1.0)
                 promise.resolve(out)
                 return
             }
             cursor = downloadManager().query(DownloadManager.Query().setFilterById(id))
             if (cursor == null || !cursor.moveToFirst()) {
                 out.putString("status", "missing")
+                out.putDouble("reason", -1.0)
             } else {
                 val state = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
                 val soFar = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
                 val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                // COLUMN_REASON is the only thing the system tells us about a failure: no space, an HTTP
+                // error, too many redirects, a blocked network. The app turns it into one plain sentence.
+                val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
                 val label = when (state) {
                     DownloadManager.STATUS_SUCCESSFUL -> "successful"
                     DownloadManager.STATUS_FAILED -> "failed"
@@ -105,6 +121,7 @@ class HallyuDownloaderModule(private val reactContext: ReactApplicationContext) 
                 out.putString("status", label)
                 out.putDouble("bytes", soFar.toDouble())
                 out.putDouble("total", total.toDouble())
+                out.putDouble("reason", reason.toDouble())
                 out.putString("localPath", targetFile(key).absolutePath)
             }
             promise.resolve(out)
@@ -147,6 +164,19 @@ class HallyuDownloaderPackage : ReactPackage {
     }
 }
 `;
+
+  return { moduleKt, packageKt };
+}
+
+export function injectNativeDownloaderModule(androidProjectRoot = path.resolve('android')) {
+  const pkgDir = path.join(androidProjectRoot, 'app/src/main/java/com/hallyu/app');
+  const mainAppPath = path.join(pkgDir, 'MainApplication.kt');
+
+  if (!fs.existsSync(mainAppPath)) {
+    throw new Error(`Expected generated MainApplication.kt at ${mainAppPath}`);
+  }
+
+  const { moduleKt, packageKt } = buildDownloaderSources();
 
   fs.writeFileSync(path.join(pkgDir, 'HallyuDownloaderModule.kt'), moduleKt, 'utf8');
   fs.writeFileSync(path.join(pkgDir, 'HallyuDownloaderPackage.kt'), packageKt, 'utf8');
