@@ -327,8 +327,12 @@ const executableSql = allSql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//
 // a member DM or mention is handled in seconds rather than waiting for the next cron tick. pg_net
 // queues the request and returns immediately, so the inserting transaction is never blocked on the
 // network. We strip only that function's body before applying the notification guard below.
+// The same exception covers the recovery path: `operator_redispatch_queued` re-sends that wake-up
+// for a task whose original dispatch was lost, using the same non-blocking pg_net call. Neither
+// function creates or delivers a notification; the notification guard below still applies to
+// everything else.
 const operatorDispatchSql = executableSql.replace(
-  /create or replace function public\.operator_dispatch_task\b[\s\S]*?\n\$\$;/gi,
+  /create or replace function public\.operator_(?:dispatch_task|redispatch_queued)\b[\s\S]*?\n\$\$;/gi,
   '',
 );
 if (/net\.http|fetch\s*\(|requests\.|urllib|http_post/.test(operatorDispatchSql)) {
