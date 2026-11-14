@@ -273,9 +273,12 @@ Deno.serve(async (request) => {
             conversation_id: conversationId,
             direction: "inbound",
             author_profile_id: caller.profileId,
-            author_type: "admin",
+            // `operator_message_author` allows member/staff/system, and `operator_message_delivery`
+            // allows pending/sent/failed/not_required. An executive is staff, and a message that
+            // was written straight into the conversation needs no delivery step.
+            author_type: "staff",
             body: text.slice(0, 4e3),
-            delivery_status: "delivered"
+            delivery_status: "not_required"
           })
         });
         if (!inserted.ok) return errorResponse("could not record message", 500);
