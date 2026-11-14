@@ -61,6 +61,7 @@ import { TextField } from '../ui/TextField';
 import { useToast } from '../ui/Toast';
 import { TopBar } from '../ui/TopBar';
 import { TrackerOverviewPanel } from './TrackerOverviewPanel';
+import { OperatorControlCentre } from './OperatorControlCentre';
 
 export type AdminSection =
   | 'overview'
@@ -74,7 +75,8 @@ export type AdminSection =
   | 'reports'
   | 'communities'
   | 'tracker'
-  | 'audit';
+  | 'audit'
+  | 'operator';
 
 export function resolveAdminSection(raw?: string, fallback: AdminSection = 'overview'): AdminSection {
   if (!raw) return fallback;
@@ -347,6 +349,17 @@ export function AdminDashboard({
           },
           { key: 'communities' as AdminSection, label: 'Community Rooms', short: 'Rooms', icon: 'chatbubbles-outline' as const },
           { key: 'tracker' as AdminSection, label: 'Watch Tracker', short: 'Tracker', icon: 'stats-chart-outline' as const },
+        ],
+      },
+      {
+        heading: 'AI OPERATOR',
+        items: [
+          {
+            key: 'operator' as AdminSection,
+            label: 'Hallyu AI Operator',
+            short: 'AI Operator',
+            icon: 'sparkles-outline' as const,
+          },
         ],
       },
     ],
@@ -771,6 +784,7 @@ export function AdminDashboard({
           { key: 'communities' as AdminSection, label: 'Rooms' },
           { key: 'tracker' as AdminSection, label: 'Tracker' },
           { key: 'audit' as AdminSection, label: 'Audit' },
+          { key: 'operator' as AdminSection, label: 'AI Operator' },
         ];
 
   return (
@@ -1858,6 +1872,9 @@ export function AdminDashboard({
               ) : null}
 
               {section === 'tracker' ? <TrackerOverviewPanel /> : null}
+
+              {/* ── HALLYU AI OPERATOR CONTROL CENTRE ─────────────────────────────── */}
+              {section === 'operator' ? <OperatorControlCentre /> : null}
 
               {/* ── 11. UNIFIED IMMUTABLE AUDIT LEDGER ────────────────────────────────── */}
               {section === 'audit' ? (
