@@ -100,6 +100,40 @@ Executive DM, live: CEO message → conversation `admin_control` (owner = CEO) �
 That answer is the constitution v2026.11.2 text, which proves the knowledge layer now reaches the
 model (input 4,820 tokens) and that the round trip completes inside the existing DM screen.
 
+### D10–D15 — Silent data loss in the operator's own reporting (BROKEN, fixed)
+
+| # | Defect | Evidence | Fix |
+|---|--------|----------|-----|
+| D10 | Usage ledger rejected every write: worker sent `success`, table accepts `succeeded/failed/rejected/timeout` | `operator_provider_usage` had 0 rows after successful tasks | map outcome before the RPC; ledger now fills (13 rows) |
+| D11 | Tool-call audit rejected every write: code sent `ok`/`error` | `operator_tool_call` 0 rows; per-task rate limiter counted nothing | send `succeeded`/`failed`; audit and limiter work again |
+| D12 | `retrying` tasks were never redispatched (function only looked at `queued`) | 11 moderation sweeps stuck in `retrying` past their `available_at` | redispatch returns due retries to `queued` then wakes them; 11 → 0 |
+| D13 | Heartbeat never counted work | `operator_worker_health.tasks_processed` always 0 | heartbeat takes `p_processed` and accumulates |
+| D14 | `providerBudgetExhausted()` was never called | budget keys existed in policy, nothing read them | checked before every provider call; failure is non-retryable |
+| D15 | Query builder lacked `gte`/`gt`/`lte` | budget check threw → HTTP 500, task stuck `executing` | operators added to `_shared/supabase.ts` |
+
+Budget enforcement was proven from both sides on the live deployment: with `daily_request_budget_apinex = 1`
+the task failed with `budget_exhausted` and did not retry; restored to 500, the next task completed and
+replied normally.
+
+## 3c. Capability status after this phase
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Executive DM round trip (question → warranted answer → DM row) | WORKING | 5 live round trips, replies from the staff profile |
+| Constitution + knowledge grounding | WORKING | answer names the six departments; 4,820-token prompt |
+| Durable task queue, retries, stale recovery | WORKING | 45 stranded → 0 pending; retrying → queued recovery |
+| Provider selection, single provider, no fallback | WORKING | apinex only; usage rows carry provider and model |
+| Usage ledger and provider health | WORKING | 13 usage rows, provider health updated by outcome |
+| Daily budget enforcement | WORKING | blocked at budget 1, resumed at 500 |
+| Tool execution + tool audit | WORKING | `analytics.platform` 106 ms `succeeded`; `research.web` → `research.save` |
+| Web research | WORKING | Wikipedia search, saved item with source URL, `confirmed` |
+| Platform analytics answers | WORKING | "3 total members (all 3 active)" from `operator_platform_analytics` |
+| Worker heartbeat | WORKING | `tasks_processed = 4`, `last_seen_at` current |
+| Rich DM rendering / streaming | NOT IMPLEMENTED | answers are plain text rendered by the existing DM screen |
+| Image generation | NOT IMPLEMENTED | no image tool exists |
+| Push delivery | BLOCKED (DATA) | `notification.send` writes notifications; `push_tokens` is empty in this project |
+| Control Centre sections beyond overview | UNVERIFIED | requires a signed-in admin session; endpoints and RPCs exist |
+
 ## 4. Remaining defects (not fixed this phase)
 
 1. **APINEX availability (WATCH).** Before the credential fix, calls returned a Cloudflare HTML 403.
@@ -119,7 +153,7 @@ model (input 4,820 tokens) and that the round trip completes inside the existing
    only `overview` was exercised against the live backend.
 8. **Push tokens**: `push_tokens` is empty in this project, so notification delivery cannot be proven.
 
-## 5. Next priorities
+## 5. Next priorities (updated)
 
 1. Worker heartbeat + health surface (small, unblocks observability).
 2. Confirm APINEX availability and, if it is intermittent, add backoff visibility to the Control
