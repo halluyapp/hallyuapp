@@ -220,6 +220,29 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
     .rpc('operator_transition_task', { p_task: task.id, p_status: 'executing', p_note: null })
     .catch(() => undefined);
 
+  // Spend guard. The policy's daily request budget used to be decorative: nothing ever consulted
+  // it. It is checked before a provider call, and exhausting it fails the task without retrying,
+  // because waiting for the next window cannot fix a budget.
+  if (await providerBudgetExhausted(admin, provider, policy)) {
+    const failed = await admin.rpc<string>('operator_fail_task', {
+      p_task: task.id,
+      p_error_code: 'budget_exhausted',
+      p_error_detail: `daily request budget for ${provider} is spent`,
+      p_retryable: false,
+    });
+    await admin.rpc('operator_audit_write', {
+      p_action: 'task.budget_exhausted',
+      p_outcome: 'failed',
+      p_task: task.id,
+      p_actor: staff.profile_id,
+      p_actor_type: 'ai',
+      p_resource_type: 'task',
+      p_resource_id: task.id,
+      p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null },
+    });
+    return { task_id: task.id, outcome: 'failed', provider, model, error: 'budget_exhausted', retryable: false, next_status: failed.data ?? null };
+  }
+
   // Identity and knowledge are versioned data, not a hardcoded prompt. Load the active
   // constitution and retrieve the knowledge entries most relevant to this instruction.
   const query = String(input.instruction ?? input.body ?? task.task_type ?? '').slice(0, 400);

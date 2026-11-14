@@ -1226,6 +1226,25 @@ async function processTask(args) {
   const context = task.conversation_id ? await loadContext(admin, task.conversation_id, input) : null;
   const member = context ? asRecord(context.member) : null;
   await admin.rpc("operator_transition_task", { p_task: task.id, p_status: "executing", p_note: null }).catch(() => void 0);
+  if (await providerBudgetExhausted(admin, provider, policy)) {
+    const failed = await admin.rpc("operator_fail_task", {
+      p_task: task.id,
+      p_error_code: "budget_exhausted",
+      p_error_detail: `daily request budget for ${provider} is spent`,
+      p_retryable: false
+    });
+    await admin.rpc("operator_audit_write", {
+      p_action: "task.budget_exhausted",
+      p_outcome: "failed",
+      p_task: task.id,
+      p_actor: staff.profile_id,
+      p_actor_type: "ai",
+      p_resource_type: "task",
+      p_resource_id: task.id,
+      p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null }
+    });
+    return { task_id: task.id, outcome: "failed", provider, model, error: "budget_exhausted", retryable: false, next_status: failed.data ?? null };
+  }
   const query = String(input.instruction ?? input.body ?? task.task_type ?? "").slice(0, 400);
   const [constitutionResult, knowledgeResult] = await Promise.all([
     admin.rpc("operator_active_constitution", {}),
@@ -1416,6 +1435,14 @@ async function processTask(args) {
     });
     return { task_id: task.id, outcome: "failed", provider, model, error: code, retryable, next_status: failed.data ?? null };
   }
+}
+async function providerBudgetExhausted(admin, provider, policy) {
+  const providers = asRecord(policy.providers);
+  const budget = Number(providers[`daily_request_budget_${provider}`] ?? 0);
+  if (!budget || budget <= 0) return false;
+  const since = new Date(Date.now() - 24 * 36e5).toISOString();
+  const result = await admin.from("operator_provider_usage").select("id").eq("provider", provider).gte("created_at", since).limit(budget + 1);
+  return asArray(result.data).length >= budget;
 }
 async function conversationChannel(admin, conversationId) {
   const result = await admin.from("operator_conversation").select("channel").eq("id", conversationId).limit(1);
