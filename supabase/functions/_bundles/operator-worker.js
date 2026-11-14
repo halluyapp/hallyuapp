@@ -223,8 +223,12 @@ async function providerCredential(provider) {
   if (vaultKey) return vaultKey;
   throw new ProviderError(provider, `${runtime.apiKeyEnv} is not configured`, 0, "missing_credential", false);
 }
-function classifyStatus(status) {
-  if (status === 401 || status === 403) return { code: "auth_error", retryable: false };
+function classifyStatus(status, body) {
+  const looksLikeHtml = /^\s*</.test(body);
+  if (status === 401) return { code: "auth_error", retryable: false };
+  if (status === 403) {
+    return looksLikeHtml ? { code: "provider_blocked", retryable: true } : { code: "auth_error", retryable: false };
+  }
   if (status === 402) return { code: "billing_error", retryable: false };
   if (status === 429) return { code: "rate_limited", retryable: true };
   if (status === 408 || status === 504) return { code: "timeout", retryable: true };
@@ -280,7 +284,7 @@ async function callProvider(request) {
   const latencyMs = Date.now() - startedAt;
   const text = await response.text().catch(() => "");
   if (!response.ok) {
-    const { code, retryable } = classifyStatus(response.status);
+    const { code, retryable } = classifyStatus(response.status, text);
     throw new ProviderError(
       request.provider,
       `${request.provider} HTTP ${response.status}: ${text.slice(0, 400)}`,

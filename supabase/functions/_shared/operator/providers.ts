@@ -123,8 +123,18 @@ export async function providerCredential(provider: ProviderId): Promise<string> 
   throw new ProviderError(provider, `${runtime.apiKeyEnv} is not configured`, 0, 'missing_credential', false);
 }
 
-function classifyStatus(status: number): { code: string; retryable: boolean } {
-  if (status === 401 || status === 403) return { code: 'auth_error', retryable: false };
+/**
+ * Classify a provider failure. A 403 with an HTML body is an edge/WAF block, not a credential
+ * problem: treating it as `auth_error` permanently failed good tasks (and hid the real cause).
+ */
+function classifyStatus(status: number, body: string): { code: string; retryable: boolean } {
+  const looksLikeHtml = /^\s*</.test(body);
+  if (status === 401) return { code: 'auth_error', retryable: false };
+  if (status === 403) {
+    return looksLikeHtml
+      ? { code: 'provider_blocked', retryable: true }
+      : { code: 'auth_error', retryable: false };
+  }
   if (status === 402) return { code: 'billing_error', retryable: false };
   if (status === 429) return { code: 'rate_limited', retryable: true };
   if (status === 408 || status === 504) return { code: 'timeout', retryable: true };
@@ -189,7 +199,7 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
 
   const text = await response.text().catch(() => '');
   if (!response.ok) {
-    const { code, retryable } = classifyStatus(response.status);
+    const { code, retryable } = classifyStatus(response.status, text);
     throw new ProviderError(
       request.provider,
       `${request.provider} HTTP ${response.status}: ${text.slice(0, 400)}`,
