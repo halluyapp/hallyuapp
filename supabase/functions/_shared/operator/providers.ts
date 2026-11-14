@@ -153,7 +153,9 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
     throw new ProviderError('apinex', `unknown provider: ${String(request.provider)}`, 0, 'unknown_provider', false);
   }
   const runtime = PROVIDERS[request.provider];
-  const apiKey = providerCredential(request.provider);
+  // Must be awaited: the Vault lookup is async, and an unawaited call put
+  // "Bearer [object Promise]" in the Authorization header of every completion.
+  const apiKey = await providerCredential(request.provider);
   const timeoutMs = Math.min(Math.max(request.timeoutMs ?? 45_000, 5_000), 120_000);
 
   const body: Record<string, unknown> = {

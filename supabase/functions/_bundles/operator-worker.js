@@ -241,7 +241,7 @@ async function callProvider(request) {
     throw new ProviderError("apinex", `unknown provider: ${String(request.provider)}`, 0, "unknown_provider", false);
   }
   const runtime = PROVIDERS[request.provider];
-  const apiKey = providerCredential(request.provider);
+  const apiKey = await providerCredential(request.provider);
   const timeoutMs = Math.min(Math.max(request.timeoutMs ?? 45e3, 5e3), 12e4);
   const body = {
     model: request.model,
