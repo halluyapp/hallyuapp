@@ -70,11 +70,41 @@ worlds, the six departments, verified-capability rules, and authority boundaries
 - Moderation tasks continue to be enqueued by the scheduler.
 - Control Centre authentication: anon → 403 admin access required.
 
+### D7 — The provider key was never awaited (BROKEN, fixed)
+`callProvider()` did `const apiKey = providerCredential(...)` and used it directly, so every
+completion sent `Authorization: Bearer [object Promise]`. The health probe in the same file awaited
+it correctly. Fix: `await providerCredential(...)`. After the fix the same task went from
+`provider_blocked` to `completed` with a real answer.
+
+### D8 — A DM answer was only delivered if the model called a tool (BROKEN, fixed)
+A task could finish successfully with nothing sent: delivery depended on the model choosing
+`message.reply`. Fix: the worker now delivers the final answer through
+`operator_send_staff_message` before closing the task, and skips delivery when a tool already sent
+the reply.
+
+### D9 — Executive replies were never mirrored into `direct_messages` (BROKEN, fixed)
+`operator_send_staff_message()` inserted into `direct_messages` only for `member_ai`, so an
+executive conversation wrote only the operator record — the CEO saw no reply in the DM screen.
+Fix (`20261118000000_90_...`): both DM channels deliver into the real DM table.
+
+## 3b. Verified end to end after the fixes
+
+Executive DM, live: CEO message → conversation `admin_control` (owner = CEO) → task
+`admin_command` (apinex / `free/gpt-6-luna`) → worker (attempt 1, no error) → `completed` →
+`operator_message` outbound `delivery_status = sent` → `direct_messages` row from the staff profile:
+
+> "Hallyu is a social platform for fans of K-drama, C-drama, anime and Hollywood — a community where
+> members follow titles, discuss episodes, post reviews and polls, and connect in dedicated worlds.
+> My six departments are: Community Operations, ..."
+
+That answer is the constitution v2026.11.2 text, which proves the knowledge layer now reaches the
+model (input 4,820 tokens) and that the round trip completes inside the existing DM screen.
+
 ## 4. Remaining defects (not fixed this phase)
 
-1. **APINEX edge blocks requests (BLOCKED BY EXTERNAL SERVICE).** Several calls return a Cloudflare
-   HTML 403 while one succeeded. Tasks now retry, but reliable answering depends on the provider
-   accepting the requests; nothing in the repository can fix a WAF decision.
+1. **APINEX availability (WATCH).** Before the credential fix, calls returned a Cloudflare HTML 403.
+   With the key properly awaited, calls succeed; the earlier 403s were the malformed Authorization
+   header, not a WAF decision. Re-check if 403s return.
 2. **Worker heartbeat table empty (MISSING).** `operator_worker_health` has no rows; the worker does
    not write a heartbeat, so worker health cannot be observed from the Control Centre.
 3. **Structured DM rendering (MISSING).** Messages are plain text; `message_type`/`rich_content`
