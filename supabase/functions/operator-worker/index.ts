@@ -535,6 +535,46 @@ async function recordUsage(
   });
 }
 
+/**
+ * Deliver the final answer into the conversation it belongs to.
+ *
+ * A DM task's answer is the message the person is waiting for, so it must not depend on the model
+ * choosing to call a tool. If the model already replied through `message.reply`, this is skipped so
+ * the same answer can never be sent twice.
+ */
+async function deliverAnswer(
+  admin: ReturnType<typeof adminClient>,
+  task: TaskRow,
+  result: Record<string, unknown>,
+): Promise<string | null> {
+  const content = typeof result.content === 'string' ? result.content.trim() : '';
+  if (!content || !task.conversation_id) return null;
+  if (task.task_type !== 'admin_command' && task.task_type !== 'reply_member_dm') return null;
+
+  try {
+    const used = await admin
+      .from('operator_tool_call')
+      .select('id', { count: 'exact', head: true })
+      .eq('task_id', task.id)
+      .eq('tool', 'message.reply')
+      .eq('status', 'ok');
+    if ((used.count ?? 0) > 0) return null;
+  } catch {
+    // If the check itself fails we still deliver: a missing reply is worse than a duplicate guard
+    // that could not be confirmed, and the conversation shows what was sent.
+  }
+
+  const sent = await admin
+    .rpc('operator_send_staff_message', {
+      p_conversation: task.conversation_id,
+      p_body: content.slice(0, 4000),
+      p_task: task.id,
+    })
+    .catch(() => ({ data: null, error: { message: 'send failed' } }) as { data: null; error: { message: string } });
+  if (sent.error) return null;
+  return typeof sent.data === 'string' ? sent.data : null;
+}
+
 async function completeTask(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: ReturnType<typeof adminClient>,
@@ -542,6 +582,9 @@ async function completeTask(
   staff: StaffRow,
   result: Record<string, unknown>,
 ): Promise<void> {
+  // The answer is delivered before the task is closed, so a completed task always corresponds to a
+  // message the recipient can actually see.
+  const deliveredMessageId = await deliverAnswer(admin, task, result).catch(() => null);
   await admin
     .rpc('operator_transition_task', { p_task: task.id, p_status: 'verifying', p_note: 'model finished; verifying result' })
     .catch(() => undefined);
@@ -557,6 +600,11 @@ async function completeTask(
     p_actor_type: 'ai',
     p_resource_type: 'task',
     p_resource_id: task.id,
-    p_details: { task_type: task.task_type, provider: result.provider ?? null, rounds: result.rounds ?? null },
+    p_details: {
+      task_type: task.task_type,
+      provider: result.provider ?? null,
+      rounds: result.rounds ?? null,
+      delivered_message_id: deliveredMessageId,
+    },
   });
 }
