@@ -883,7 +883,10 @@ export async function recordToolCall(
     tool: execution.tool,
     args: safeJson(argumentsJson),
     result: summarize(execution),
-    outcome: execution.ok ? 'ok' : 'error',
+    // operator_tool_call only accepts succeeded/partially_succeeded/rejected/failed/pending/
+    // not_verified. Writing 'ok'/'error' made every insert fail, which left the tool audit trail
+    // empty and made the per-task rate limiter count nothing.
+    outcome: execution.ok ? 'succeeded' : 'failed',
     error_code: execution.code ?? null,
     error_detail: execution.ok ? null : (execution.error ?? null),
     duration_ms: execution.durationMs,
