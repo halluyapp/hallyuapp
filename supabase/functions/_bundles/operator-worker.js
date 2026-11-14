@@ -1439,10 +1439,11 @@ async function loadContext(admin, conversationId, input) {
   return context;
 }
 async function recordUsage(admin, usage) {
+  const outcome = usage.outcome === "success" ? "succeeded" : "failed";
   await admin.rpc("operator_record_usage", {
     p_provider: usage.provider,
     p_model: usage.model,
-    p_outcome: usage.outcome,
+    p_outcome: outcome,
     p_task: usage.taskId,
     p_input_tokens: usage.input,
     p_output_tokens: usage.output,

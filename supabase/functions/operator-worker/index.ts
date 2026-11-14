@@ -520,10 +520,14 @@ async function recordUsage(
   admin: ReturnType<typeof adminClient>,
   usage: UsageArgs,
 ): Promise<void> {
+  // operator_provider_usage only accepts succeeded/failed/rejected/timeout. Sending 'success' made
+  // every insert violate the check constraint, so the whole usage ledger (and provider health)
+  // stayed empty while the error was swallowed by the client.
+  const outcome = usage.outcome === 'success' ? 'succeeded' : 'failed';
   await admin.rpc('operator_record_usage', {
     p_provider: usage.provider,
     p_model: usage.model,
-    p_outcome: usage.outcome,
+    p_outcome: outcome,
     p_task: usage.taskId,
     p_input_tokens: usage.input,
     p_output_tokens: usage.output,
