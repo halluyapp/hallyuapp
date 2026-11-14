@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<base href="../"/>
+<title>Hallyu — Navigation</title>
+<link rel="stylesheet" href="src/css/tokens.css"/>
+<link rel="stylesheet" href="src/css/base.css"/>
+<link rel="stylesheet" href="src/css/components.css"/>
+<link rel="stylesheet" href="src/css/screens.css"/>
+<style>
+body.doc-body { background:#07070C; color:#F5F5FA; padding:40px; }
+.doc { max-width:1180px; margin:0 auto; }
+.doc-head { margin-bottom:32px; }
+.doc-title { font-size:34px; font-weight:800; letter-spacing:-0.02em; }
+.doc-sub { color:#A9A9BE; margin-top:6px; }
+.doc-h2 { font-size:20px; font-weight:700; margin:40px 0 16px; padding-bottom:10px; border-bottom:1px solid #26263A; }
+.ic-grid { display:grid; grid-template-columns:repeat(8,1fr); gap:12px; }
+.ic-cell { background:#14141F; border:1px solid #26263A; border-radius:14px; padding:16px 8px; text-align:center; }
+.ic-box { color:#F5F5FA; display:flex; justify-content:center; margin-bottom:8px; }
+.ic-name { font-size:11px; color:#A9A9BE; word-break:break-word; }
+.sw-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; }
+.sw { background:#14141F; border:1px solid #26263A; border-radius:14px; overflow:hidden; }
+.sw-chip { height:64px; }
+.sw-name { font-size:12px; font-weight:600; padding:8px 10px 0; }
+.sw-hex { font-size:11px; color:#74748C; padding:0 10px 10px; font-variant-numeric:tabular-nums; }
+.ty-list { display:flex; flex-direction:column; gap:6px; }
+.ty-row { display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:baseline; padding:14px 0; border-bottom:1px solid #1B1B28; }
+.ty-meta { font-size:12px; color:#A9A9BE; }
+.ty-meta span { color:#74748C; }
+.sp-list { display:flex; flex-direction:column; gap:10px; }
+.sp-row { display:flex; align-items:center; gap:16px; }
+.sp-lbl { width:120px; font-size:12px; color:#A9A9BE; }
+.sp-bar { height:16px; background:#7B61FF; border-radius:4px; }
+.rad-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:12px; }
+.rad-box { height:90px; background:#14141F; border:1px solid #38384F; display:flex; align-items:center; justify-content:center; text-align:center; font-size:11px; color:#A9A9BE; }
+.elev-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:20px; }
+.elev-box { height:90px; background:#1B1B28; border-radius:14px; display:flex; align-items:center; justify-content:center; color:#A9A9BE; font-size:13px; }
+.motion-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.motion-card { background:#14141F; border:1px solid #26263A; border-radius:12px; padding:16px; font-size:13px; color:#A9A9BE; }
+.motion-card b { color:#F5F5FA; display:block; margin-bottom:4px; }
+.brand-row { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+.brand-card { border-radius:18px; padding:28px; display:flex; align-items:center; gap:20px; }
+.comp-sec { margin-bottom:36px; }
+.comp-sec h3 { font-size:15px; color:#A9A9BE; text-transform:uppercase; letter-spacing:0.08em; margin:0 0 16px; }
+.comp-row { display:flex; flex-wrap:wrap; gap:16px; align-items:center; }
+.comp-panel { background:#0E0E18; border:1px solid #1B1B28; border-radius:18px; padding:24px; }
+.nav-map { display:flex; flex-direction:column; gap:20px; }
+.nav-node { background:#14141F; border:1px solid #26263A; border-radius:14px; padding:14px 18px; display:inline-flex; gap:10px; align-items:center; }
+.nav-arrow { color:#74748C; text-align:center; font-size:20px; }
+.nav-cols { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; }
+</style>
+</head>
+<body class="doc-body">
+<div class="doc">
+      <div class="doc-head"><div class="doc-title">Navigation</div><div class="doc-sub">Five-tab shell, stack, and modal navigation · entertainment ↔ fandom ↔ social</div></div>
+      <h2 class="doc-h2">Primary shell (bottom navigation)</h2>
+      <div class="comp-panel"><div class="tabbar"><button class="navitem navitem--active" aria-label="Home"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path fill="currentColor" stroke="none" d="M11.3 2.6a1 1 0 0 1 1.4 0l8.3 7.4a1 1 0 0 1 .3.7V20a2 2 0 0 1-2 2h-4.6v-5.4a.6.6 0 0 0-.6-.6h-3.2a.6.6 0 0 0-.6.6V22H4.3a2 2 0 0 1-2-2v-9.3a1 1 0 0 1 .3-.7z"/></svg><span class="navitem__label">Home</span></button><button class="navitem " aria-label="Explore"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="12" cy="12" r="9"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m15.5 8.5-2 5-5 2 2-5z"/></svg><span class="navitem__label">Explore</span></button><button class="navitem navitem--create" aria-label="Create"><span class="createbtn"><svg class="ico" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 5v14M5 12h14"/></svg></span></button><button class="navitem " aria-label="Activity"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="navitem__badge">3</span><span class="navitem__label">Activity</span></button><button class="navitem " aria-label="You"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="12" cy="8" r="4"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg><span class="navitem__label">You</span></button></div></div>
+      <h2 class="doc-h2">The core loop</h2>
+      <div class="nav-map">
+        <div class="nav-node"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="12" cy="12" r="9"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m15.5 8.5-2 5-5 2 2-5z"/></svg> Discover</div><div class="nav-arrow">↓</div>
+        <div class="nav-node"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" ><path fill="currentColor" stroke="none" d="M7 4.6a1 1 0 0 1 1.5-.9l11 7.4a1 1 0 0 1 0 1.7l-11 7.4A1 1 0 0 1 7 19.4z"/></svg> Experience</div><div class="nav-arrow">↓</div>
+        <div class="nav-node"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 20.5C6 16.5 3 13.3 3 9.6A4.6 4.6 0 0 1 12 7a4.6 4.6 0 0 1 9 2.6c0 3.7-3 6.9-9 10.9z"/></svg> React</div><div class="nav-arrow">↓</div>
+        <div class="nav-node"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/></svg> Discuss</div><div class="nav-arrow">↓</div>
+        <div class="nav-node"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="12" cy="8" r="4"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg> Follow</div><div class="nav-arrow">↓</div>
+        <div class="nav-node"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 20h4L19 9a2 2 0 0 0-3-3L5 17z"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M14.5 6.5 17.5 9.5"/></svg> Create</div><div class="nav-arrow">↓</div>
+        <div class="nav-node"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" ><path fill="currentColor" stroke="none" d="M12 3l1.6 4.9L18.5 9.5l-4.9 1.6L12 16l-1.6-4.9L5.5 9.5l4.9-1.6z"/></svg> Rediscover</div>
+      </div>
+      <h2 class="doc-h2">Stack routes</h2>
+      <div class="nav-cols">
+        <div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="11" cy="11" r="7"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m20 20-3.5-3.5"/></svg> Search</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="3" y="7" width="18" height="13" rx="2"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m8 3 4 4 4-4"/></svg> Content Hub</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="9" cy="8" r="3.5"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M2.5 20c0-3.3 2.9-5 6.5-5s6.5 1.7 6.5 5"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M16.5 5.2a3.5 3.5 0 0 1 0 6.6"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M18 15.4c2.3.5 3.8 1.8 3.8 4.1"/></svg> Community</div>
+        <div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 5h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-4 3v-3H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg> Post Detail</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="12" cy="8" r="4"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg> Profile</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path fill="currentColor" stroke="none" d="M12 3l1.6 4.9L18.5 9.5l-4.9 1.6L12 16l-1.6-4.9L5.5 9.5l4.9-1.6z"/></svg> Creator</div>
+        <div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1z"/></svg> Watchlist</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="3" y="3" width="7" height="7" rx="1.5"/><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="14" y="3" width="7" height="7" rx="1.5"/><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="3" y="14" width="7" height="7" rx="1.5"/><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="14" y="14" width="7" height="7" rx="1.5"/></svg> Collections</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="12" cy="12" r="3"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 2.5v3M12 18.5v3M4.2 7l2.6 1.5M17.2 15.5l2.6 1.5M4.2 17l2.6-1.5M17.2 8.5l2.6-1.5"/></svg> Settings</div>
+      </div>
+      <h2 class="doc-h2">Modal routes</h2>
+      <div class="nav-cols">
+        <div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 20h4L19 9a2 2 0 0 0-3-3L5 17z"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M14.5 6.5 17.5 9.5"/></svg> Create</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 15V4M8.5 7.5 12 4l3.5 3.5"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg> Share</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M5 21V4M5 5h11l-1.5 3.5L16 12H5"/></svg> Report</div>
+        <div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="3" y="3" width="7" height="7" rx="1.5"/><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="14" y="3" width="7" height="7" rx="1.5"/><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="3" y="14" width="7" height="7" rx="1.5"/><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="14" y="14" width="7" height="7" rx="1.5"/></svg> Collection</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 4l16 16"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M9.5 9.6A3 3 0 0 0 12 15a3 3 0 0 0 2.4-1.2M6.6 6.8C4 8.3 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.7 0 3.2-.5 4.5-1.2M10 5.7A9 9 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a15 15 0 0 1-2.3 3.1"/></svg> Spoiler</div><div class="nav-node"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="16" cy="6" r="2"/><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="10" cy="12" r="2"/><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="18" cy="18" r="2"/></svg> Filters</div>
+      </div>
+    </div>
+</body>
+</html>

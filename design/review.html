@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Hallyu — Design Review Gallery</title>
+<style>
+  :root{
+    --bg:#0A0A12; --surface:#14141F; --surface2:#1B1B28; --border:#232333;
+    --text:#F5F5FA; --muted:#A9A9BE; --faint:#74748C; --iris:#7B61FF;
+    --kdrama:#FF6B8A; --cdrama:#3DD6C4; --anime:#8B75FF; --hollywood:#FFB74D;
+    --font:"Inter","Pretendard Variable","Noto Sans KR","Segoe UI",Roboto,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  header.top{padding:48px 40px 28px;border-bottom:1px solid var(--border);
+    background:radial-gradient(1200px 400px at 20% -40%, rgba(123,97,255,.22), transparent 60%)}
+  .mark{display:flex;align-items:center;gap:14px}
+  .mark svg{width:40px;height:40px}
+  h1{font-size:40px;font-weight:800;letter-spacing:-.02em}
+  .sub{color:var(--muted);margin-top:10px;max-width:760px;line-height:1.6;font-size:16px}
+  .meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+  .pill{background:var(--surface2);border:1px solid var(--border);border-radius:999px;
+    padding:7px 14px;font-size:13px;font-weight:600;color:var(--muted)}
+  .pill b{color:var(--text)}
+  .pill.iris{background:rgba(123,97,255,.16);border-color:rgba(123,97,255,.4);color:#C4BAFF}
+  nav.toc{position:sticky;top:0;z-index:10;background:rgba(10,10,18,.86);backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--border);padding:14px 40px;display:flex;gap:8px;flex-wrap:wrap}
+  nav.toc a{font-size:13px;font-weight:600;color:var(--muted);padding:7px 12px;border-radius:999px;
+    border:1px solid transparent}
+  nav.toc a:hover{background:var(--surface2);color:var(--text);border-color:var(--border)}
+  main{padding:36px 40px 80px}
+  section{margin-bottom:56px;scroll-margin-top:80px}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:20px}
+  .sec-head h2{font-size:24px;font-weight:700;letter-spacing:-.01em}
+  .sec-head .count{color:var(--faint);font-size:14px;font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:22px}
+  figure{background:var(--surface);border:1px solid var(--border);border-radius:18px;overflow:hidden;
+    transition:transform .18s ease, border-color .18s ease}
+  figure:hover{transform:translateY(-3px);border-color:#38384F}
+  figure img{width:100%;display:block;background:var(--surface2)}
+  figcaption{padding:12px 14px;font-size:13px;font-weight:600;color:var(--muted);
+    border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:8px}
+  figcaption span.t{color:var(--text)}
+  .wide{grid-template-columns:1fr}
+  .wide figure img{max-height:640px;object-fit:contain;background:#0d0d16}
+  .sheetgrid{display:grid;grid-template-columns:1fr;gap:26px}
+  .sheetgrid img{width:100%;border:1px solid var(--border);border-radius:18px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0 0}
+  .legend span{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);font-weight:600}
+  .dot{width:10px;height:10px;border-radius:50%}
+  footer{padding:30px 40px;border-top:1px solid var(--border);color:var(--faint);font-size:13px}
+  code{font-family:ui-monospace,monospace;background:var(--surface2);padding:2px 6px;border-radius:6px;font-size:12px}
+</style>
+<script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="mark">
+    <svg viewBox="0 0 512 512"><g fill="none" stroke="#7B61FF" stroke-width="30" stroke-linecap="round"><path d="M256 138 A118 118 0 0 1 374 256"/><path d="M374 256 A118 118 0 0 1 256 374"/><path d="M256 374 A118 118 0 0 1 138 256"/><path d="M138 256 A118 118 0 0 1 256 138"/></g><circle cx="256" cy="256" r="52" fill="#7B61FF"/><circle cx="256" cy="256" r="20" fill="#F5F5FA"/></svg>
+    <h1>Hallyu — Design Review</h1>
+  </div>
+  <p class="sub">Where fandoms meet. A complete, coded design system and high-fidelity screen package.
+    Every image below is rendered directly from the coded HTML — the references <em>are</em> the design.
+    Dark is primary; light is a first-class theme.</p>
+  <div class="meta">
+    <span class="pill iris">Brand <b>Hallyu Iris #7B61FF</b></span>
+    <span class="pill"><b>64</b> screens</span>
+    <span class="pill"><b>17</b> product areas</span>
+    <span class="pill"><b>4</b> worlds</span>
+    <span class="pill">Dark + Light</span>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--kdrama)"></i>K-Drama</span>
+    <span><i class="dot" style="background:var(--cdrama)"></i>C-Drama</span>
+    <span><i class="dot" style="background:var(--anime)"></i>Anime</span>
+    <span><i class="dot" style="background:var(--hollywood)"></i>Hollywood</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#sheets">Contact Sheets</a>
+  <a href="#01">01 Brand</a><a href="#02">02 Onboarding</a><a href="#03">03 Home</a>
+  <a href="#04">04 Discover</a><a href="#05">05 Search</a><a href="#06">06 Content Hub</a>
+  <a href="#07">07 Communities</a><a href="#08">08 Feed</a><a href="#09">09 Shorts</a>
+  <a href="#10">10 Creation</a><a href="#11">11 Profiles</a><a href="#12">12 Notifications</a>
+  <a href="#13">13 Messages</a><a href="#14">14 Watchlist</a><a href="#15">15 Settings</a>
+  <a href="#16">16 States</a><a href="#docs">Docs</a>
+</nav>
+
+<main>
+  <section id="sheets">
+    <div class="sec-head"><h2>Contact Sheets</h2><span class="count">all 64 screens at a glance</span></div>
+    <div class="sheetgrid">
+      <img src="renders/contact-sheet-all-1.png" alt="contact sheet 1"/>
+      <img src="renders/contact-sheet-all-2.png" alt="contact sheet 2"/>
+      <img src="renders/contact-sheet-all-3.png" alt="contact sheet 3"/>
+    </div>
+  </section>
+
+  <section id="docs">
+    <div class="sec-head"><h2>Documentation Pages</h2><span class="count">icons · tokens · components · navigation</span></div>
+    <div class="grid">
+      <figure><img src="renders/pages/icons.png" alt=""/><figcaption><span class="t">Icon set</span></figcaption></figure>
+      <figure><img src="renders/pages/design-system.png" alt=""/><figcaption><span class="t">Design system</span></figcaption></figure>
+      <figure><img src="renders/pages/components.png" alt=""/><figcaption><span class="t">Component library</span></figcaption></figure>
+      <figure><img src="renders/pages/navigation.png" alt=""/><figcaption><span class="t">Navigation</span></figcaption></figure>
+    </div>
+  </section>
+
+  <div id="screens"></div>
+</main>
+
+<footer>
+  Generated by <code>src/build.py</code> → <code>src/render.py</code>. Design-review stage — no production code modified.
+</footer>
+
+<script>
+// Build the per-section screen galleries from the known manifest.
+const SECTIONS = [
+  ["01","Brand / App Entry",["01-brand-splash","01-brand-loading","01-brand-first-launch"]],
+  ["02","Onboarding",["02-onb-welcome","02-onb-auth","02-onb-fandoms","02-onb-genres","02-onb-titles","02-onb-people","02-onb-done"]],
+  ["03","Home",["03-home-foryou","03-home-following","03-home-loading","03-home-guest","03-home-foryou-light"]],
+  ["04","Discover",["04-discover","04-discover-world","04-discover-genres"]],
+  ["05","Search",["05-search-idle","05-search-results","05-search-empty","05-search-loading"]],
+  ["06","Entertainment Detail — Content Hub",["06-content-kdrama","06-content-anime","06-content-hollywood-movie","06-content-episodes","06-content-discussion","06-content-cast","06-content-anime-light"]],
+  ["07","Fandoms / Communities",["07-comm-discover","07-comm-detail","07-comm-create","07-comm-empty"]],
+  ["08","Social Feed",["08-feed","08-post-detail","08-post-menu","08-feed-empty"]],
+  ["09","Explore / Short-form",["09-shorts","09-shorts-comments"]],
+  ["10","Creation",["10-create-menu","10-create-post","10-create-poll","10-create-attach","10-create-uploading","10-create-success"]],
+  ["11","Profiles",["11-profile-own","11-profile-creator","11-profile-edit"]],
+  ["12","Notifications",["12-notifications","12-notifications-empty"]],
+  ["13","Messages",["13-messages-list","13-message-thread"]],
+  ["14","Watchlist / Saved",["14-watchlist","14-saved"]],
+  ["15","Settings",["15-settings","15-settings-appearance"]],
+  ["16","Global States",["16-states-loading","16-states-empty","16-states-error","16-states-offline","16-states-success","16-states-toast","16-states-dialog","16-states-sheet"]],
+];
+const host = document.getElementById("screens");
+for (const [id,title,items] of SECTIONS){
+  const sec = document.createElement("section");
+  sec.id = id;
+  sec.innerHTML = `<div class="sec-head"><h2>${id} · ${title}</h2><span class="count">${items.length} screens</span></div>
+    <div class="grid">${items.map(n=>`<figure><img loading="lazy" src="renders/screens/${n}.png" alt="${n}"/><figcaption><span class="t">${n.replace(/^\d+-/,'')}</span></figcaption></figure>`).join("")}</div>`;
+  host.appendChild(sec);
+}
+</script>
+</body>
+</html>

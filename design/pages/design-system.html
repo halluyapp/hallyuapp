@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<base href="../"/>
+<title>Hallyu — Design System</title>
+<link rel="stylesheet" href="src/css/tokens.css"/>
+<link rel="stylesheet" href="src/css/base.css"/>
+<link rel="stylesheet" href="src/css/components.css"/>
+<link rel="stylesheet" href="src/css/screens.css"/>
+<style>
+body.doc-body { background:#07070C; color:#F5F5FA; padding:40px; }
+.doc { max-width:1180px; margin:0 auto; }
+.doc-head { margin-bottom:32px; }
+.doc-title { font-size:34px; font-weight:800; letter-spacing:-0.02em; }
+.doc-sub { color:#A9A9BE; margin-top:6px; }
+.doc-h2 { font-size:20px; font-weight:700; margin:40px 0 16px; padding-bottom:10px; border-bottom:1px solid #26263A; }
+.ic-grid { display:grid; grid-template-columns:repeat(8,1fr); gap:12px; }
+.ic-cell { background:#14141F; border:1px solid #26263A; border-radius:14px; padding:16px 8px; text-align:center; }
+.ic-box { color:#F5F5FA; display:flex; justify-content:center; margin-bottom:8px; }
+.ic-name { font-size:11px; color:#A9A9BE; word-break:break-word; }
+.sw-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; }
+.sw { background:#14141F; border:1px solid #26263A; border-radius:14px; overflow:hidden; }
+.sw-chip { height:64px; }
+.sw-name { font-size:12px; font-weight:600; padding:8px 10px 0; }
+.sw-hex { font-size:11px; color:#74748C; padding:0 10px 10px; font-variant-numeric:tabular-nums; }
+.ty-list { display:flex; flex-direction:column; gap:6px; }
+.ty-row { display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:baseline; padding:14px 0; border-bottom:1px solid #1B1B28; }
+.ty-meta { font-size:12px; color:#A9A9BE; }
+.ty-meta span { color:#74748C; }
+.sp-list { display:flex; flex-direction:column; gap:10px; }
+.sp-row { display:flex; align-items:center; gap:16px; }
+.sp-lbl { width:120px; font-size:12px; color:#A9A9BE; }
+.sp-bar { height:16px; background:#7B61FF; border-radius:4px; }
+.rad-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:12px; }
+.rad-box { height:90px; background:#14141F; border:1px solid #38384F; display:flex; align-items:center; justify-content:center; text-align:center; font-size:11px; color:#A9A9BE; }
+.elev-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:20px; }
+.elev-box { height:90px; background:#1B1B28; border-radius:14px; display:flex; align-items:center; justify-content:center; color:#A9A9BE; font-size:13px; }
+.motion-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.motion-card { background:#14141F; border:1px solid #26263A; border-radius:12px; padding:16px; font-size:13px; color:#A9A9BE; }
+.motion-card b { color:#F5F5FA; display:block; margin-bottom:4px; }
+.brand-row { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+.brand-card { border-radius:18px; padding:28px; display:flex; align-items:center; gap:20px; }
+.comp-sec { margin-bottom:36px; }
+.comp-sec h3 { font-size:15px; color:#A9A9BE; text-transform:uppercase; letter-spacing:0.08em; margin:0 0 16px; }
+.comp-row { display:flex; flex-wrap:wrap; gap:16px; align-items:center; }
+.comp-panel { background:#0E0E18; border:1px solid #1B1B28; border-radius:18px; padding:24px; }
+.nav-map { display:flex; flex-direction:column; gap:20px; }
+.nav-node { background:#14141F; border:1px solid #26263A; border-radius:14px; padding:14px 18px; display:inline-flex; gap:10px; align-items:center; }
+.nav-arrow { color:#74748C; text-align:center; font-size:20px; }
+.nav-cols { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; }
+</style>
+</head>
+<body class="doc-body">
+<div class="doc">
+      <div class="doc-head"><div class="doc-title">Hallyu Design System</div><div class="doc-sub">Where Fandoms Meet · tokens v1.0 · dark primary + light theme</div></div>
+
+      <h2 class="doc-h2">1 · Brand</h2>
+      <div class="brand-row">
+        <div class="brand-card" style="background:#0A0A12"><svg width="56" height="56" viewBox="0 0 512 512"><g fill="none" stroke="#7B61FF" stroke-width="30" stroke-linecap="round"><path d="M256 138 A118 118 0 0 1 374 256"/><path d="M374 256 A118 118 0 0 1 256 374"/><path d="M256 374 A118 118 0 0 1 138 256"/><path d="M138 256 A118 118 0 0 1 256 138"/></g><circle cx="256" cy="256" r="52" fill="#7B61FF"/><circle cx="256" cy="256" r="20" fill="#F5F5FA"/></svg><div><div style="font-weight:800;font-size:22px">Hallyu</div><div style="color:#A9A9BE;font-size:13px">Where fandoms meet.</div></div></div>
+        <div class="brand-card" style="background:#14141F;border:1px solid #26263A"><div style="font-weight:700">The Signal</div><div style="color:#A9A9BE;font-size:13px;max-width:280px">One confident blue-violet. Restrained, premium, distinct from Netflix red, Spotify green and Twitch purple.</div></div>
+      </div>
+
+      <h2 class="doc-h2">2 · Color — Dark (primary)</h2>
+      <div class="sw-grid"><div class="sw"><div class="sw-chip" style="background:#0A0A12"></div><div class="sw-name">canvas</div><div class="sw-hex">#0A0A12</div></div><div class="sw"><div class="sw-chip" style="background:#14141F"></div><div class="sw-name">surface-1</div><div class="sw-hex">#14141F</div></div><div class="sw"><div class="sw-chip" style="background:#1B1B28"></div><div class="sw-name">surface-2</div><div class="sw-hex">#1B1B28</div></div><div class="sw"><div class="sw-chip" style="background:#232333"></div><div class="sw-name">surface-3</div><div class="sw-hex">#232333</div></div><div class="sw"><div class="sw-chip" style="background:#232333"></div><div class="sw-name">border-subtle</div><div class="sw-hex">#232333</div></div><div class="sw"><div class="sw-chip" style="background:#38384F"></div><div class="sw-name">border-strong</div><div class="sw-hex">#38384F</div></div><div class="sw"><div class="sw-chip" style="background:#F5F5FA"></div><div class="sw-name">text-primary</div><div class="sw-hex">#F5F5FA</div></div><div class="sw"><div class="sw-chip" style="background:#A9A9BE"></div><div class="sw-name">text-secondary</div><div class="sw-hex">#A9A9BE</div></div><div class="sw"><div class="sw-chip" style="background:#74748C"></div><div class="sw-name">text-tertiary</div><div class="sw-hex">#74748C</div></div><div class="sw"><div class="sw-chip" style="background:#7B61FF"></div><div class="sw-name">brand</div><div class="sw-hex">#7B61FF</div></div><div class="sw"><div class="sw-chip" style="background:#5A3FD6"></div><div class="sw-name">brand-pressed</div><div class="sw-hex">#5A3FD6</div></div><div class="sw"><div class="sw-chip" style="background:#FFB74D"></div><div class="sw-name">warm</div><div class="sw-hex">#FFB74D</div></div><div class="sw"><div class="sw-chip" style="background:#FF5C7A"></div><div class="sw-name">live</div><div class="sw-hex">#FF5C7A</div></div><div class="sw"><div class="sw-chip" style="background:#3DD68C"></div><div class="sw-name">success</div><div class="sw-hex">#3DD68C</div></div><div class="sw"><div class="sw-chip" style="background:#FFC24B"></div><div class="sw-name">warning</div><div class="sw-hex">#FFC24B</div></div><div class="sw"><div class="sw-chip" style="background:#FF6B6B"></div><div class="sw-name">danger</div><div class="sw-hex">#FF6B6B</div></div><div class="sw"><div class="sw-chip" style="background:#4DA3FF"></div><div class="sw-name">info</div><div class="sw-hex">#4DA3FF</div></div></div>
+      <h2 class="doc-h2">3 · World accents (metadata signals)</h2>
+      <div class="sw-grid"><div class="sw"><div class="sw-chip" style="background:#FF6B8A"></div><div class="sw-name">K-Drama</div><div class="sw-hex">#FF6B8A</div></div><div class="sw"><div class="sw-chip" style="background:#3DD6C4"></div><div class="sw-name">C-Drama</div><div class="sw-hex">#3DD6C4</div></div><div class="sw"><div class="sw-chip" style="background:#8B75FF"></div><div class="sw-name">Anime</div><div class="sw-hex">#8B75FF</div></div><div class="sw"><div class="sw-chip" style="background:#FFB74D"></div><div class="sw-name">Hollywood</div><div class="sw-hex">#FFB74D</div></div></div>
+
+      <h2 class="doc-h2">4 · Typography</h2>
+      <div class="ty-list"><div class="ty-row"><div class="ty-meta">Display XL<br/><span>44/48 · 800</span></div><div class="t-display-xl">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Display<br/><span>30/36 · 800</span></div><div class="t-display">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">H1<br/><span>26/32 · 700</span></div><div class="t-h1">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">H2<br/><span>22/28 · 700</span></div><div class="t-h2">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">H3<br/><span>19/25 · 600</span></div><div class="t-h3">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Section<br/><span>17/23 · 700</span></div><div class="t-section">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Card title<br/><span>16/21 · 600</span></div><div class="t-card-title">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Body L<br/><span>17/26 · 400</span></div><div class="t-body-l">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Body<br/><span>15/22 · 400</span></div><div class="t-body">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Body S<br/><span>13.5/20 · 400</span></div><div class="t-body-s">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Caption<br/><span>12/16 · 500</span></div><div class="t-caption">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Label<br/><span>13/18 · 600</span></div><div class="t-label">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Button<br/><span>15/20 · 600</span></div><div class="t-button">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Meta<br/><span>12/16 · 500</span></div><div class="t-meta">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Stat<br/><span>20/24 · 700</span></div><div class="t-stat">Where fandoms meet</div></div><div class="ty-row"><div class="ty-meta">Overline<br/><span>11/14 · 700</span></div><div class="t-overline">Where fandoms meet</div></div></div>
+
+      <h2 class="doc-h2">5 · Spacing (4pt base)</h2>
+      <div class="sp-list"><div class="sp-row"><span class="sp-lbl">1 · 4px</span><span class="sp-bar" style="width:4px"></span></div><div class="sp-row"><span class="sp-lbl">2 · 8px</span><span class="sp-bar" style="width:8px"></span></div><div class="sp-row"><span class="sp-lbl">3 · 12px</span><span class="sp-bar" style="width:12px"></span></div><div class="sp-row"><span class="sp-lbl">4 · 16px</span><span class="sp-bar" style="width:16px"></span></div><div class="sp-row"><span class="sp-lbl">5 · 20px</span><span class="sp-bar" style="width:20px"></span></div><div class="sp-row"><span class="sp-lbl">6 · 24px</span><span class="sp-bar" style="width:24px"></span></div><div class="sp-row"><span class="sp-lbl">8 · 32px</span><span class="sp-bar" style="width:32px"></span></div><div class="sp-row"><span class="sp-lbl">10 · 40px</span><span class="sp-bar" style="width:40px"></span></div><div class="sp-row"><span class="sp-lbl">12 · 48px</span><span class="sp-bar" style="width:48px"></span></div><div class="sp-row"><span class="sp-lbl">16 · 64px</span><span class="sp-bar" style="width:64px"></span></div></div>
+
+      <h2 class="doc-h2">6 · Radius</h2>
+      <div class="rad-grid"><div class="rad-box" style="border-radius:6px"><span>xs<br/>6px</span></div><div class="rad-box" style="border-radius:10px"><span>sm<br/>10px</span></div><div class="rad-box" style="border-radius:14px"><span>md<br/>14px</span></div><div class="rad-box" style="border-radius:18px"><span>lg<br/>18px</span></div><div class="rad-box" style="border-radius:24px"><span>xl<br/>24px</span></div><div class="rad-box" style="border-radius:30px"><span>2xl<br/>30px</span></div><div class="rad-box" style="border-radius:9999px"><span>full<br/>9999px</span></div></div>
+
+      <h2 class="doc-h2">7 · Elevation</h2>
+      <div class="elev-grid">
+        <div class="elev-box" style="box-shadow:0 1px 2px rgba(0,0,0,.35)">elev-1</div>
+        <div class="elev-box" style="box-shadow:0 4px 12px rgba(0,0,0,.40)">elev-2</div>
+        <div class="elev-box" style="box-shadow:0 10px 28px rgba(0,0,0,.50)">elev-3</div>
+        <div class="elev-box" style="box-shadow:0 8px 24px rgba(123,97,255,.35)">brand glow</div>
+      </div>
+
+      <h2 class="doc-h2">8 · Motion</h2>
+      <div class="motion-grid">
+        <div class="motion-card"><b>instant</b> 90ms</div><div class="motion-card"><b>fast</b> 150ms</div>
+        <div class="motion-card"><b>base</b> 220ms</div><div class="motion-card"><b>medium</b> 280ms</div>
+        <div class="motion-card"><b>slow</b> 360ms</div><div class="motion-card"><b>spring</b> 0.34,1.56,0.64,1</div>
+      </div>
+    </div>
+</body>
+</html>

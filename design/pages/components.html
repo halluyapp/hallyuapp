@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<base href="../"/>
+<title>Hallyu — Components</title>
+<link rel="stylesheet" href="src/css/tokens.css"/>
+<link rel="stylesheet" href="src/css/base.css"/>
+<link rel="stylesheet" href="src/css/components.css"/>
+<link rel="stylesheet" href="src/css/screens.css"/>
+<style>
+body.doc-body { background:#07070C; color:#F5F5FA; padding:40px; }
+.doc { max-width:1180px; margin:0 auto; }
+.doc-head { margin-bottom:32px; }
+.doc-title { font-size:34px; font-weight:800; letter-spacing:-0.02em; }
+.doc-sub { color:#A9A9BE; margin-top:6px; }
+.doc-h2 { font-size:20px; font-weight:700; margin:40px 0 16px; padding-bottom:10px; border-bottom:1px solid #26263A; }
+.ic-grid { display:grid; grid-template-columns:repeat(8,1fr); gap:12px; }
+.ic-cell { background:#14141F; border:1px solid #26263A; border-radius:14px; padding:16px 8px; text-align:center; }
+.ic-box { color:#F5F5FA; display:flex; justify-content:center; margin-bottom:8px; }
+.ic-name { font-size:11px; color:#A9A9BE; word-break:break-word; }
+.sw-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; }
+.sw { background:#14141F; border:1px solid #26263A; border-radius:14px; overflow:hidden; }
+.sw-chip { height:64px; }
+.sw-name { font-size:12px; font-weight:600; padding:8px 10px 0; }
+.sw-hex { font-size:11px; color:#74748C; padding:0 10px 10px; font-variant-numeric:tabular-nums; }
+.ty-list { display:flex; flex-direction:column; gap:6px; }
+.ty-row { display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:baseline; padding:14px 0; border-bottom:1px solid #1B1B28; }
+.ty-meta { font-size:12px; color:#A9A9BE; }
+.ty-meta span { color:#74748C; }
+.sp-list { display:flex; flex-direction:column; gap:10px; }
+.sp-row { display:flex; align-items:center; gap:16px; }
+.sp-lbl { width:120px; font-size:12px; color:#A9A9BE; }
+.sp-bar { height:16px; background:#7B61FF; border-radius:4px; }
+.rad-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:12px; }
+.rad-box { height:90px; background:#14141F; border:1px solid #38384F; display:flex; align-items:center; justify-content:center; text-align:center; font-size:11px; color:#A9A9BE; }
+.elev-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:20px; }
+.elev-box { height:90px; background:#1B1B28; border-radius:14px; display:flex; align-items:center; justify-content:center; color:#A9A9BE; font-size:13px; }
+.motion-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+.motion-card { background:#14141F; border:1px solid #26263A; border-radius:12px; padding:16px; font-size:13px; color:#A9A9BE; }
+.motion-card b { color:#F5F5FA; display:block; margin-bottom:4px; }
+.brand-row { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+.brand-card { border-radius:18px; padding:28px; display:flex; align-items:center; gap:20px; }
+.comp-sec { margin-bottom:36px; }
+.comp-sec h3 { font-size:15px; color:#A9A9BE; text-transform:uppercase; letter-spacing:0.08em; margin:0 0 16px; }
+.comp-row { display:flex; flex-wrap:wrap; gap:16px; align-items:center; }
+.comp-panel { background:#0E0E18; border:1px solid #1B1B28; border-radius:18px; padding:24px; }
+.nav-map { display:flex; flex-direction:column; gap:20px; }
+.nav-node { background:#14141F; border:1px solid #26263A; border-radius:14px; padding:14px 18px; display:inline-flex; gap:10px; align-items:center; }
+.nav-arrow { color:#74748C; text-align:center; font-size:20px; }
+.nav-cols { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; }
+</style>
+</head>
+<body class="doc-body">
+<div class="doc">
+      <div class="doc-head"><div class="doc-title">Component Library</div><div class="doc-sub">Every component with its interaction states · default / pressed / focused / selected / active / disabled / loading / success / error</div></div>
+      <div class="comp-sec"><h3>Buttons</h3><div class="comp-panel"><div class="comp-row"><button class="btn btn--primary  ">Primary</button><button class="btn btn--secondary  ">Secondary</button><button class="btn btn--outline  ">Outline</button><button class="btn btn--ghost  ">Ghost</button><button class="btn btn--soft  ">Soft</button><button class="btn btn--live  ">Live</button><button class="btn btn--danger  ">Danger</button><button class="btn btn--primary  "><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 5v14M5 12h14"/></svg>With icon</button><button class="btn btn--primary  ">Loading</button><button class="btn btn--primary" data-state="loading">Loading</button><button class="btn btn--secondary" data-state="disabled">Disabled</button><button class="btn btn--primary" data-state="success">Saved</button><button class="btn btn--secondary btn--sm ">Small</button><button class="btn btn--primary btn--lg ">Large</button></div></div></div>
+      <div class="comp-sec"><h3>Icon buttons</h3><div class="comp-panel"><div class="comp-row"><button class="iconbtn " aria-label="search"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="11" cy="11" r="7"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m20 20-3.5-3.5"/></svg></button><button class="iconbtn " aria-label="bell"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></button><button class="iconbtn " aria-label="heart"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 20.5C6 16.5 3 13.3 3 9.6A4.6 4.6 0 0 1 12 7a4.6 4.6 0 0 1 9 2.6c0 3.7-3 6.9-9 10.9z"/></svg></button><button class="iconbtn " aria-label="bookmark"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1z"/></svg></button><button class="iconbtn " aria-label="share"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 15V4M8.5 7.5 12 4l3.5 3.5"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg></button><button class="iconbtn iconbtn--filled" aria-label="more"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle fill="currentColor" stroke="none" cx="5" cy="12" r="1.8"/><circle fill="currentColor" stroke="none" cx="12" cy="12" r="1.8"/><circle fill="currentColor" stroke="none" cx="19" cy="12" r="1.8"/></svg></button><button class="iconbtn iconbtn--on" aria-label="plus"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 5v14M5 12h14"/></svg></button><button class="iconbtn iconbtn--badge" aria-label="bell"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></button></div></div></div>
+      <div class="comp-sec"><h3>Avatars & stacks</h3><div class="comp-panel"><div class="comp-row"><span class="avatar avatar--xs "><img src="assets/img/avatar-01.jpg" alt=""/></span><span class="avatar avatar--sm "><img src="assets/img/avatar-02.jpg" alt=""/></span><span class="avatar avatar--md "><img src="assets/img/avatar-03.jpg" alt=""/></span><span class="avatar avatar--lg "><img src="assets/img/avatar-04.jpg" alt=""/></span><span class="avatar avatar--xl avatar--ring"><img src="assets/img/avatar-01.jpg" alt=""/></span><span class="avatar avatar--lg avatar--live"><img src="assets/img/avatar-02.jpg" alt=""/><span class="avatar-status avatar-status--live"></span></span><span class="avatar-stack"><span class="avatar avatar--sm "><img src="assets/img/avatar-01.jpg" alt=""/></span><span class="avatar avatar--sm "><img src="assets/img/avatar-02.jpg" alt=""/></span><span class="avatar avatar--sm "><img src="assets/img/avatar-03.jpg" alt=""/></span><span class="avatar avatar--sm "><img src="assets/img/avatar-04.jpg" alt=""/></span></span><span class="avatar avatar--md ">MK</span></div></div></div>
+      <div class="comp-sec"><h3>Chips & world tags</h3><div class="comp-panel"><div class="comp-row"><span class="chip  ">Default</span><span class="chip chip--selected ">Selected</span><span class="chip  "><svg class="ico" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 5v14M5 12h14"/></svg>With icon</span><span class="chip  chip--outline">Outline</span><span class="chip  chip--sm">Small</span><span class="chip  chip--disabled">Disabled</span><span class="chip chip--world " data-world="kdrama"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" ><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="3" y="6" width="18" height="13" rx="2"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M8 6V4M16 6V4M3 10h18"/></svg>K-Dramas</span><span class="chip chip--world " data-world="cdrama"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" ><rect stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" x="4" y="3" width="16" height="18" rx="1.5"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M9 15h.01M15 15h.01M10 21v-3h4v3"/></svg>C-Dramas</span><span class="chip chip--world " data-world="anime"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 3c5 0 9 3 9 7s-4 7-9 7-9-3-9-7 4-7 9-7z"/><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="9" cy="10" r="1.4"/><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="15" cy="10" r="1.4"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M9.5 13.5a3.5 3.5 0 0 0 5 0"/></svg>Anime</span><span class="chip chip--world " data-world="hollywood"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M5 8h14l-1 12H6z"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M5 8c-1.5 0-2-2-1-3s2.5-.5 2.5 1c0-2 2.5-2.5 3.5-.5.5-2 3.5-2 4 .5 1-1.5 3.5-1 3 1"/></svg>Hollywood</span></div></div></div>
+      <div class="comp-sec"><h3>Tabs & segmented controls</h3><div class="comp-panel"><div class="comp-row" style="gap:40px"><div class="segmented"><span class="seg seg--active">For You</span><span class="seg">Following</span><span class="seg">Trending</span></div><div class="tabs" style="border:0"><span class="tab tab--active">Posts</span><span class="tab">Media</span><span class="tab">Collections</span></div></div></div></div>
+      <div class="comp-sec"><h3>Inputs & search</h3><div class="comp-panel"><div class="comp-row" style="flex-direction:column;align-items:stretch;max-width:420px;gap:16px"><div class="field"><label class="label">Email</label><input class="input" placeholder="you@example.com"/></div><div class="field"><label class="label">With error</label><input class="input" data-state="error" value="bad@" /><span class="help help--error">Enter a valid email</span></div><div class="searchbar searchbar--focused"><svg class="ico" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" ><circle stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" cx="11" cy="11" r="7"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m20 20-3.5-3.5"/></svg><input value="neon blade"/></div></div></div></div>
+      <div class="comp-sec"><h3>Controls</h3><div class="comp-panel"><div class="comp-row"><span class="switch switch--on"></span><span class="switch"></span><span class="checkbox checkbox--on"><svg class="ico" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m5 12.5 4.5 4.5L19 7"/></svg></span><span class="checkbox"></span><span class="radio radio--on"></span><span class="radio"></span><button class="followbtn"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 5v14M5 12h14"/></svg>Follow</button><button class="followbtn followbtn--following"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m5 12.5 4.5 4.5L19 7"/></svg>Following</button><span class="rating"><svg class="ico" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" ><path fill="currentColor" stroke="none" d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.1 6.6 19.9l1-6.1L3.2 9.5l6.1-.9z"/></svg><span class="tnum">8.9</span></span></div></div></div>
+      <div class="comp-sec"><h3>Cards & shelves</h3><div class="comp-panel"><div class="comp-row"><div class="pcard" style="width:132px">
+  <div class="pcard__art"><img src="assets/img/poster-anime-hero.jpg" alt="Neon Blade"/>
+    <div class="art-scrim"></div><span class="art-badge art-badge--brand">#1</span></div>
+  <div class="pcard__title truncate">Neon Blade</div>
+  <div class="pcard__meta"><span class="world-dot" data-world="anime"></span><span>2025</span><span class="dot"></span><span>Anime</span></div>
+</div><div class="pcard" style="width:132px">
+  <div class="pcard__art"><img src="assets/img/poster-kdrama-romance.jpg" alt="Cherry Blossom Season"/>
+    <div class="art-scrim"></div><div class="art-progress"><i style="width:60%"></i></div></div>
+  <div class="pcard__title truncate">Cherry Blossom Season</div>
+  <div class="pcard__meta"><span class="world-dot" data-world="kdrama"></span><span>2024</span><span class="dot"></span><span>Series</span></div>
+</div><div class="pcard" style="width:132px">
+  <div class="pcard__art"><img src="assets/img/poster-hollywood-scifi.jpg" alt="Orbital"/>
+    <div class="art-scrim"></div><div class="art-actions"><button class="iconbtn iconbtn--sm iconbtn--glass" aria-label="bookmark"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1z"/></svg></button></div></div>
+  <div class="pcard__title truncate">Orbital</div>
+  <div class="pcard__meta"><span class="world-dot" data-world="hollywood"></span><span>2025</span><span class="dot"></span><span>Movie</span></div>
+</div><div class="wcard" style="width:240px">
+  <div class="wcard__art"><img src="assets/img/backdrop-anime.jpg" alt="Neon Blade"/><div class="art-scrim"></div><span class="art-badge art-badge--live">LIVE</span>
+    <div style="position:absolute;left:10px;right:10px;bottom:8px">
+      <div class="t-card-title c-on-media truncate">Neon Blade</div>
+      <div class="t-meta c-on-media" style="opacity:.8">Anime · 2025</div>
+    </div>
+  </div>
+</div></div></div></div>
+      <div class="comp-sec"><h3>Reactions</h3><div class="comp-panel"><div class="comp-row"><div class="reactions"><span class="react react--on" data-react="love"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path fill="currentColor" stroke="none" d="M12 21c-6.4-4.2-9.5-7.6-9.5-11.5A5 5 0 0 1 12 6.4a5 5 0 0 1 9.5 3.1C21.5 13.4 18.4 16.8 12 21z"/></svg>Love</span><span class="react" data-react="cry"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/></svg>Cry</span><span class="react react--on" data-react="hype"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 3c1.5 3 4.5 4 4.5 8a4.5 4.5 0 0 1-9 0c0-1.3.5-2.2 1-3 .3 1 1 1.7 1.7 1.7C10.6 8 11 5.6 12 3z"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M12 21a6 6 0 0 0 6-6c0-1.4-.4-2.6-1-3.6"/></svg>Hype</span><span class="react"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path fill="currentColor" stroke="none" d="M12 3l1.6 4.9L18.5 9.5l-4.9 1.6L12 16l-1.6-4.9L5.5 9.5l4.9-1.6z"/></svg>Shock</span></div></div></div></div>
+      <div class="comp-sec"><h3>Poll & spoiler</h3><div class="comp-panel"><div style="max-width:420px"><div class="poll"><div class="poll__opt"><span class="fill fill--win" style="--pct:48%"></span><span class="lbl"><span>Jade Empire</span><span class="tnum c-secondary">48%</span></span></div><div class="poll__opt"><span class="fill" style="--pct:31%"></span><span class="lbl"><span>Rain City</span><span class="tnum c-secondary">31%</span></span></div></div></div><div style="max-width:420px"><div class="spoiler"><div class="spoiler__veil"><svg class="ico" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M4 4l16 16"/><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M9.5 9.6A3 3 0 0 0 12 15a3 3 0 0 0 2.4-1.2M6.6 6.8C4 8.3 2.5 12 2.5 12s3.5 6.5 9.5 6.5c1.7 0 3.2-.5 4.5-1.2M10 5.7A9 9 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a15 15 0 0 1-2.3 3.1"/></svg><span class="t-label">Spoiler · Episode 8</span><span class="t-caption">Tap to reveal</span></div></div></div></div></div>
+      <div class="comp-sec"><h3>Skeleton loading</h3><div class="comp-panel"><div style="max-width:420px"><div class="post">
+  <div class="post__head"><span class="avatar avatar--md sk sk--circle"></span><div class="grow col gap-2"><div class="sk sk--line" style="width:40%"></div><div class="sk sk--line" style="width:24%"></div></div></div>
+  <div class="sk sk--text" style="width:92%"></div>
+  <div class="sk sk--text" style="width:78%"></div>
+  <div class="sk" style="width:100%;height:200px;border-radius:14px"></div>
+</div></div></div></div>
+      <div class="comp-sec"><h3>States & toast</h3><div class="comp-panel"><div class="comp-row" style="align-items:stretch"><div class="state"><div class="state__art"><svg viewBox="0 0 140 140" width="140" height="140">
+  <circle cx="70" cy="70" r="52" fill="var(--surface-2)"/>
+  <circle cx="70" cy="70" r="52" fill="none" stroke="var(--border-default)" stroke-width="1.5"/>
+  <g transform="translate(46,46)" color="var(--brand)"><svg class="ico" width="48" height="48" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1z"/></svg></g>
+</svg></div>
+  <div class="state__title">Nothing here yet</div>
+  <div class="state__text">Add something to see it here.</div>
+  <div class="state__actions"><button class="btn btn--primary">Explore</button></div>
+</div><div class="toast toast--success"><span class="toast__icon"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" ><path stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" d="m5 12.5 4.5 4.5L19 7"/></svg></span><span class="toast__text">Saved to your watchlist</span></div></div></div></div>
+    </div>
+</body>
+</html>
