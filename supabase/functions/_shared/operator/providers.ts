@@ -226,18 +226,30 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
   };
 }
 
-/** Cheap, non-billable reachability probe used by the health monitor. */
+/**
+ * Reachability probe used by the health monitor. This deliberately does NOT call the billable
+ * chat-completions endpoint: it issues an authenticated GET against the models endpoint, which
+ * proves the credential and network path without consuming completion credits.
+ */
 export async function probeProvider(provider: ProviderId, model: string): Promise<{ ok: boolean; status: number; detail: string }> {
+  const runtime = PROVIDERS[provider];
   try {
-    const result = await callProvider({
-      provider,
-      model,
-      messages: [{ role: 'user', content: 'Reply with the single word PONG.' }],
-      maxTokens: 8,
-      temperature: 0,
-      timeoutMs: 20_000,
-    });
-    return { ok: true, status: result.httpStatus, detail: result.content.slice(0, 60) };
+    const apiKey = await providerCredential(provider);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    let response: Response;
+    try {
+      response = await fetch(`${runtime.baseUrl}/models`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (response.ok) return { ok: true, status: response.status, detail: `models ok (${model})` };
+    const text = (await response.text().catch(() => '')).slice(0, 160);
+    return { ok: false, status: response.status, detail: text || `HTTP ${response.status}` };
   } catch (error) {
     if (error instanceof ProviderError) return { ok: false, status: error.status, detail: `${error.code}: ${error.message.slice(0, 160)}` };
     return { ok: false, status: 0, detail: (error as Error).message.slice(0, 160) };

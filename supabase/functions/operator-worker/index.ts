@@ -213,6 +213,24 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
   const context = task.conversation_id ? await loadContext(admin, task.conversation_id, input) : null;
   const member = context ? asRecord(context.member) : null;
 
+  // Mark the task as actively executing. Transition failures are non-fatal: the claim already
+  // owns the lease, so a status quirk must not abort real work.
+  await admin
+    .rpc('operator_transition_task', { p_task: task.id, p_status: 'executing', p_note: null })
+    .catch(() => undefined);
+
+  // Identity and knowledge are versioned data, not a hardcoded prompt. Load the active
+  // constitution and retrieve the knowledge entries most relevant to this instruction.
+  const query = String(input.instruction ?? input.body ?? task.task_type ?? '').slice(0, 400);
+  const [constitutionResult, knowledgeResult] = await Promise.all([
+    admin.rpc('operator_active_constitution', {}),
+    admin.rpc('operator_knowledge_search', { p_query: query, p_limit: 4 }),
+  ]);
+  const constitution = typeof constitutionResult.data === 'string' ? constitutionResult.data : null;
+  const knowledge = asArray<{ title?: string; body?: string }>(knowledgeResult.data)
+    .filter((entry) => typeof entry.title === 'string' && typeof entry.body === 'string')
+    .map((entry) => ({ title: entry.title as string, body: entry.body as string }));
+
   const systemPrompt = buildSystemPrompt({
     staffName: staff.display_name,
     staffHandle: staff.staff_code,
@@ -226,6 +244,8 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
         }
       : null,
     world: typeof input.world === 'string' ? input.world : null,
+    constitution,
+    knowledge,
   });
 
   const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
@@ -417,6 +437,24 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
   }
 }
 
+async function providerBudgetExhausted(
+  admin: ReturnType<typeof adminClient>,
+  provider: ProviderId,
+  policy: Policy,
+): Promise<boolean> {
+  const providers = asRecord(policy.providers);
+  const budget = Number(providers[`daily_request_budget_${provider}`] ?? 0);
+  if (!budget || budget <= 0) return false;
+  const since = new Date(Date.now() - 24 * 3600_000).toISOString();
+  const result = await admin
+    .from<{ id: string }>('operator_provider_usage')
+    .select('id')
+    .eq('provider', provider)
+    .gte('created_at', since)
+    .limit(budget + 1);
+  return asArray<{ id: string }>(result.data).length >= budget;
+}
+
 async function conversationChannel(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: ReturnType<typeof adminClient>,
@@ -504,7 +542,13 @@ async function completeTask(
   staff: StaffRow,
   result: Record<string, unknown>,
 ): Promise<void> {
+  await admin
+    .rpc('operator_transition_task', { p_task: task.id, p_status: 'verifying', p_note: 'model finished; verifying result' })
+    .catch(() => undefined);
   await admin.rpc('operator_complete_task', { p_task: task.id, p_result: result });
+  await admin
+    .rpc('operator_transition_task', { p_task: task.id, p_status: 'completed', p_note: null })
+    .catch(() => undefined);
   await admin.rpc('operator_audit_write', {
     p_action: 'task.completed',
     p_outcome: 'ok',

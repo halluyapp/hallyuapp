@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -7,7 +8,6 @@ import {
   ScrollView,
   StyleSheet,
   Switch,
-  TextInput,
   View,
 } from 'react-native';
 import { colors, radius, space } from '../../constants/theme';
@@ -17,8 +17,6 @@ import {
   type OperatorApproval,
   type OperatorAuditEntry,
   type OperatorCampaign,
-  type OperatorConversation,
-  type OperatorMessage,
   type OperatorModerationCase,
   type OperatorModerationQueueItem,
   type OperatorOverview,
@@ -36,7 +34,6 @@ import { Text } from '../ui/Text';
 
 type TabKey =
   | 'overview'
-  | 'control'
   | 'queue'
   | 'approvals'
   | 'providers'
@@ -48,7 +45,6 @@ type TabKey =
 
 const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { key: 'overview', label: 'Overview', icon: 'pulse-outline' },
-  { key: 'control', label: 'Control', icon: 'chatbubbles-outline' },
   { key: 'queue', label: 'Queue', icon: 'layers-outline' },
   { key: 'approvals', label: 'Approvals', icon: 'shield-checkmark-outline' },
   { key: 'providers', label: 'Providers', icon: 'git-network-outline' },
@@ -61,8 +57,6 @@ const TABS: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }
 
 interface TabData {
   overview?: OperatorOverview;
-  conversations?: OperatorConversation[];
-  conversation?: { id: string; messages: OperatorMessage[]; context: Record<string, unknown> | null };
   tasks?: OperatorTask[];
   approvals?: OperatorApproval[];
   providers?: { providers: OperatorProvider[]; recent_usage: OperatorUsageRow[] };
@@ -114,8 +108,6 @@ export function OperatorControlCentre() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
-  const [composer, setComposer] = useState('');
 
   const load = useCallback(
     async (target: TabKey, options?: { silent?: boolean }) => {
@@ -126,20 +118,6 @@ export function OperatorControlCentre() {
           case 'overview': {
             const overview = await operatorApi.overview();
             setData((prev) => ({ ...prev, overview }));
-            break;
-          }
-          case 'control': {
-            const result = await operatorApi.conversations();
-            setData((prev) => ({ ...prev, conversations: result.conversations }));
-            const active = selectedConversation ?? result.conversations[0]?.id ?? null;
-            if (active) {
-              setSelectedConversation(active);
-              const detail = await operatorApi.conversation(active);
-              setData((prev) => ({
-                ...prev,
-                conversation: { id: active, messages: detail.messages, context: detail.context },
-              }));
-            }
             break;
           }
           case 'queue': {
@@ -194,7 +172,7 @@ export function OperatorControlCentre() {
         setRefreshing(false);
       }
     },
-    [selectedConversation],
+    [],
   );
 
   useEffect(() => {
@@ -205,37 +183,6 @@ export function OperatorControlCentre() {
     setRefreshing(true);
     void load(tab, { silent: true });
   }, [load, tab]);
-
-  const openConversation = useCallback(async (conversationId: string) => {
-    setSelectedConversation(conversationId);
-    setBusy(`conversation:${conversationId}`);
-    try {
-      const detail = await operatorApi.conversation(conversationId);
-      setData((prev) => ({
-        ...prev,
-        conversation: { id: conversationId, messages: detail.messages, context: detail.context },
-      }));
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(null);
-    }
-  }, []);
-
-  const sendAdminMessage = useCallback(async () => {
-    const body = composer.trim();
-    if (!body) return;
-    setBusy('send');
-    try {
-      await operatorApi.sendAdminMessage(body, selectedConversation ?? undefined);
-      setComposer('');
-      await load('control', { silent: true });
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(null);
-    }
-  }, [composer, load, selectedConversation]);
 
   const retryTask = useCallback(
     async (taskId: string) => {
@@ -350,19 +297,6 @@ export function OperatorControlCentre() {
         ) : (
           <>
             {tab === 'overview' ? <OverviewScreen data={data.overview} /> : null}
-            {tab === 'control' ? (
-              <ControlScreen
-                conversations={data.conversations ?? []}
-                activeId={selectedConversation}
-                messages={data.conversation?.messages ?? []}
-                composer={composer}
-                setComposer={setComposer}
-                onOpen={openConversation}
-                onSend={sendAdminMessage}
-                sending={busy === 'send'}
-                busyId={busy}
-              />
-            ) : null}
             {tab === 'queue' ? <QueueScreen tasks={data.tasks ?? []} onRetry={retryTask} busyId={busy} /> : null}
             {tab === 'approvals' ? (
               <ApprovalsScreen approvals={data.approvals ?? []} onDecide={decideApproval} busyId={busy} />
@@ -450,11 +384,32 @@ function Empty({ icon, title, body }: { icon: keyof typeof Ionicons.glyphMap; ti
 // ── screens ─────────────────────────────────────────────────────────────────
 
 function OverviewScreen({ data }: { data?: OperatorOverview }) {
+  const router = useRouter();
   if (!data) return <Empty icon="pulse-outline" title="No overview yet" body="Pull to refresh the operator state." />;
   const analytics = data.analytics ?? {};
   const worlds = analytics.worlds ?? {};
   return (
     <>
+      <Section title="Talk to Hallyu AI" caption="Your executive conversation lives in Direct Messages, not here">
+        <Pressable
+          onPress={() => router.push('/messages/hallyu.ai')}
+          accessibilityRole="button"
+          accessibilityLabel="Open your Direct Messages conversation with Hallyu AI"
+        >
+          <Card>
+            <View style={styles.rowBetween}>
+              <View style={{ flex: 1 }}>
+                <Text variant="label">Open Direct Messages</Text>
+                <Text variant="caption" tone="tertiary" style={{ marginTop: 2 }}>
+                  This console manages the operator. Chat with Hallyu AI as a peer in Messages.
+                </Text>
+              </View>
+              <Ionicons name="arrow-forward" size={18} color={colors.accent} />
+            </View>
+          </Card>
+        </Pressable>
+      </Section>
+
       <Section title="Platform pulse" caption="Live from operator_platform_analytics()">
         <Card>
           <View style={styles.statGrid}>
@@ -522,99 +477,6 @@ function OverviewScreen({ data }: { data?: OperatorOverview }) {
           <Text variant="caption" tone="tertiary" style={{ marginTop: 2 }}>
             {data.caller.profileId}
           </Text>
-        </Card>
-      </Section>
-    </>
-  );
-}
-
-function ControlScreen(props: {
-  conversations: OperatorConversation[];
-  activeId: string | null;
-  messages: OperatorMessage[];
-  composer: string;
-  setComposer: (value: string) => void;
-  onOpen: (id: string) => void;
-  onSend: () => void;
-  sending: boolean;
-  busyId: string | null;
-}) {
-  const { conversations, activeId, messages, composer, setComposer, onOpen, onSend, sending, busyId } = props;
-  return (
-    <>
-      <Section title="Conversations" caption="Admin control, member DMs and public threads are separate channels">
-        {conversations.length === 0 ? (
-          <Empty icon="chatbubbles-outline" title="No conversations yet" body="Message the operator below to open an admin control thread." />
-        ) : (
-          conversations.map((conversation) => {
-            const active = conversation.id === activeId;
-            return (
-              <Pressable key={conversation.id} onPress={() => onOpen(conversation.id)}>
-                <Card style={active ? styles.cardActive : undefined}>
-                  <View style={styles.rowBetween}>
-                    <View style={{ flex: 1 }}>
-                      <Text variant="label">{conversation.subject || conversation.channel.replace('_', ' ')}</Text>
-                      <Text variant="caption" tone="tertiary">
-                        {conversation.channel} · {conversation.last_inbound_at ? timeAgo(conversation.last_inbound_at) : 'no inbound'}
-                      </Text>
-                    </View>
-                    {busyId === `conversation:${conversation.id}` ? (
-                      <ActivityIndicator size="small" color={colors.accent} />
-                    ) : (
-                      <Pill label={conversation.status} tone={statusTone(conversation.status)} />
-                    )}
-                  </View>
-                </Card>
-              </Pressable>
-            );
-          })
-        )}
-      </Section>
-
-      <Section title="Thread" caption="Messages are written to the real conversation, not a mock log">
-        <Card>
-          {messages.length === 0 ? (
-            <Text variant="caption" tone="tertiary">
-              No messages in this conversation yet.
-            </Text>
-          ) : (
-            messages.map((message) => (
-              <View key={message.id} style={styles.messageRow}>
-                <Text variant="caption" tone={message.direction === 'inbound' ? 'secondary' : 'accent'}>
-                  {message.author_type} · {timeAgo(message.created_at)}
-                </Text>
-                <Text variant="body" style={{ marginTop: 2 }}>
-                  {message.body}
-                </Text>
-              </View>
-            ))
-          )}
-        </Card>
-      </Section>
-
-      <Section title="Message the operator" caption="Queues an admin_command task for the worker">
-        <Card>
-          <TextInput
-            value={composer}
-            onChangeText={setComposer}
-            placeholder="Ask the operator to check analytics, draft a post, review reports…"
-            placeholderTextColor={colors.textTertiary}
-            multiline
-            style={styles.input}
-          />
-          <Pressable
-            onPress={onSend}
-            disabled={sending || composer.trim().length === 0}
-            style={[styles.primaryButton, (sending || composer.trim().length === 0) && styles.buttonDisabled]}
-          >
-            {sending ? (
-              <ActivityIndicator size="small" color={colors.onAccent} />
-            ) : (
-              <Text variant="label" tone="onAccent">
-                Send to operator
-              </Text>
-            )}
-          </Pressable>
         </Card>
       </Section>
     </>

@@ -70,7 +70,7 @@ if (has(prompt, 'member_member') || has(prompt, 'member_to_member')) {
 // ── 4. Tool gateway ─────────────────────────────────────────────────────────────────────────────
 const handlerKeys = [...tools.matchAll(/^\s{2}'([a-z_]+\.[a-z_]+)':\s*(?:async\s*)?\(/gm)].map((m) => m[1]);
 const uniqueHandlers = new Set(handlerKeys);
-if (uniqueHandlers.size < 23) fail(`tools.ts implements ${uniqueHandlers.size} tool handlers, expected 23`);
+if (uniqueHandlers.size < 24) fail(`tools.ts implements ${uniqueHandlers.size} tool handlers, expected 24`);
 else pass(`tool gateway implements ${uniqueHandlers.size} tools`);
 
 for (const [needle, label] of [

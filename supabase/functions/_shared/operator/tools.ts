@@ -54,6 +54,54 @@ export interface ToolOutcome {
 
 type Handler = (ctx: ToolContext, input: Record<string, unknown>) => Promise<ToolOutcome>;
 
+/**
+ * Server-side notification guardrails. Returns a suppression outcome when the send must not
+ * happen, or null when it may proceed. Reads `operator_policy.notifications`.
+ */
+async function enforceNotificationPolicy(ctx: ToolContext, title: string): Promise<ToolOutcome | null> {
+  const policy = (ctx.policy.notifications ?? {}) as Record<string, unknown>;
+  const maxPerDay = Number(policy.max_per_day ?? 0);
+  const maxPerHour = Number(policy.max_per_hour ?? 0);
+  const dedupeHours = Number(policy.dedupe_window_hours ?? 0);
+  const quiet = (policy.quiet_hours ?? null) as { start?: string; end?: string } | null;
+
+  const now = new Date();
+  const hour = now.getUTCHours();
+  if (quiet?.start && quiet?.end) {
+    const start = Number(String(quiet.start).split(':')[0]);
+    const end = Number(String(quiet.end).split(':')[0]);
+    const inWindow = start <= end ? hour >= start && hour < end : hour >= start || hour < end;
+    if (inWindow) return { ok: true, data: { suppressed: true, reason: 'quiet_hours', verified: true } };
+  }
+
+  if (dedupeHours > 0) {
+    const since = new Date(now.getTime() - dedupeHours * 3600_000).toISOString();
+    const dup = await restSelect(
+      'operator_notification_run',
+      `select=id&title=eq.${encodeURIComponent(title)}&created_at=gte.${since}&limit=1`,
+    );
+    if (dup.ok && Array.isArray(dup.data) && dup.data.length > 0) {
+      return { ok: true, data: { suppressed: true, reason: 'duplicate', verified: true } };
+    }
+  }
+
+  if (maxPerDay > 0) {
+    const since = new Date(now.getTime() - 24 * 3600_000).toISOString();
+    const day = await restSelect('operator_notification_run', `select=id&created_at=gte.${since}&limit=1000`);
+    if (day.ok && Array.isArray(day.data) && day.data.length >= maxPerDay) {
+      return { ok: true, data: { suppressed: true, reason: 'daily_cap', verified: true } };
+    }
+  }
+  if (maxPerHour > 0) {
+    const since = new Date(now.getTime() - 3600_000).toISOString();
+    const hr = await restSelect('operator_notification_run', `select=id&created_at=gte.${since}&limit=1000`);
+    if (hr.ok && Array.isArray(hr.data) && hr.data.length >= maxPerHour) {
+      return { ok: true, data: { suppressed: true, reason: 'hourly_cap', verified: true } };
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // PostgREST helpers (service role only; never exposed to the model)
 // ---------------------------------------------------------------------------
@@ -161,8 +209,8 @@ const handlers: Record<string, Handler> = {
   },
 
   'conversation.context': async (ctx, input) => {
-    const conversationId = str(input, 'conversation_id') || ctx.conversationId || '';
-    if (!conversationId) return fail('missing_conversation', 'no conversation id available');
+    const conversationId = boundConversationId(ctx, input) ?? '';
+    if (!conversationId) return fail('conversation_not_bound', 'conversation id is not bound to this task');
     const data = await rpc(ctx, 'operator_conversation_context', {
       p_conversation: conversationId,
       p_limit: num(input, 'limit', 20),
@@ -460,6 +508,38 @@ const handlers: Record<string, Handler> = {
     return { ok: true, data: { results: result.data ?? [] } };
   },
 
+  'research.web': async (_ctx, input) => {
+    const query = str(input, 'query').trim();
+    if (query.length < 2) return fail('invalid_query', 'query is too short');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    try {
+      const url =
+        'https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&origin=*' +
+        `&srlimit=6&srsearch=${encodeURIComponent(query)}`;
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'HallyuOperator/1.0 (research; contact: staff@hallyu.app)' },
+        signal: controller.signal,
+      });
+      if (!response.ok) return fail('web_search_failed', `upstream HTTP ${response.status}`);
+      const payload = (await response.json()) as {
+        query?: { search?: { title?: string; snippet?: string }[] };
+      };
+      const results = (payload.query?.search ?? [])
+        .filter((row) => typeof row.title === 'string')
+        .map((row) => ({
+          title: row.title as string,
+          snippet: String(row.snippet ?? '').replace(/<[^>]+>/g, '').trim(),
+          url: `https://en.wikipedia.org/wiki/${encodeURIComponent((row.title as string).replace(/ /g, '_'))}`,
+        }));
+      return { ok: true, data: { source: 'wikipedia', query, results } };
+    } catch (error) {
+      return fail('web_search_failed', (error as Error).message.slice(0, 200));
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+
   'research.save': async (ctx, input) => {
     const inserted = await restInsert('operator_research_item', {
       topic: str(input, 'topic'),
@@ -693,14 +773,27 @@ export function permissionAllowed(tool: ToolRow, ctx: ToolContext): { allowed: b
 
 export async function rateLimitExceeded(ctx: ToolContext, tool: ToolRow): Promise<boolean> {
   if (!ctx.taskId) return false;
+  // Column is `tool` (not `tool_name`). If the count query fails we FAIL CLOSED: a broken
+  // limiter must never silently allow unbounded tool execution.
   const result = await restSelect(
     'operator_tool_call',
-    `select=id&task_id=eq.${ctx.taskId}&tool_name=eq.${encodeURIComponent(tool.name)}&limit=1000`,
+    `select=id&task_id=eq.${ctx.taskId}&tool=eq.${encodeURIComponent(tool.name)}&limit=1000`,
   );
-  if (!result.ok || !Array.isArray(result.data)) return false;
+  if (!result.ok || !Array.isArray(result.data)) return true;
   const rpm = tool.rate_limit_per_min ?? 30;
   const perTaskCap = Math.max(rpm * 3, 10);
   return result.data.length >= perTaskCap;
+}
+
+/**
+ * Resolve the conversation id a tool may act on. The id is bound to the authenticated task
+ * context; a model-supplied id is only accepted when it matches that context exactly, so a model
+ * can never redirect a reply into someone else's conversation.
+ */
+function boundConversationId(ctx: ToolContext, input: Record<string, unknown>): string | null {
+  const supplied = str(input, 'conversation_id').trim();
+  if (supplied && ctx.conversationId && supplied !== ctx.conversationId) return null;
+  return ctx.conversationId ?? (supplied || null);
 }
 
 // ---------------------------------------------------------------------------

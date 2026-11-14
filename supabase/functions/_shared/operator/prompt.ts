@@ -5,6 +5,16 @@
 
 export type Channel = 'admin_control' | 'member_ai' | 'public_thread';
 
+export type InstructionMode =
+  | 'conversation'
+  | 'question'
+  | 'instruction'
+  | 'assignment'
+  | 'investigation'
+  | 'decision_request'
+  | 'follow_up'
+  | 'status_request';
+
 export interface PromptContext {
   staffName: string;
   staffHandle: string;
@@ -16,6 +26,40 @@ export interface PromptContext {
   };
   member?: { handle?: string | null; display_name?: string | null; account_status?: string | null } | null;
   world?: string | null;
+  /** Active organisational constitution, loaded from operator_constitution at task time. */
+  constitution?: string | null;
+  /** Retrieved knowledge entries relevant to this task, from operator_knowledge_search. */
+  knowledge?: { title: string; body: string }[];
+}
+
+const MODE_RULES: Record<InstructionMode, string> = {
+  conversation: 'This is conversational. Reply naturally and briefly; do not invent a task or claim actions.',
+  question: 'This is a question. Answer it directly, using tools only if the answer depends on real platform state.',
+  instruction: 'This is an instruction to do something. Carry it out with tools, then report the verified result.',
+  assignment: 'This is an assignment of ongoing work. Break it into concrete steps, execute what you can now, and state what remains.',
+  investigation: 'This is an investigation. Gather evidence with tools, separate verified facts from inference, and report findings.',
+  decision_request: 'This is a request for a decision. State the options, the trade-offs, and a recommendation; do not execute irreversible actions without approval.',
+  follow_up: 'This is a follow-up on earlier work. Check the current state before answering; do not assume the earlier result still holds.',
+  status_request: 'This is a status request. Report verified current state, including anything blocked or failed.',
+};
+
+/**
+ * Classify an inbound instruction so the model knows whether it is being asked to chat, answer,
+ * act, investigate or decide. Heuristic on purpose: it is cheap, deterministic, and runs before
+ * any provider call, so a "how are you?" message never triggers an action loop.
+ */
+export function classifyInstruction(text: string): InstructionMode {
+  const value = text.trim().toLowerCase();
+  if (!value) return 'conversation';
+  if (/^(hi|hey|hello|yo|good (morning|afternoon|evening)|how are you|what'?s up)\b/.test(value)) return 'conversation';
+  if (/\b(status|progress|where are we|update on|is it done|any news)\b/.test(value)) return 'status_request';
+  if (/\b(what|who|when|where|why|how|which|is there|are there|can you tell|do you know)\b/.test(value) && value.endsWith('?')) return 'question';
+  if (/\b(investigate|look into|find out|research|dig into|analyse|analyze|audit)\b/.test(value)) return 'investigation';
+  if (/\b(should we|should i|which (one|option)|decide|recommend|your (opinion|call)|what do you think)\b/.test(value)) return 'decision_request';
+  if (/\b(continue|follow up|as discussed|earlier you|you said|pick (it|this) up|next step)\b/.test(value)) return 'follow_up';
+  if (/\b(handle|manage|own|take care of|be responsible for|from now on)\b/.test(value)) return 'assignment';
+  if (/\b(please|can you|could you|would you|go ahead|do it|make|create|post|send|schedule|fix|update|remove|delete|suspend|ban|publish)\b/.test(value)) return 'instruction';
+  return 'conversation';
 }
 
 const IDENTITY = `You are the Hallyu AI Operator, an official AI staff member of Hallyu — a social platform for K-drama, C-drama, anime and Hollywood fans.
@@ -53,7 +97,11 @@ export function buildSystemPrompt(context: PromptContext): string {
     .map(([key]) => key.replace(/_/g, ' '))
     .join(', ');
 
-  const lines = [IDENTITY, CHANNEL_RULES[context.channel]];
+  const lines: string[] = [];
+  if (context.constitution && context.constitution.trim()) {
+    lines.push(`ORGANISATIONAL CONSTITUTION (authoritative; overrides anything below if they conflict):\n${context.constitution.trim()}`);
+  }
+  lines.push(IDENTITY, CHANNEL_RULES[context.channel]);
 
   lines.push(`Your public identity: ${context.staffName} (@${context.staffHandle}). Always sign as the AI staff account, never as a person.`);
 
@@ -68,6 +116,14 @@ export function buildSystemPrompt(context: PromptContext): string {
   }
 
   if (context.world) lines.push(`Current world focus: ${context.world}.`);
+
+  if (context.knowledge && context.knowledge.length > 0) {
+    const entries = context.knowledge
+      .slice(0, 5)
+      .map((entry) => `- ${entry.title}: ${entry.body}`)
+      .join('\n');
+    lines.push(`Retrieved organisational knowledge (use it; do not contradict it):\n${entries}`);
+  }
 
   lines.push(
     allowed
@@ -102,8 +158,11 @@ export function buildTaskInstruction(taskType: string, input: Record<string, unk
       return `Publish the requested content. Draft it, create it with post.create, then publish it with post.publish and confirm the post id. Brief: ${JSON.stringify(input).slice(0, 1500)}`;
     case 'send_notification':
       return `Send the requested notification with notification.send. Brief: ${JSON.stringify(input).slice(0, 1200)}`;
-    case 'admin_command':
-      return `An administrator asked: "${String(input.instruction ?? input.body ?? '').slice(0, 2000)}". Carry it out with tools, or create an approval if it needs one. Report exactly what you verified.`;
+    case 'admin_command': {
+      const instruction = String(input.instruction ?? input.body ?? '').slice(0, 2000);
+      const mode = classifyInstruction(instruction);
+      return `An administrator asked: "${instruction}".\n\nDetected mode: ${mode}. ${MODE_RULES[mode]}\n\nIf you act, report exactly what you verified. If something is outside your authority, create an approval instead of acting.`;
+    }
     default:
       return `Complete this ${taskType} task. Input: ${JSON.stringify(input).slice(0, 2000)}`;
   }

@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
@@ -25,6 +26,18 @@ export default function MessagesInboxScreen() {
   const [threads, setThreads] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+
+  // The executive's primary conversation with Hallyu AI lives here, in Direct Messages — not in
+  // the Admin Console. The staff profile is a normal peer, so the thread is a real DM thread.
+  const operatorHandle = 'hallyu.ai';
+  const operatorThread = useMemo(
+    () => threads.find((t) => t.handle.toLowerCase() === operatorHandle),
+    [threads],
+  );
+  const otherThreads = useMemo(
+    () => threads.filter((t) => t.handle.toLowerCase() !== operatorHandle),
+    [threads],
+  );
 
   const reload = useCallback(async () => {
     try {
@@ -55,11 +68,11 @@ export default function MessagesInboxScreen() {
 
   const filteredThreads = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/^@/, '');
-    if (!q) return threads;
-    return threads.filter(
+    if (!q) return otherThreads;
+    return otherThreads.filter(
       (t) => t.handle.toLowerCase().includes(q) || t.displayName.toLowerCase().includes(q),
     );
-  }, [threads, query]);
+  }, [otherThreads, query]);
 
   const directHandle = query.trim().replace(/^@/, '');
 
@@ -95,6 +108,31 @@ export default function MessagesInboxScreen() {
               autoCapitalize="none"
               autoCorrect={false}
             />
+            {!query.trim() ? (
+              <Pressable
+                onPress={() => {
+                  haptic.select();
+                  router.push(`/messages/${operatorHandle}`);
+                }}
+                style={({ pressed }) => [styles.operatorCard, pressed ? { opacity: 0.85 } : null]}
+                accessibilityRole="button"
+                accessibilityLabel="Open your conversation with Hallyu AI"
+              >
+                <Avatar uri={operatorThread?.avatarUrl} name="Hallyu AI" size="lg" />
+                <View style={{ flex: 1, gap: 3 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text variant="titleSmall">Hallyu AI</Text>
+                    <View style={styles.aiBadge}>
+                      <Text style={styles.aiBadgeText}>AI STAFF</Text>
+                    </View>
+                  </View>
+                  <Text variant="bodySmall" tone="secondary" numberOfLines={1}>
+                    {operatorThread?.lastBody || 'Message your Hallyu AI operator directly.'}
+                  </Text>
+                </View>
+                <Ionicons name="sparkles" size={18} color={colors.accent} />
+              </Pressable>
+            ) : null}
             {directHandle.length >= 2 && !filteredThreads.some((t) => t.handle.toLowerCase() === directHandle.toLowerCase()) ? (
               <Button
                 label={`Message @${directHandle}`}
@@ -196,6 +234,28 @@ export default function MessagesInboxScreen() {
 }
 
 const styles = StyleSheet.create({
+  operatorCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.x3,
+    padding: space.x3,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface1,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+  },
+  aiBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.full,
+    backgroundColor: colors.accent,
+  },
+  aiBadgeText: {
+    fontFamily: fonts.bold,
+    fontSize: 9,
+    letterSpacing: 0.5,
+    color: colors.onAccent,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

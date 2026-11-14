@@ -1936,6 +1936,7 @@ export type Database = {
           handle: string;
           id?: string;
           is_founder: boolean;
+          is_banned: boolean;
           is_private: boolean;
           onboarding_completed: boolean;
           onboarding_genres: string[];
@@ -1943,6 +1944,7 @@ export type Database = {
           onboarding_step: number;
           post_count: number;
           role: Database['public']['Enums']['profile_role'];
+          suspended_until: string | null;
           updated_at: string;
           verification_note: string | null;
           verification_tier: string;
@@ -1970,6 +1972,7 @@ export type Database = {
           handle: string;
           id: string;
           is_founder?: boolean;
+          is_banned?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -1977,6 +1980,7 @@ export type Database = {
           onboarding_step?: number;
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
+          suspended_until?: string | null;
           updated_at?: string;
           verification_note?: string | null;
           verification_tier?: string;
@@ -2004,6 +2008,7 @@ export type Database = {
           handle?: string;
           id?: string;
           is_founder?: boolean;
+          is_banned?: boolean;
           is_private?: boolean;
           onboarding_completed?: boolean;
           onboarding_genres?: string[];
@@ -2011,6 +2016,7 @@ export type Database = {
           onboarding_step?: number;
           post_count?: number;
           role?: Database['public']['Enums']['profile_role'];
+          suspended_until?: string | null;
           updated_at?: string;
           verification_note?: string | null;
           verification_tier?: string;
@@ -3105,6 +3111,72 @@ export type Database = {
           payload?: Json;
           post_id?: string;
           created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_constitution: {
+        Row: {
+          id: string;
+          version: string;
+          body: string;
+          is_active: boolean;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          version: string;
+          body: string;
+          is_active?: boolean;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          version?: string;
+          body?: string;
+          is_active?: boolean;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_knowledge: {
+        Row: {
+          id: string;
+          slug: string;
+          title: string;
+          body: string;
+          tags: string[];
+          world: string | null;
+          version: number;
+          is_active: boolean;
+          updated_by: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          slug: string;
+          title: string;
+          body: string;
+          tags?: string[];
+          world?: string | null;
+          version?: number;
+          is_active?: boolean;
+          updated_by?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          slug?: string;
+          title?: string;
+          body?: string;
+          tags?: string[];
+          world?: string | null;
+          version?: number;
+          is_active?: boolean;
+          updated_by?: string | null;
           updated_at?: string;
         };
         Relationships: [];
