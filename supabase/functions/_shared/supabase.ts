@@ -62,6 +62,21 @@ class QueryBuilder<T = Record<string, unknown>> implements PromiseLike<Postgrest
     return this;
   }
 
+  lte(column: string, value: string | number): this {
+    this.filters.push([column, `lte.${value}`]);
+    return this;
+  }
+
+  gt(column: string, value: string | number): this {
+    this.filters.push([column, `gt.${value}`]);
+    return this;
+  }
+
+  gte(column: string, value: string | number): this {
+    this.filters.push([column, `gte.${value}`]);
+    return this;
+  }
+
   order(column: string, opts?: { ascending?: boolean; nullsFirst?: boolean }): this {
     const dir = opts?.ascending === false ? 'desc' : 'asc';
     const nulls =

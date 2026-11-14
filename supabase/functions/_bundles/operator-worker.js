@@ -43,6 +43,18 @@ var QueryBuilder = class {
     this.filters.push([column, `lt.${value}`]);
     return this;
   }
+  lte(column, value) {
+    this.filters.push([column, `lte.${value}`]);
+    return this;
+  }
+  gt(column, value) {
+    this.filters.push([column, `gt.${value}`]);
+    return this;
+  }
+  gte(column, value) {
+    this.filters.push([column, `gte.${value}`]);
+    return this;
+  }
   order(column, opts) {
     const dir = opts?.ascending === false ? "desc" : "asc";
     const nulls = opts?.nullsFirst === false ? ".nullslast" : opts?.nullsFirst === true ? ".nullsfirst" : "";
