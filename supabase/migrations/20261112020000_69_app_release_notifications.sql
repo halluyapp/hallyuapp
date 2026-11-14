@@ -1,6 +1,6 @@
--- 69: announce every newly published app release, and restore the broadcast RPC that the AI
--- operator and the CEO megaphone call (`send_admin_broadcast` was referenced by the app but never
--- existed on the backend, so the operator's `send_broadcast` tool always failed).
+-- 69: announce every newly published app release, and restore the staff broadcast RPC that the
+-- CEO megaphone calls (`send_admin_broadcast` was referenced by the app but never existed on the
+-- backend).
 --
 -- Delivery path: one row per member in public.notifications. The existing
 -- `notifications_fanout_and_wake` trigger turns each row into `notification_deliveries` rows for
@@ -63,7 +63,7 @@ $$;
 revoke all on function public.notify_all_members(public.notification_kind, public.notification_group, text, text, text, text)
   from public, anon, authenticated;
 
--- ── staff broadcast (the RPC the AI operator and the CEO megaphone call) ──────────────────────
+-- ── staff broadcast (the RPC the CEO megaphone calls) ───────────────────────────────────────────────────────────────────────────
 create or replace function public.send_admin_broadcast(
   p_title text,
   p_body text,
@@ -75,8 +75,8 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  -- The operator calls this as service_role after it has already re-verified the caller's role;
-  -- a signed-in admin/ceo is verified here from the live profile row.
+  -- A signed-in admin/ceo is verified here from the live profile row; service_role callers are
+  -- trusted because they have already authenticated at the server boundary.
   v_service boolean := coalesce(
     auth.role(),
     current_setting('request.jwt.claim.role', true),

@@ -61,16 +61,15 @@
 Hallyu runs against a live connected **Supabase (`PostgreSQL 16 + Auth + Storage + Realtime + Edge Functions + pg_cron + pg_net`)** backend with **zero secrets stored in Git**:
 
 - **`supabase/migrations/` (`71` ordered SQL migrations):**
-  - `65` RLS-protected tables (`row level security` enforced across every public table and partition, each with an explicit policy).
-  - `376` SQL functions/RPCs with pinned `search_path = public, pg_temp` on every `SECURITY DEFINER` routine.
+  - `60` RLS-protected tables (`row level security` enforced across every public table and partition, each with an explicit policy).
+  - `371` SQL functions/RPCs with pinned `search_path = public, pg_temp` on every `SECURITY DEFINER` routine.
   - Partitioned analytics events, full-text search indexes, rate limiters, content moderation queues, `public.hallyu_events`, `public.support_tickets`, `public.app_releases`, and `service_role`-only `public.ci_build_vault`.
 - **Supabase Storage Buckets:**
   - `media` (private): Signed upload & playback URLs for member avatars, post images, and short-form creator videos.
      - `app-releases` (public CDN): Hosts the single `hallyu-universal-latest.apk` object so self-updates and direct APK downloads work even when the GitHub repository is set to private; `public.app_releases` carries its version, SHA-256 and size.
-- **`supabase/functions/` (`10` Deno Edge Functions):**
+- **`supabase/functions/` (`9` Deno Edge Functions):**
   - `catalog-sync` / `catalog-jobs`: Automated TMDB ingestion, non-scripted noise filtering, episode refresh, `end_year` reconciliation, and Bayesian score recalculation.
   - `push-dispatch`: Dual-engine Firebase FCM HTTP v1 + Web Push (`VAPID`) notification dispatcher.
-  - `hallyu-ai-operator`: The autonomous AI executive (Gemini-first model adapter, fixed tool allowlist, full audit trail).
   - `auth-broker` (web sign-in relay), `release-maintenance`, `media-cleanup`, `moderation-digest`, `purge-deleted-accounts`, `moviebox`, plus shared world/TMDB classifiers (`_shared/`).
 - **`supabase/types/database.ts`:** Strictly typed client-to-DB contract verified automatically against every SQL migration.
 
