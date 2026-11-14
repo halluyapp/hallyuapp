@@ -1211,7 +1211,8 @@ Deno.serve(async (request) => {
   await admin.rpc("operator_heartbeat", {
     p_worker: WORKER_ID,
     p_version: WORKER_VERSION,
-    p_meta: { runtime: "edge", processed: processed.length, finished_at: (/* @__PURE__ */ new Date()).toISOString() }
+    p_meta: { runtime: "edge", processed: processed.length, finished_at: (/* @__PURE__ */ new Date()).toISOString() },
+    p_processed: processed.length
   });
   return jsonResponse({ ok: true, worker: WORKER_ID, claimed: tasks.length, processed });
 });
