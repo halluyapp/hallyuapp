@@ -3,6 +3,10 @@
 // The Control Centre is a real admin surface: every call goes to the `operator-admin` Edge
 // Function with the signed-in administrator's own JWT. The function re-derives the caller's
 // profile and role server-side, so nothing here is trusted as authorization.
+//
+// The executive's conversation with Hallyu AI is NOT here — it lives in Direct Messages
+// (`app/messages/[handle].tsx` with handle `hallyu.ai`). This module only manages the operator:
+// providers, tools, schedules, tasks, knowledge and audit.
 
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '../../constants/keys';
 import { ensureBackendSessionToken } from './client';
