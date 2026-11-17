@@ -11,7 +11,7 @@ export async function verifyStage4Tools(run: string): Promise<Record<string, unk
  };
  const ledger=(await api('operator_acceptance_run?id=eq.'+run))[0];
  if(ledger?.state!=='running'||ledger?.report?.kind!=='stage4_tools'||Date.parse(ledger.report.expires_at)<Date.now())throw new Error('live fixture reservation required');
- const claimed=await api('operator_acceptance_run?id=eq.'+run+'&state=eq.running','PATCH',{state:'verifying'});
+ const claimed=await api('operator_acceptance_run?id=eq.'+run+'&state=eq.running','PATCH',{state:'failed'});
  if(claimed.length!==1)throw new Error('fixture already claimed');
  const f=ledger.report;const checks:Record<string,unknown>={};
  const assert=(name:string,yes:boolean)=>{if(!yes)throw new Error('readback:'+name);};

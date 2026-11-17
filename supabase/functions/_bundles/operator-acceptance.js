@@ -901,7 +901,7 @@ async function verifyStage4Tools(run) {
   };
   const ledger = (await api2("operator_acceptance_run?id=eq." + run))[0];
   if (ledger?.state !== "running" || ledger?.report?.kind !== "stage4_tools" || Date.parse(ledger.report.expires_at) < Date.now()) throw new Error("live fixture reservation required");
-  const claimed = await api2("operator_acceptance_run?id=eq." + run + "&state=eq.running", "PATCH", { state: "verifying" });
+  const claimed = await api2("operator_acceptance_run?id=eq." + run + "&state=eq.running", "PATCH", { state: "failed" });
   if (claimed.length !== 1) throw new Error("fixture already claimed");
   const f = ledger.report;
   const checks = {};
