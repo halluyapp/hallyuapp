@@ -65,30 +65,32 @@ export function UpNextRail({ items, onSeeAll }: { items: UpNextItem[]; onSeeAll?
           };
 
           return (
-            <Tap
-              onPress={() => router.push(`/episode/${drama.id}/${episode.season}/${episode.number}`)}
-              accessibilityRole="button"
-              accessibilityLabel={`${drama.title}, up next ${multi ? `season ${episode.season} ` : ''}episode ${episode.number} of ${total}`}
-              style={styles.card}
-            >
-              <Poster drama={drama} width={58} />
-              <View style={{ flex: 1, justifyContent: 'space-between' }}>
-                <View>
-                  <Text variant="titleSmall" numberOfLines={1}>
-                    {drama.title}
-                  </Text>
-                  <Text variant="caption" tone="secondary" numberOfLines={1}>
-                    {multi ? `S${episode.season} · ` : ''}Ep {episode.number} of {total}
-                    {episode.title ? ` · ${episode.title}` : ''}
-                  </Text>
+            <View style={styles.card}>
+              <Tap
+                onPress={() => router.push(`/episode/${drama.id}/${episode.season}/${episode.number}`)}
+                accessibilityRole="button"
+                accessibilityLabel={`${drama.title}, up next ${multi ? `season ${episode.season} ` : ''}episode ${episode.number} of ${total}`}
+                style={{ flex: 1, flexDirection: 'row', alignItems: 'stretch', gap: space.x3 }}
+              >
+                <Poster drama={drama} width={58} />
+                <View style={{ flex: 1, justifyContent: 'space-between' }}>
+                  <View>
+                    <Text variant="titleSmall" numberOfLines={1}>
+                      {drama.title}
+                    </Text>
+                    <Text variant="caption" tone="secondary" numberOfLines={1}>
+                      {multi ? `S${episode.season} · ` : ''}Ep {episode.number} of {total}
+                      {episode.title ? ` · ${episode.title}` : ''}
+                    </Text>
+                  </View>
+                  <View>
+                    <Text variant="caption" tone="tertiary" numberOfLines={1} style={{ marginBottom: 6 }}>
+                      {talking ? `${talking} talking in live room` : 'Tap to enter Watch Room'}
+                    </Text>
+                    <ProgressBar value={item.currentEpisode} max={total} />
+                  </View>
                 </View>
-                <View>
-                  <Text variant="caption" tone="tertiary" numberOfLines={1} style={{ marginBottom: 6 }}>
-                    {talking ? `${talking} talking in live room` : 'Tap to enter Watch Room'}
-                  </Text>
-                  <ProgressBar value={item.currentEpisode} max={total} />
-                </View>
-              </View>
+              </Tap>
               <Pressable
                 onPress={markWatched}
                 hitSlop={6}
@@ -99,7 +101,7 @@ export function UpNextRail({ items, onSeeAll }: { items: UpNextItem[]; onSeeAll?
                 <Ionicons name="checkmark" size={14} color={colors.onAccent} />
                 <Text style={styles.plusText}>+1 Ep</Text>
               </Pressable>
-            </Tap>
+            </View>
           );
         }}
       />

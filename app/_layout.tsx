@@ -24,7 +24,15 @@ import { registerCatalogLookup } from '../lib/api/social';
 import { installPushTokenRotationListener, registerDevicePushToken } from '../lib/api/pushToken';
 import { AuthProvider, useAuth } from '../lib/auth';
 import { markBoot } from '../lib/boot';
-import { ensureAndroidNotificationChannels, installNotificationHandler, reminderUrl, remindersSupported, syncEpisodeReminders, syncLivePulseBanner } from '../lib/reminders';
+import { ensureAndroidNotificationChannels, installNotificationHandler, presentServerNotificationBanner, reminderUrl, remindersSupported, syncEpisodeReminders, syncLivePulseBanner } from '../lib/reminders';
+import { catalog } from '../lib/catalog';
+import {
+  evaluateAiredEpisodeNotifications,
+  mergeEpisodeNotifications,
+  persistNotifiedEpisodeKeys,
+  presentWebEpisodeNotification,
+  readNotifiedEpisodeKeys,
+} from '../lib/episodeNotifications';
 import { setDownloadScope } from '../lib/media';
 import { freshMemberState, getState, GUEST_ID, guestState, sanitizePersistedState, StoreProvider, useHallyu, useSlice, useStore } from '../lib/store';
 import {
@@ -78,20 +86,27 @@ export default function RootLayout() {
       (id) => getState().importedActors.find((a) => a.id === id),
     );
     if (Platform.OS === 'web' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-      const basePath = (process.env.EXPO_PUBLIC_BASE_PATH ?? '').trim().replace(/\/$/, '');
-      const swUrl = `${basePath}/sw.js`;
-      navigator.serviceWorker
-        .register(swUrl, { scope: `${basePath}/`, updateViaCache: 'none' })
-        .then((reg) => {
-          void reg.update().catch(() => {});
-          const onVis = () => {
-            if (document.visibilityState === 'visible') {
-              void reg.update().catch(() => {});
-            }
-          };
-          document.addEventListener('visibilitychange', onVis);
-        })
-        .catch(() => {});
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        navigator.serviceWorker
+          .getRegistrations()
+          .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+          .catch(() => {});
+      } else {
+        const basePath = (process.env.EXPO_PUBLIC_BASE_PATH ?? '').trim().replace(/\/$/, '');
+        const swUrl = `${basePath}/sw.js`;
+        navigator.serviceWorker
+          .register(swUrl, { scope: `${basePath}/`, updateViaCache: 'none' })
+          .then((reg) => {
+            void reg.update().catch(() => {});
+            const onVis = () => {
+              if (document.visibilityState === 'visible') {
+                void reg.update().catch(() => {});
+              }
+            };
+            document.addEventListener('visibilitychange', onVis);
+          })
+          .catch(() => {});
+      }
     }
   }, []);
 
@@ -467,6 +482,8 @@ function ReminderSync() {
   const navReadyRef = useRef(navReady);
   const pendingUrlRef = useRef<string | undefined>(undefined);
   const handledResponseIds = useRef(new Set<string>());
+  const notifiedEpisodesRef = useRef<Set<string> | null>(null);
+  const enrichedIdsRef = useRef(new Set<string>());
   navReadyRef.current = navReady;
 
   useEffect(() => {
@@ -478,56 +495,156 @@ function ReminderSync() {
   }, [navReady, router]);
 
   useEffect(() => {
-    if (!hydrated || !remindersSupported) return;
-    installNotificationHandler();
-    void ensureAndroidNotificationChannels();
+    if (!hydrated) return;
+    if (remindersSupported) {
+      installNotificationHandler();
+      void ensureAndroidNotificationChannels();
+    }
+
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let alive = true;
+
+    const evaluateAndSync = async () => {
+      if (!alive) return;
+      const cur = getState();
+
+      // 1. Ensure followed dramas with episode alerts ON have episode air dates loaded
+      if (catalog.available && cur.prefs.notifications.episodes !== false) {
+        const followedToEnrich = cur.importedDramas
+          .filter(
+            (d) =>
+              cur.follows.dramas.includes(d.id) &&
+              cur.dramaNotify[d.id] !== false &&
+              d.mediaType !== 'movie' &&
+              d.provider &&
+              !d.episodes.some((ep) => ep.airDate) &&
+              !enrichedIdsRef.current.has(d.id),
+          )
+          .slice(0, 4);
+
+        if (followedToEnrich.length) {
+          for (const d of followedToEnrich) enrichedIdsRef.current.add(d.id);
+          const loaded = await Promise.all(
+            followedToEnrich.map((d) =>
+              catalog.getDrama(d.provider!.id, d.mediaType ?? 'tv').catch(() => null),
+            ),
+          );
+          const valid = loaded.filter((x): x is NonNullable<typeof x> => Boolean(x));
+          if (valid.length && alive) {
+            adoptLocal({ type: 'import', dramas: valid });
+          }
+        }
+      }
+
+      // 2. Evaluate newly aired episodes across followed dramas (Web + Native)
+      const latest = getState();
+      if (!notifiedEpisodesRef.current) {
+        notifiedEpisodesRef.current = await readNotifiedEpisodeKeys();
+      }
+      const candidates = evaluateAiredEpisodeNotifications({
+        state: latest,
+        alreadyNotifiedKeys: notifiedEpisodesRef.current,
+      });
+
+      if (candidates.length && alive) {
+        for (const c of candidates) {
+          notifiedEpisodesRef.current.add(c.key);
+        }
+        await persistNotifiedEpisodeKeys(notifiedEpisodesRef.current);
+
+        adoptLocal({
+          type: 'hydrate',
+          state: {
+            notifications: mergeEpisodeNotifications(
+              latest.notifications,
+              candidates.map((c) => c.notification),
+            ),
+          },
+        });
+
+        const lead = candidates[0]!;
+        toast.show({
+          message: lead.notification.title ?? lead.toastTitle,
+          icon: 'notifications',
+          tone: 'success',
+          actionLabel: 'Open',
+          onAction: () => router.push(lead.deepLink as never),
+          duration: 6000,
+        });
+
+        for (const c of candidates.slice(0, 3)) {
+          presentWebEpisodeNotification(c);
+          if (remindersSupported) {
+            void presentServerNotificationBanner({
+              id: c.key,
+              group: 'drama',
+              title: c.notification.title,
+              body: c.notification.body,
+              deepLink: c.deepLink,
+            });
+          }
+        }
+      }
+
+      // 3. Reconcile upcoming local OS scheduled episode reminders & Android Live Pulse
+      if (remindersSupported && alive) {
+        void syncEpisodeReminders(getState()).catch((e) => reportError('ReminderSync.schedule', e));
+        void syncLivePulseBanner(getState()).catch(() => {});
+      }
+    };
+
     const schedule = (delay = 1500) => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        const cur = getState();
-        void syncEpisodeReminders(cur).catch((e) => reportError('ReminderSync.schedule', e));
-        void syncLivePulseBanner(cur).catch(() => {});
+        void evaluateAndSync().catch((e) => reportError('ReminderSync.evaluate', e));
       }, delay);
     };
-    schedule(2500);
+
+    schedule(2000);
+    const periodic = setInterval(() => schedule(200), 5 * 60_000);
+
     const unsub = useHallyu.subscribe((s, prev) => {
       if (
         s.follows.dramas !== prev.follows.dramas ||
         s.dramaNotify !== prev.dramaNotify ||
         s.prefs.notifications !== prev.prefs.notifications ||
         s.prefs.livePulseBanner !== prev.prefs.livePulseBanner ||
-        s.importedDramas !== prev.importedDramas ||
-        s.notifications.length !== prev.notifications.length
+        s.importedDramas !== prev.importedDramas
       ) {
         schedule(600);
       }
     });
-    const fg = RNAppState.addEventListener('change', (st) => st === 'active' && schedule(800));
-    // A live tap with no route opens the in-app inbox, where the full notification text is kept.
-    // The last-response check on launch only follows a route, so an old tap never reopens the inbox.
-    const openResponse = (r: Notifications.NotificationResponse | null | undefined, fromTap = false) => {
-      if (!r) return;
-      const responseId = r.notification.request.identifier;
-      if (responseId && handledResponseIds.current.has(responseId)) return;
-      const url = reminderUrl(r) ?? (fromTap ? '/(tabs)/activity' : undefined);
-      if (!url) return;
-      if (responseId) handledResponseIds.current.add(responseId);
-      if (!navReadyRef.current) {
-        pendingUrlRef.current = url;
-        return;
-      }
-      setTimeout(() => router.push(url as never), 300);
-    };
-    const tapped = Notifications.addNotificationResponseReceivedListener((r) => openResponse(r, true));
-    Notifications.getLastNotificationResponseAsync()
-      .then(openResponse)
-      .catch((e) => reportError('ReminderSync.lastResponse', e));
+
+    const fg = RNAppState.addEventListener('change', (st) => st === 'active' && schedule(600));
+
+    let tapped: { remove: () => void } | null = null;
+    if (remindersSupported) {
+      const openResponse = (r: Notifications.NotificationResponse | null | undefined, fromTap = false) => {
+        if (!r) return;
+        const responseId = r.notification.request.identifier;
+        if (responseId && handledResponseIds.current.has(responseId)) return;
+        const url = reminderUrl(r) ?? (fromTap ? '/(tabs)/activity' : undefined);
+        if (!url) return;
+        if (responseId) handledResponseIds.current.add(responseId);
+        if (!navReadyRef.current) {
+          pendingUrlRef.current = url;
+          return;
+        }
+        setTimeout(() => router.push(url as never), 300);
+      };
+      tapped = Notifications.addNotificationResponseReceivedListener((r) => openResponse(r, true));
+      Notifications.getLastNotificationResponseAsync()
+        .then(openResponse)
+        .catch((e) => reportError('ReminderSync.lastResponse', e));
+    }
+
     return () => {
+      alive = false;
       clearTimeout(timer);
+      clearInterval(periodic);
       unsub();
       fg.remove();
-      tapped.remove();
+      tapped?.remove();
     };
   }, [hydrated, router]);
   return null;

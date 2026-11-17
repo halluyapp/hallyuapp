@@ -389,15 +389,12 @@ export function ProfileView({ user, isMe, headerExtra }: { user: User; isMe: boo
                 </View>
               </View>
             ) : (
-              <Pressable
-                onPress={() => isMe && setBiasModal(true)}
-                style={{ marginTop: space.x2, flexDirection: 'row', alignItems: 'center', gap: space.x2 }}
-              >
+              <View style={{ marginTop: space.x2, flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
                 <Text variant="bodySmall" tone="secondary" style={{ flex: 1 }}>
                   {isMe ? 'Choose your ultimate bias to feature them on your Hallyu profile card.' : 'No bias chosen yet.'}
                 </Text>
                 {isMe && <Button label="Pick Bias" size="sm" variant="secondary" onPress={() => setBiasModal(true)} />}
-              </Pressable>
+              </View>
             )}
           </View>
 

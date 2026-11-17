@@ -44,18 +44,25 @@ export function ActorCard({ actor, role, size = 72, style, layout = 'rail', righ
   const go = () => router.push(`/actor/${actor.id}`);
   if (layout === 'row') {
     return (
-      <Tap onPress={go} accessibilityRole="button" accessibilityLabel={`${actor.name}${role ? ` as ${role}` : ''}`} style={[styles.row, style]}>
-        <ActorPortrait actor={actor} size={48} />
-        <View style={{ flex: 1 }}>
-          <Text variant="titleSmall" numberOfLines={1}>
-            {actor.name}
-          </Text>
-          <Text variant="caption" tone="secondary" numberOfLines={1}>
-            {role ?? actor.koreanName ?? ''}
-          </Text>
-        </View>
+      <View style={[styles.row, style]}>
+        <Tap
+          onPress={go}
+          accessibilityRole="button"
+          accessibilityLabel={`${actor.name}${role ? ` as ${role}` : ''}`}
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.x3 }}
+        >
+          <ActorPortrait actor={actor} size={48} />
+          <View style={{ flex: 1 }}>
+            <Text variant="titleSmall" numberOfLines={1}>
+              {actor.name}
+            </Text>
+            <Text variant="caption" tone="secondary" numberOfLines={1}>
+              {role ?? actor.koreanName ?? ''}
+            </Text>
+          </View>
+        </Tap>
         {right}
-      </Tap>
+      </View>
     );
   }
   return (

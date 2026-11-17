@@ -17,6 +17,7 @@
  *           activity from other devices/members lands without manual reloads.
  */
 import { reportError } from './analytics';
+import { mergeEpisodeNotifications } from './episodeNotifications';
 import { presentServerNotificationBanner } from './reminders';
 import { fetchBootstrap, serverProfileToUser } from './api/bootstrap';
 import {
@@ -777,15 +778,26 @@ export async function adoptPublicCollections(cb: Pick<AdoptionCallbacks, 'getSta
 export async function adoptNotifications(cb: Pick<AdoptionCallbacks, 'getState' | 'apply'>): Promise<void> {
   if (!sessionReady()) return;
   try {
-    const notifications = applyPendingReadMarks(await fetchNotifications());
+    const serverNotifications = applyPendingReadMarks(await fetchNotifications());
+    const current = cb.getState();
+    const localEpisodeAlerts = current.notifications.filter(
+      (n) =>
+        n.id.startsWith('ep-aired:') &&
+        !serverNotifications.some(
+          (srv) =>
+            srv.dramaId === n.dramaId &&
+            srv.episode === n.episode &&
+            (srv.kind === 'episode_aired' || srv.kind === 'episode_live'),
+        ),
+    );
+    const notifications = mergeEpisodeNotifications(serverNotifications, localEpisodeAlerts);
     const missingActors = [...new Set(notifications.flatMap((n) => n.actorIds ?? []))].filter(
       (id) => id && !cb.getState().users[id],
     );
     const profiles = missingActors.length ? await fetchProfiles(missingActors).catch(() => []) : [];
-    const current = cb.getState();
     cb.apply({
       notifications,
-      users: mergeUsers(current.users, profiles),
+      users: mergeUsers(cb.getState().users, profiles),
     });
 
     // Surface fresh unread server notifications that arrived while backgrounded or between socket reconnects.

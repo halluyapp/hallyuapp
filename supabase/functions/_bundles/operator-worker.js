@@ -661,7 +661,7 @@ var handlers = {
       audience,
       audience_filter: world ? { world } : {},
       kind: "system",
-      status: "completed",
+      status: "sent",
       target_count: delivered,
       delivered_count: delivered,
       failed_count: 0,
@@ -1250,7 +1250,7 @@ async function processTask(args) {
       p_outcome: "failed",
       p_task: task.id,
       p_actor: staff.profile_id,
-      p_actor_type: "ai",
+      p_actor_type: "staff",
       p_resource_type: "task",
       p_resource_id: task.id,
       p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null }
@@ -1387,7 +1387,7 @@ async function processTask(args) {
             p_outcome: "ok",
             p_task: task.id,
             p_actor: staff.profile_id,
-            p_actor_type: "ai",
+            p_actor_type: "staff",
             p_resource_type: "approval",
             p_resource_id: approval.data ? String(approval.data) : null,
             p_details: { tool: call.function.name }
@@ -1440,7 +1440,7 @@ async function processTask(args) {
       p_outcome: "failed",
       p_task: task.id,
       p_actor: staff.profile_id,
-      p_actor_type: "ai",
+      p_actor_type: "staff",
       p_resource_type: "task",
       p_resource_id: task.id,
       p_details: { code, detail, retryable, next_status: failed.data ?? null }
@@ -1497,6 +1497,21 @@ async function recordUsage(admin, usage) {
     p_error_code: usage.errorCode ?? null
   });
 }
+function splitDmChunks(text, maxLen = 1900) {
+  if (text.length <= maxLen) return [text];
+  const chunks = [];
+  let remaining = text.trim();
+  while (remaining.length > maxLen) {
+    let sliceAt = remaining.lastIndexOf("\n\n", maxLen);
+    if (sliceAt < maxLen * 0.4) sliceAt = remaining.lastIndexOf("\n", maxLen);
+    if (sliceAt < maxLen * 0.4) sliceAt = remaining.lastIndexOf(" ", maxLen);
+    if (sliceAt < maxLen * 0.3) sliceAt = maxLen;
+    chunks.push(remaining.slice(0, sliceAt).trim());
+    remaining = remaining.slice(sliceAt).trim();
+  }
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
 async function deliverAnswer(admin, task, result) {
   const content = typeof result.content === "string" ? result.content.trim() : "";
   if (!content || !task.conversation_id) return null;
@@ -1506,13 +1521,20 @@ async function deliverAnswer(admin, task, result) {
     if ((used.count ?? 0) > 0) return null;
   } catch {
   }
-  const sent = await admin.rpc("operator_send_staff_message", {
-    p_conversation: task.conversation_id,
-    p_body: content.slice(0, 4e3),
-    p_task: task.id
-  }).catch(() => ({ data: null, error: { message: "send failed" } }));
-  if (sent.error) return null;
-  return typeof sent.data === "string" ? sent.data : null;
+  let firstMessageId = null;
+  const chunks = splitDmChunks(content, 1900);
+  for (const chunk of chunks) {
+    const sent = await admin.rpc("operator_send_staff_message", {
+      p_conversation: task.conversation_id,
+      p_body: chunk,
+      p_task: task.id
+    }).catch(() => ({ data: null, error: { message: "send failed" } }));
+    if (sent.error) return firstMessageId;
+    if (!firstMessageId && sent.data) {
+      firstMessageId = typeof sent.data === "string" ? sent.data : JSON.stringify(sent.data);
+    }
+  }
+  return firstMessageId;
 }
 async function completeTask(admin, task, staff, result) {
   const deliveredMessageId = await deliverAnswer(admin, task, result).catch(() => null);
@@ -1524,7 +1546,7 @@ async function completeTask(admin, task, staff, result) {
     p_outcome: "ok",
     p_task: task.id,
     p_actor: staff.profile_id,
-    p_actor_type: "ai",
+    p_actor_type: "staff",
     p_resource_type: "task",
     p_resource_id: task.id,
     p_details: {

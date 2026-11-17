@@ -39,9 +39,22 @@ module.exports = ({ config }) => {
     ? config.android.intentFilters
     : [];
 
+  const appUrl = (process.env.APP_URL || process.env.EXPO_PUBLIC_APP_URL || '').trim();
+
   return {
     ...config,
     version: appVersion,
+    extra: {
+      ...config.extra,
+      ...(appUrl
+        ? {
+            router: {
+              ...config.extra?.router,
+              origin: appUrl,
+            },
+          }
+        : {}),
+    },
     ios: {
       ...config.ios,
       associatedDomains: ['applinks:halluyapp.github.io', 'applinks:hallyuapp.github.io'],

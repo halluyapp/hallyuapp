@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, FlatList, Linking, Pressable, StyleSheet, View } from 'react-native';
 import { CollectionCard } from '../../components/collections/CollectionCard';
 import { ActorRail } from '../../components/drama/ActorCard';
 import { DramaCard, DramaRail } from '../../components/drama/DramaCard';
@@ -25,8 +25,8 @@ import { catalog, invalidateCatalogLists, friendlyCatalogCopy } from '../../lib/
 import { adoptActors, adoptDramas } from '../../lib/catalogSync';
 import { buildExploreRails } from '../../lib/exploreRails';
 import { discoverCatalogTitles } from '../../lib/api/features';
+import { compact } from '../../lib/format';
 import { exploreWatchLinks } from '../../lib/whereToWatch';
-import { Linking } from 'react-native';
 import { FANDOMS, fandomById } from '../../lib/fandoms';
 import { haptic, Loadable, useApp, useCatalogHealth, useLayout, useLoad, useNetwork } from '../../lib/hooks';
 import { useToast } from '../../components/ui/Toast';
@@ -34,6 +34,7 @@ import { Actor, Drama, FandomId, GENRES } from '../../lib/model';
 import { publicCollections, shorts, trendingDiscussions, trendingHashtags, worldCounts } from '../../lib/selectors';
 import { getState } from '../../lib/store';
 import { adoptLocal, adoptPublicState } from '../../lib/sync';
+import { computeTopBillboard, formatBillboardUpdatedAt, type BillboardCategory } from '../../lib/topBillboard';
 
 const NETFLIX = 8; // TMDB watch-provider id
 
@@ -80,10 +81,102 @@ export default function Explore() {
   const leadersLoad = useDramas((s) => catalog.worldLeaders(s));
   const trendingLoad = useDramas((s) => catalog.trending(s));
   const airingLoad = useDramas((s) => catalog.airingSoon(7, s));
+  const popularLoad = useDramas((s) => catalog.popular(1, s));
   const topRatedLoad = useDramas((s) => catalog.topRated(1, s));
   const upcomingLoad = useDramas((s) => catalog.upcoming(s));
   const netflixLoad = useDramas((s) => catalog.onProvider(NETFLIX, s));
   const faces = useLoad<Actor[]>(async (s) => adoptActors(await catalog.trendingPeople(s)), [], catalog.available);
+
+  const [billboardCategory, setBillboardCategory] = useState<BillboardCategory>('all');
+  const categoryLoad = useLoad<Drama[]>(
+    async (s) =>
+      billboardCategory === 'all'
+        ? []
+        : adoptDramas(await catalog.byFandom(billboardCategory, 'trending', 1, s)),
+    [billboardCategory],
+    catalog.available && billboardCategory !== 'all',
+  );
+
+  const [billboardUpdatedAt, setBillboardUpdatedAt] = useState<number | null>(null);
+  const [, setClockTick] = useState(0);
+  const lastAutoRefreshRef = useRef(0);
+
+  useEffect(() => {
+    if (trendingLoad.data || popularLoad.data || airingLoad.data || categoryLoad.data) {
+      setBillboardUpdatedAt(Date.now());
+      lastAutoRefreshRef.current = Date.now();
+    }
+  }, [trendingLoad.data, popularLoad.data, airingLoad.data, categoryLoad.data]);
+
+  const reloadBillboardFeeds = useCallback(
+    (force = true) => {
+      if (force) invalidateCatalogLists();
+      lastAutoRefreshRef.current = Date.now();
+      leadersLoad.reload();
+      trendingLoad.reload();
+      airingLoad.reload();
+      popularLoad.reload();
+      topRatedLoad.reload();
+      upcomingLoad.reload();
+      netflixLoad.reload();
+      if (billboardCategory !== 'all') categoryLoad.reload();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [billboardCategory],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Date.now() - lastAutoRefreshRef.current > 90_000) {
+        reloadBillboardFeeds(true);
+      }
+      const autoTimer = setInterval(() => {
+        reloadBillboardFeeds(true);
+      }, 90_000);
+      const tickTimer = setInterval(() => {
+        setClockTick((n) => n + 1);
+      }, 30_000);
+      return () => {
+        clearInterval(autoTimer);
+        clearInterval(tickTimer);
+      };
+    }, [reloadBillboardFeeds]),
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active' && Date.now() - lastAutoRefreshRef.current > 60_000) {
+        reloadBillboardFeeds(true);
+      }
+    });
+    return () => sub.remove();
+  }, [reloadBillboardFeeds]);
+
+  const billboard = useMemo(
+    () =>
+      computeTopBillboard({
+        trending: trendingLoad.data,
+        airing: airingLoad.data,
+        popular: popularLoad.data,
+        byWorld:
+          billboardCategory !== 'all' && categoryLoad.data
+            ? { [billboardCategory]: categoryLoad.data }
+            : undefined,
+        posts: state.posts,
+        watchlist: state.watchlist,
+        category: billboardCategory,
+        limit: 10,
+      }),
+    [
+      trendingLoad.data,
+      airingLoad.data,
+      popularLoad.data,
+      billboardCategory,
+      categoryLoad.data,
+      state.posts,
+      state.watchlist,
+    ],
+  );
 
   const rails = useMemo(
     () =>
@@ -131,12 +224,7 @@ export default function Explore() {
   useEffect(() => {
     if (!refresh.refreshing) return;
     invalidateCatalogLists();
-    leadersLoad.reload();
-    trendingLoad.reload();
-    airingLoad.reload();
-    topRatedLoad.reload();
-    upcomingLoad.reload();
-    netflixLoad.reload();
+    reloadBillboardFeeds(false);
     faces.reload();
     forYou.reload();
     void adoptPublicState({
@@ -267,6 +355,96 @@ export default function Explore() {
             </View>
           </View>
         ) : null}
+
+        {/* Live Auto-Updating Top 10 Billboard across categories */}
+        <View style={styles.section}>
+          <SectionHeader
+            eyebrow="Top 10 Billboard · Live"
+            title="Top 10 watching now"
+            subtitle={`TMDB momentum + live audience demand · ${formatBillboardUpdatedAt(billboardUpdatedAt)}`}
+            actionLabel="Refresh"
+            onAction={() => reloadBillboardFeeds(true)}
+          />
+          <FlatList
+            horizontal
+            data={[
+              { id: 'all' as BillboardCategory, label: 'All Worlds' },
+              ...FANDOMS.map((f) => ({ id: f.id as BillboardCategory, label: `${f.flag} ${f.short}` })),
+            ]}
+            keyExtractor={(item) => item.id}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: space.margin, paddingBottom: space.x3, gap: space.x2 }}
+            renderItem={({ item }) => (
+              <Chip
+                label={item.label}
+                selected={billboardCategory === item.id}
+                onPress={() => {
+                  haptic.select();
+                  setBillboardCategory(item.id);
+                }}
+              />
+            )}
+          />
+
+          {billboard.length > 0 ? (
+            <View style={styles.billboardList}>
+              {billboard.map((entry) => {
+                const w = fandomById(entry.world);
+                const topThree = entry.rank <= 3;
+                const badgeColor =
+                  entry.rank === 1
+                    ? colors.accent
+                    : entry.rank === 2
+                      ? '#F59E0B'
+                      : entry.rank === 3
+                        ? '#10B981'
+                        : colors.textTertiary;
+                return (
+                  <Tap
+                    key={`${billboardCategory}-${entry.drama.id}`}
+                    onPress={() => router.push(`/drama/${entry.drama.id}`)}
+                    style={[styles.billboardCard, topThree ? styles.billboardTopCard : null]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Rank ${entry.rank}: ${entry.drama.title}`}
+                  >
+                    <View style={styles.billboardRankWrap}>
+                      <Text
+                        variant={topThree ? 'title' : 'titleSmall'}
+                        numeric
+                        style={{ color: badgeColor, fontWeight: '800' }}
+                      >
+                        #{entry.rank}
+                      </Text>
+                    </View>
+                    <Poster drama={entry.drama} width={44} rounded={radius.sm} />
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text variant="titleSmall" numberOfLines={1}>
+                        {entry.drama.title}
+                      </Text>
+                      <Text variant="caption" tone="secondary" numberOfLines={1}>
+                        {[
+                          `${w.flag} ${w.short}`,
+                          entry.isLiveAiring ? 'Airing' : String(entry.drama.year),
+                          entry.drama.rating ? `★ ${entry.drama.rating.toFixed(1)}` : null,
+                          entry.watchersCount > 0 ? `${compact(entry.watchersCount)} watching` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+                  </Tap>
+                );
+              })}
+            </View>
+          ) : trendingLoad.loading || categoryLoad.loading ? (
+            <View style={{ paddingHorizontal: space.margin, gap: space.x2 }}>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} width="100%" height={68} radius={radius.md} />
+              ))}
+            </View>
+          ) : null}
+        </View>
 
         {/* Four genuine calculated world leaders: #1 K-Drama, #1 C-Drama, #1 Anime, #1 Hollywood */}
         {activeLeader ? (
@@ -674,4 +852,28 @@ const styles = StyleSheet.create({
   tags: { flexDirection: 'row', flexWrap: 'wrap', gap: space.x2, paddingHorizontal: space.margin },
   tag: { paddingHorizontal: 12, height: 32, borderRadius: 16, backgroundColor: colors.surface1, alignItems: 'center', justifyContent: 'center' },
   wallCol: { paddingHorizontal: space.margin, gap: space.gutter, marginBottom: space.x4 },
+  billboardList: {
+    paddingHorizontal: space.margin,
+    gap: space.x2,
+  },
+  billboardCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.x3,
+    paddingHorizontal: space.x3,
+    paddingVertical: space.x2,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
+  billboardTopCard: {
+    borderColor: 'rgba(225,29,72,0.3)',
+    backgroundColor: colors.surface2,
+  },
+  billboardRankWrap: {
+    width: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

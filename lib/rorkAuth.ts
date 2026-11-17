@@ -289,6 +289,101 @@ export async function refreshAccessToken(): Promise<StoredTokens | null> {
   }
 }
 
+// ── Pending PKCE state for direct/same-tab/redirect callbacks on web & native ───────────────
+
+const PENDING_PKCE_KEY = 'hallyu.rork.pending_pkce.v1';
+const CALLBACK_CHANNEL = 'hallyu_rork_auth_callback';
+const CALLBACK_STORAGE_KEY = 'hallyu.rork.auth_callback_code.v1';
+
+function writePendingVerifier(verifier: string): void {
+  try {
+    const payload = JSON.stringify({ verifier, at: Date.now() });
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.setItem(PENDING_PKCE_KEY, payload);
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(PENDING_PKCE_KEY, payload);
+    }
+  } catch {
+    // Storage disabled or unavailable (private mode / mocked test window).
+  }
+}
+
+function readPendingVerifier(): string | null {
+  try {
+    const raw =
+      (typeof window !== 'undefined' && window.sessionStorage?.getItem(PENDING_PKCE_KEY)) ||
+      (typeof window !== 'undefined' && window.localStorage?.getItem(PENDING_PKCE_KEY)) ||
+      null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { verifier?: unknown; at?: unknown };
+    if (typeof parsed.verifier !== 'string' || !parsed.verifier) return null;
+    if (typeof parsed.at === 'number' && Date.now() - parsed.at > 10 * 60_000) return null;
+    return parsed.verifier;
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingVerifier(): void {
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.removeItem(PENDING_PKCE_KEY);
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(PENDING_PKCE_KEY);
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+export function hasPendingRorkRedirect(): boolean {
+  return Boolean(readPendingVerifier());
+}
+
+/**
+ * Used by `/auth/callback` on web when Rork's Google flow redirects back into the app instead of
+ * closing a popup cleanly: hands the auth code to `opener` if present, or exchanges the code directly
+ * under the saved PKCE verifier.
+ */
+export async function completePendingRorkRedirect(code: string): Promise<RorkIdentity> {
+  if (!APP_KEY) throw new Error('Google sign-in is not configured in this build.');
+  const cleanCode = code.trim();
+  if (!cleanCode) throw new Error('Google sign-in returned no authorization code.');
+
+  // If this window was opened as a popup, notify the opener across all safe channels first.
+  try {
+    if (typeof window !== 'undefined' && window.opener && window.opener !== window) {
+      try {
+        window.opener.postMessage({ type: 'rork_auth_callback', code: cleanCode }, window.location?.origin || '*');
+      } catch {
+        // Ignore cross-origin opener postMessage restriction
+      }
+      if (typeof BroadcastChannel === 'function') {
+        const ch = new BroadcastChannel(CALLBACK_CHANNEL);
+        ch.postMessage({ type: 'rork_auth_callback', code: cleanCode });
+        ch.close();
+      }
+      if (window.localStorage) {
+        window.localStorage.setItem(CALLBACK_STORAGE_KEY, JSON.stringify({ code: cleanCode, at: Date.now() }));
+      }
+    }
+  } catch {
+    // Fallback to direct exchange below.
+  }
+
+  const verifier = readPendingVerifier();
+  if (!verifier) {
+    throw new Error('Google redirect returned without an active sign-in session. Try Gmail login.');
+  }
+  const tokens = await exchangeCode(cleanCode, verifier);
+  clearPendingVerifier();
+  const identity = identityFromAccessToken(tokens.accessToken);
+  if (!identity) throw new Error('Google sign-in returned an unreadable session — try Gmail login.');
+  return identity;
+}
+
 // ── The Google flow ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -302,6 +397,7 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
   }
   const verifier = await randomVerifier();
   const challenge = await sha256Base64Url(verifier);
+  writePendingVerifier(verifier);
 
   const initiated = (await authPost('initiate', {
     app_key: APP_KEY,
@@ -311,24 +407,35 @@ export async function startGoogleSignIn(): Promise<RorkIdentity> {
     env: Platform.OS === 'web' ? 'preview' : 'native',
   })) as { auth_url?: string };
   const authUrl = initiated.auth_url ?? '';
-  if (!authUrl) throw new Error('Google sign-in did not return a consent URL.');
+  if (!authUrl) {
+    clearPendingVerifier();
+    throw new Error('Google sign-in did not return a consent URL. Try Gmail login.');
+  }
 
   if (Platform.OS === 'web') {
     // Browser preview: only the tokens returned by THIS popup exchange may establish identity.
     // Falling back to SecureStore here could silently sign in the previous account after a cancel.
     const tokens = await exchangeViaPopup(authUrl, verifier);
+    clearPendingVerifier();
     const identity = identityFromAccessToken(tokens.accessToken);
-    if (!identity) throw new Error('Google sign-in returned an unreadable session — try again.');
+    if (!identity) throw new Error('Google sign-in returned an unreadable session — try Gmail login.');
     return identity;
   }
 
   const result = await WebBrowser.openAuthSessionAsync(authUrl, authCallbackScheme());
-  if (result.type !== 'success') throw new Error('cancelled');
+  if (result.type !== 'success') {
+    clearPendingVerifier();
+    throw new Error('cancelled');
+  }
   const code = new URL(result.url).searchParams.get('code');
-  if (!code) throw new Error('Google sign-in did not return an authorization code.');
+  if (!code) {
+    clearPendingVerifier();
+    throw new Error('Google sign-in did not return an authorization code. Try Gmail login.');
+  }
   const tokens = await exchangeCode(code, verifier);
+  clearPendingVerifier();
   const identity = identityFromAccessToken(tokens.accessToken);
-  if (!identity) throw new Error('Google sign-in returned an unreadable session — try again.');
+  if (!identity) throw new Error('Google sign-in returned an unreadable session — try Gmail login.');
   return identity;
 }
 
@@ -350,13 +457,37 @@ const POPUP_TIMEOUT_MS = 120_000;
 async function exchangeViaPopup(authUrl: string, verifier: string): Promise<StoredTokens> {
   const popup = window.open(authUrl, '_blank', 'width=500,height=650');
   if (!popup) {
-    throw new Error('Google sign-in popup was blocked. Allow popups for Hallyu, then try again.');
+    throw new Error('Google sign-in popup was blocked. Allow popups or try Gmail login.');
   }
   const allowedOrigins = new Set([new URL(authUrl).origin, new URL(AUTH_URL).origin]);
+  try {
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      allowedOrigins.add(window.location.origin);
+    }
+  } catch {
+    // Test mocks may omit window.location
+  }
   return new Promise<StoredTokens>((resolve, reject) => {
     let settled = false;
+    let exchanging = false;
+    let channel: BroadcastChannel | null = null;
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
+      if (typeof window.removeEventListener === 'function') {
+        try {
+          window.removeEventListener('storage', onStorage as EventListener);
+        } catch {
+          // Ignore mocked window
+        }
+      }
+      if (channel) {
+        try {
+          channel.close();
+        } catch {
+          // Ignore
+        }
+        channel = null;
+      }
       clearInterval(poll);
       clearTimeout(timeout);
     };
@@ -372,24 +503,83 @@ async function exchangeViaPopup(authUrl: string, verifier: string): Promise<Stor
       cleanup();
       resolve(tokens);
     };
-    const onMessage = (event: MessageEvent) => {
-      if (!allowedOrigins.has(event.origin) || event.source !== popup) return;
-      if (event.data?.type !== 'rork_auth_callback') return;
-      const code = typeof event.data.code === 'string' ? event.data.code : '';
+    const handleCode = (code: string) => {
+      if (settled || exchanging) return;
       if (!code) {
         fail(new Error('cancelled'));
         return;
       }
-      exchangeCode(code, verifier).then(succeed, (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
+      exchanging = true;
+      exchangeCode(code, verifier).then(succeed, (error: unknown) =>
+        fail(error instanceof Error ? error : new Error(String(error))),
+      );
     };
+    const onMessage = (event: MessageEvent) => {
+      if (!allowedOrigins.has(event.origin)) return;
+      if (event.source && event.source !== popup && event.origin !== window.location?.origin) return;
+      if (event.data?.type !== 'rork_auth_callback') return;
+      const code = typeof event.data.code === 'string' ? event.data.code : '';
+      handleCode(code);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== CALLBACK_STORAGE_KEY || !event.newValue) return;
+      try {
+        const parsed = JSON.parse(event.newValue) as { code?: unknown };
+        if (typeof parsed.code === 'string' && parsed.code) {
+          window.localStorage?.removeItem(CALLBACK_STORAGE_KEY);
+          handleCode(parsed.code);
+        }
+      } catch {
+        // Ignore
+      }
+    };
+    try {
+      if (typeof BroadcastChannel === 'function') {
+        channel = new BroadcastChannel(CALLBACK_CHANNEL);
+        channel.onmessage = (event) => {
+          if (event.data?.type === 'rork_auth_callback' && typeof event.data.code === 'string') {
+            handleCode(event.data.code);
+          }
+        };
+      }
+    } catch {
+      // Ignore if BroadcastChannel unavailable
+    }
     const poll = setInterval(() => {
+      if (exchanging) return;
+      // Check whether the popup redirected back to our own origin with ?code= in URL.
+      try {
+        const href = popup.location?.href;
+        if (href && typeof window !== 'undefined' && window.location?.origin && href.startsWith(window.location.origin)) {
+          const parsedUrl = new URL(href);
+          const urlCode = parsedUrl.searchParams.get('code');
+          if (urlCode) {
+            try {
+              popup.close();
+            } catch {
+              // Ignore
+            }
+            handleCode(urlCode);
+            return;
+          }
+        }
+      } catch {
+        // Cross-origin while on Google consent page — expected.
+      }
       if (popup.closed) fail(new Error('cancelled'));
     }, 250);
     const timeout = setTimeout(() => {
       popup.close();
-      fail(new Error('Google sign-in timed out. Please try again.'));
+      fail(new Error('Google sign-in timed out. Try Gmail login.'));
     }, POPUP_TIMEOUT_MS);
     window.addEventListener('message', onMessage);
+    if (typeof window.addEventListener === 'function') {
+      try {
+        window.addEventListener('storage', onStorage as EventListener);
+      } catch {
+        // Ignore mocked window
+      }
+    }
   });
 }
 

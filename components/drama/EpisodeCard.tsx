@@ -54,39 +54,41 @@ function EpisodeCardBase({ drama, episode, postCount, style, showDrama }: Episod
     });
 
   return (
-    <Tap
-      onPress={() => router.push(`/episode/${drama.id}/${episode.season}/${episode.number}`)}
-      accessibilityRole="button"
-      accessibilityLabel={`${multi ? `Season ${episode.season} ` : ''}Episode ${episode.number}${episode.title ? `, ${episode.title}` : ''}, ${watched ? 'watched' : st}`}
-      style={[styles.row, style]}
-    >
-      <View style={[styles.num, watched ? styles.numWatched : null, current ? styles.numCurrent : null]}>
-        {st === 'live' ? <View style={styles.live} /> : null}
-        <Text variant="titleSmall" numeric style={{ color: watched ? colors.textSecondary : colors.textPrimary }}>
-          {episode.number}
-        </Text>
-      </View>
-      <View style={{ flex: 1 }}>
-        {showDrama ? (
-          <Text variant="caption" tone="accent" numberOfLines={1}>
-            {drama.title}
-          </Text>
-        ) : null}
-        <Text variant="titleSmall" numberOfLines={1} style={{ color: watched ? colors.textSecondary : colors.textPrimary }}>
-          {episode.title ?? `Episode ${episode.number}`}
-        </Text>
-        <Text variant="caption" tone={st === 'live' ? 'accent' : 'tertiary'} numberOfLines={1}>
-          {st === 'live' ? 'Just aired · conversation is live' : dateLine}
-        </Text>
-      </View>
-      {postCount ? (
-        <View style={styles.count}>
-          <Ionicons name="chatbubble-outline" size={14} color={colors.textTertiary} />
-          <Text variant="caption" tone="tertiary" numeric>
-            {postCount}
+    <View style={[styles.row, style]}>
+      <Tap
+        onPress={() => router.push(`/episode/${drama.id}/${episode.season}/${episode.number}`)}
+        accessibilityRole="button"
+        accessibilityLabel={`${multi ? `Season ${episode.season} ` : ''}Episode ${episode.number}${episode.title ? `, ${episode.title}` : ''}, ${watched ? 'watched' : st}`}
+        style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.x3 }}
+      >
+        <View style={[styles.num, watched ? styles.numWatched : null, current ? styles.numCurrent : null]}>
+          {st === 'live' ? <View style={styles.live} /> : null}
+          <Text variant="titleSmall" numeric style={{ color: watched ? colors.textSecondary : colors.textPrimary }}>
+            {episode.number}
           </Text>
         </View>
-      ) : null}
+        <View style={{ flex: 1 }}>
+          {showDrama ? (
+            <Text variant="caption" tone="accent" numberOfLines={1}>
+              {drama.title}
+            </Text>
+          ) : null}
+          <Text variant="titleSmall" numberOfLines={1} style={{ color: watched ? colors.textSecondary : colors.textPrimary }}>
+            {episode.title ?? `Episode ${episode.number}`}
+          </Text>
+          <Text variant="caption" tone={st === 'live' ? 'accent' : 'tertiary'} numberOfLines={1}>
+            {st === 'live' ? 'Just aired · conversation is live' : dateLine}
+          </Text>
+        </View>
+        {postCount ? (
+          <View style={styles.count}>
+            <Ionicons name="chatbubble-outline" size={14} color={colors.textTertiary} />
+            <Text variant="caption" tone="tertiary" numeric>
+              {postCount}
+            </Text>
+          </View>
+        ) : null}
+      </Tap>
       {st !== 'upcoming' ? (
         <Tap
           onPress={toggleWatched}
@@ -102,7 +104,7 @@ function EpisodeCardBase({ drama, episode, postCount, style, showDrama }: Episod
       ) : (
         <ReminderBell drama={drama} episode={episode} />
       )}
-    </Tap>
+    </View>
   );
 }
 

@@ -10,7 +10,6 @@ import { DiscussionKind, Post } from '../../lib/model';
 import { Avatar } from '../ui/Avatar';
 import { Poster } from '../ui/Poster';
 import { Sheet, SheetRow } from '../ui/Sheet';
-import { Tap } from '../ui/Tap';
 import { Text } from '../ui/Text';
 import { useToast } from '../ui/Toast';
 import { ReactionButton, ReactionSummary } from './Reactions';
@@ -132,10 +131,19 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
     );
   }
 
+  const OpenableText = ({ children }: { children: React.ReactNode }) =>
+    detail ? (
+      <>{children}</>
+    ) : (
+      <Pressable onPress={open} accessibilityRole="button" accessibilityLabel={`Open post by ${author?.displayName ?? 'member'}`}>
+        {children}
+      </Pressable>
+    );
+
   const Body = (
     <View style={{ gap: space.x2 }}>
       {post.type === 'discussion' ? (
-        <>
+        <OpenableText>
           <View style={styles.kindRow}>
             <Text variant="overline" tone="accent">
               {KIND_LABEL[post.kind ?? 'general']}
@@ -143,7 +151,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
           </View>
           <Text variant={detail ? 'headline' : 'title'}>{post.title}</Text>
           <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} tone="secondary" />
-        </>
+        </OpenableText>
       ) : post.type === 'review' ? (
         <View style={{ gap: space.x3 }}>
           <View style={styles.reviewShowcase}>
@@ -153,26 +161,32 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
               </Pressable>
             ) : null}
             <View style={{ flex: 1, gap: 6 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
-                <View style={styles.ratingBox}>
-                  <Ionicons name="star" size={14} color={colors.warm} />
-                  <Text variant="titleSmall" style={{ color: colors.warm }} numeric>
-                    {post.rating}
-                  </Text>
-                  <Text variant="caption" style={{ color: colors.warm, opacity: 0.78 }}>
-                    /10
+              <OpenableText>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+                  <View style={styles.ratingBox}>
+                    <Ionicons name="star" size={14} color={colors.warm} />
+                    <Text variant="titleSmall" style={{ color: colors.warm }} numeric>
+                      {post.rating}
+                    </Text>
+                    <Text variant="caption" style={{ color: colors.warm, opacity: 0.78 }}>
+                      /10
+                    </Text>
+                  </View>
+                  <Text variant="overline" tone="tertiary">
+                    VERDICT
                   </Text>
                 </View>
-                <Text variant="overline" tone="tertiary">
-                  VERDICT
+                <Text variant={detail ? 'titleLarge' : 'title'} style={{ lineHeight: 22 }}>
+                  {post.verdict}
                 </Text>
-              </View>
-              <Text variant={detail ? 'titleLarge' : 'title'} style={{ lineHeight: 22 }}>
-                {post.verdict}
-              </Text>
+              </OpenableText>
             </View>
           </View>
-          {post.body ? <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} tone="secondary" /> : null}
+          {post.body ? (
+            <OpenableText>
+              <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} tone="secondary" />
+            </OpenableText>
+          ) : null}
         </View>
       ) : post.type === 'recommendation' ? (
         <View style={{ gap: space.x3 }}>
@@ -229,12 +243,18 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
               </Text>
             </Pressable>
           ) : null}
-          <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} />
+          <OpenableText>
+            <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} />
+          </OpenableText>
         </View>
       ) : post.type === 'reaction' ? (
-        <RichText text={post.body} variant={detail ? 'headline' : 'titleLarge'} numberOfLines={detail ? undefined : 5} />
+        <OpenableText>
+          <RichText text={post.body} variant={detail ? 'headline' : 'titleLarge'} numberOfLines={detail ? undefined : 5} />
+        </OpenableText>
       ) : (
-        <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} />
+        <OpenableText>
+          <RichText text={post.body} variant={detail ? 'bodyLarge' : 'body'} numberOfLines={detail ? undefined : 6} />
+        </OpenableText>
       )}
       {post.video ? (
         <FeedVideo
@@ -263,7 +283,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
 
   return (
     <>
-      <Tap onPress={detail ? undefined : open} disabled={detail} scaleTo={0.995} accessibilityRole={detail ? undefined : 'button'} style={[styles.card, style]}>
+      <View style={[styles.card, style]}>
         {reason ? (
           <View style={styles.reason}>
             <Ionicons name="sparkles-outline" size={12} color={colors.textTertiary} />
@@ -310,30 +330,32 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
 
         {/* Context strip */}
         {!hideContext && drama ? (
-          <Pressable
-            onPress={() => router.push(post.context.episode ? `/episode/${drama.id}/${post.context.season ?? 1}/${post.context.episode}` : `/drama/${drama.id}`)}
-            style={styles.context}
-            accessibilityRole="link"
-            accessibilityLabel={`${drama.title}${epLabel ? ` ${epLabel}` : ''}`}
-          >
-            <Poster drama={drama} width={28} rounded={4} />
-            {/* World first, then the title: "Anime · Frieren" — the context the brief asks for. */}
-            <Text variant="caption" tone="secondary" numberOfLines={1}>
-              {dramaLabel(drama)}
-            </Text>
-            <Text variant="caption" tone="tertiary" accessibilityElementsHidden>
-              ·
-            </Text>
-            <Text variant="label" numberOfLines={1} style={{ flexShrink: 1 }}>
-              {drama.title}
-            </Text>
-            {epLabel ? (
-              <View style={styles.epChip}>
-                <Text variant="caption" tone="accent" numeric>
-                  {epLabel}
-                </Text>
-              </View>
-            ) : null}
+          <View style={styles.context}>
+            <Pressable
+              onPress={() => router.push(post.context.episode ? `/episode/${drama.id}/${post.context.season ?? 1}/${post.context.episode}` : `/drama/${drama.id}`)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2, flexShrink: 1 }}
+              accessibilityRole="link"
+              accessibilityLabel={`${drama.title}${epLabel ? ` ${epLabel}` : ''}`}
+            >
+              <Poster drama={drama} width={28} rounded={4} />
+              {/* World first, then the title: "Anime · Frieren" — the context the brief asks for. */}
+              <Text variant="caption" tone="secondary" numberOfLines={1}>
+                {dramaLabel(drama)}
+              </Text>
+              <Text variant="caption" tone="tertiary" accessibilityElementsHidden>
+                ·
+              </Text>
+              <Text variant="label" numberOfLines={1} style={{ flexShrink: 1 }}>
+                {drama.title}
+              </Text>
+              {epLabel ? (
+                <View style={styles.epChip}>
+                  <Text variant="caption" tone="accent" numeric>
+                    {epLabel}
+                  </Text>
+                </View>
+              ) : null}
+            </Pressable>
             {actors.length ? (
               <Pressable
                 onPress={() => router.push(`/actor/${actors[0]!.id}`)}
@@ -347,7 +369,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
                 </Text>
               </Pressable>
             ) : null}
-          </Pressable>
+          </View>
         ) : null}
 
         {/* Body (veiled or not) */}
@@ -409,7 +431,7 @@ function PostCardBase({ post, reason, detail, hideContext, style, onOpenComments
             <Ionicons name="share-outline" size={20} color={colors.textSecondary} />
           </Pressable>
         </View>
-      </Tap>
+      </View>
 
       <Sheet visible={menu} onClose={() => setMenu(false)} title={author ? `${TYPE_LABEL[post.type]} by ${author.displayName}` : TYPE_LABEL[post.type]}>
         <SheetRow

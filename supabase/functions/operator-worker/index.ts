@@ -235,7 +235,7 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
       p_outcome: 'failed',
       p_task: task.id,
       p_actor: staff.profile_id,
-      p_actor_type: 'ai',
+      p_actor_type: 'staff',
       p_resource_type: 'task',
       p_resource_id: task.id,
       p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null },
@@ -394,7 +394,7 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
             p_outcome: 'ok',
             p_task: task.id,
             p_actor: staff.profile_id,
-            p_actor_type: 'ai',
+            p_actor_type: 'staff',
             p_resource_type: 'approval',
             p_resource_id: approval.data ? String(approval.data) : null,
             p_details: { tool: call.function.name },
@@ -451,7 +451,7 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
       p_outcome: 'failed',
       p_task: task.id,
       p_actor: staff.profile_id,
-      p_actor_type: 'ai',
+      p_actor_type: 'staff',
       p_resource_type: 'task',
       p_resource_id: task.id,
       p_details: { code, detail, retryable, next_status: failed.data ?? null },
@@ -570,6 +570,22 @@ async function recordUsage(
  * choosing to call a tool. If the model already replied through `message.reply`, this is skipped so
  * the same answer can never be sent twice.
  */
+function splitDmChunks(text: string, maxLen = 1900): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  let remaining = text.trim();
+  while (remaining.length > maxLen) {
+    let sliceAt = remaining.lastIndexOf('\n\n', maxLen);
+    if (sliceAt < maxLen * 0.4) sliceAt = remaining.lastIndexOf('\n', maxLen);
+    if (sliceAt < maxLen * 0.4) sliceAt = remaining.lastIndexOf(' ', maxLen);
+    if (sliceAt < maxLen * 0.3) sliceAt = maxLen;
+    chunks.push(remaining.slice(0, sliceAt).trim());
+    remaining = remaining.slice(sliceAt).trim();
+  }
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
+
 async function deliverAnswer(
   admin: ReturnType<typeof adminClient>,
   task: TaskRow,
@@ -592,15 +608,22 @@ async function deliverAnswer(
     // that could not be confirmed, and the conversation shows what was sent.
   }
 
-  const sent = await admin
-    .rpc('operator_send_staff_message', {
-      p_conversation: task.conversation_id,
-      p_body: content.slice(0, 4000),
-      p_task: task.id,
-    })
-    .catch(() => ({ data: null, error: { message: 'send failed' } }) as { data: null; error: { message: string } });
-  if (sent.error) return null;
-  return typeof sent.data === 'string' ? sent.data : null;
+  let firstMessageId: string | null = null;
+  const chunks = splitDmChunks(content, 1900);
+  for (const chunk of chunks) {
+    const sent = await admin
+      .rpc('operator_send_staff_message', {
+        p_conversation: task.conversation_id,
+        p_body: chunk,
+        p_task: task.id,
+      })
+      .catch(() => ({ data: null, error: { message: 'send failed' } }) as { data: null; error: { message: string } });
+    if (sent.error) return firstMessageId;
+    if (!firstMessageId && sent.data) {
+      firstMessageId = typeof sent.data === 'string' ? sent.data : JSON.stringify(sent.data);
+    }
+  }
+  return firstMessageId;
 }
 
 async function completeTask(
@@ -625,7 +648,7 @@ async function completeTask(
     p_outcome: 'ok',
     p_task: task.id,
     p_actor: staff.profile_id,
-    p_actor_type: 'ai',
+    p_actor_type: 'staff',
     p_resource_type: 'task',
     p_resource_id: task.id,
     p_details: {

@@ -69,38 +69,40 @@ function TonightHero({ drama, episode }: { drama: Drama; episode: Episode }) {
   const cta = st === 'live' ? 'Join the room' : st === 'upcoming' ? (reminder.on ? 'Reminder on' : 'Remind me') : watched ? 'Open the room' : 'Catch up';
   const open = () => router.push(`/episode/${drama.id}/${episode.season}/${episode.number}`);
   return (
-    <Pressable
-      onPress={open}
-      accessibilityRole="button"
-      accessibilityLabel={`${drama.title}, episode ${episode.number}, ${status}. ${sub}`}
-      style={[styles.hero, st === 'live' ? styles.heroLive : null]}
-    >
+    <View style={[styles.hero, st === 'live' ? styles.heroLive : null]}>
       <Backdrop uri={episode.stillUrl ?? drama.backdropUrl ?? drama.posterUrl ?? drama.posterLocal} fallbackColor={drama.tone} width="100%" height={h} label={`${drama.title} still`}>
         <View style={styles.heroScrim} />
         <View style={styles.heroBody}>
-          <View style={styles.top}>
-            {st === 'live' ? <LivePulse size={7} style={{ marginLeft: -4, marginRight: -2 }} /> : null}
-            <Text variant="overline" tone={st === 'live' ? 'accent' : 'onMedia'}>
-              {status}
+          <Pressable
+            onPress={open}
+            accessibilityRole="button"
+            accessibilityLabel={`${drama.title}, episode ${episode.number}, ${status}. ${sub}`}
+            style={{ gap: 2 }}
+          >
+            <View style={styles.top}>
+              {st === 'live' ? <LivePulse size={7} style={{ marginLeft: -4, marginRight: -2 }} /> : null}
+              <Text variant="overline" tone={st === 'live' ? 'accent' : 'onMedia'}>
+                {status}
+              </Text>
+              {watched ? (
+                <Text variant="overline" tone="success">
+                  · Watched
+                </Text>
+              ) : null}
+            </View>
+            <Text variant="headline" tone="onMedia" numberOfLines={1}>
+              {drama.title}
             </Text>
-            {watched ? (
-              <Text variant="overline" tone="success">
-                · Watched
+            <Text variant="bodySmall" tone="onMedia" numberOfLines={1} style={{ opacity: 0.85 }}>
+              {drama.seasons.length > 1 ? `S${episode.season} · ` : ''}Episode {episode.number}
+              {episode.title ? ` · ${episode.title}` : ''}
+            </Text>
+            {recap?.thread ? (
+              <Text variant="caption" tone="onMedia" numberOfLines={1} style={{ opacity: 0.85, fontStyle: 'italic' }}>
+                “{recap.thread}”
               </Text>
             ) : null}
-          </View>
-          <Text variant="headline" tone="onMedia" numberOfLines={1}>
-            {drama.title}
-          </Text>
-          <Text variant="bodySmall" tone="onMedia" numberOfLines={1} style={{ opacity: 0.85 }}>
-            {drama.seasons.length > 1 ? `S${episode.season} · ` : ''}Episode {episode.number}
-            {episode.title ? ` · ${episode.title}` : ''}
-          </Text>
-          {recap?.thread ? (
-            <Text variant="caption" tone="onMedia" numberOfLines={1} style={{ opacity: 0.85, fontStyle: 'italic' }}>
-              “{recap.thread}”
-            </Text>
-          ) : null}
+          </Pressable>
           <View style={styles.heroFoot}>
             <Text variant="caption" tone="onMedia" numberOfLines={1} style={{ flex: 1, opacity: 0.85 }}>
               {sub}
@@ -115,7 +117,7 @@ function TonightHero({ drama, episode }: { drama: Drama; episode: Episode }) {
           </View>
         </View>
       </Backdrop>
-    </Pressable>
+    </View>
   );
 }
 

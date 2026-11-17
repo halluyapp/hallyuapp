@@ -354,7 +354,7 @@ const handlers: Record<string, Handler> = {
       audience,
       audience_filter: world ? { world } : {},
       kind: 'system',
-      status: 'completed',
+      status: 'sent',
       target_count: delivered,
       delivered_count: delivered,
       failed_count: 0,

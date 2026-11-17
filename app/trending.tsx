@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { FlatList, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, FlatList, View } from 'react-native';
 import { DramaListRow } from '../components/drama/DramaCard';
 import { PostCard } from '../components/feed/PostCard';
 import { Chip, ChipRow } from '../components/ui/Chip';
@@ -9,20 +10,24 @@ import { ListSkeleton } from '../components/ui/Skeleton';
 import { ErrorState, classifyError } from '../components/ui/States';
 import { Text } from '../components/ui/Text';
 import { TopBar } from '../components/ui/TopBar';
-import { space } from '../constants/theme';
-import { catalog } from '../lib/catalog';
+import { colors, space } from '../constants/theme';
+import { catalog, invalidateCatalogLists } from '../lib/catalog';
 import { adoptDramas } from '../lib/catalogSync';
 import { FANDOMS, formatFandomOf } from '../lib/fandoms';
 import { useApp, useLoad } from '../lib/hooks';
 import { Drama, FandomId } from '../lib/model';
 import { trendingDiscussions, trendingDramas } from '../lib/selectors';
+import { computeTopBillboard, formatBillboardUpdatedAt } from '../lib/topBillboard';
 
-/** Trending — dramas with momentum this week (live from TMDB) and the conversations around them. */
+/** Trending — auto-updating Top 10 Billboard & weekly momentum across all four Hallyu worlds. */
 export default function Trending() {
   const { state, getDrama } = useApp();
   const padding = useListPadding(false);
   const [tab, setTab] = useState<'dramas' | 'posts'>('dramas');
   const [worldFilter, setWorldFilter] = useState<FandomId | 'all'>('all');
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const lastRefreshRef = useRef(0);
+
   const live = useLoad<Drama[]>(
     async (signal) =>
       adoptDramas(
@@ -33,15 +38,57 @@ export default function Trending() {
     [worldFilter],
     catalog.available,
   );
+
+  useEffect(() => {
+    if (live.data) {
+      setUpdatedAt(Date.now());
+      lastRefreshRef.current = Date.now();
+    }
+  }, [live.data]);
+
+  const reloadTrending = useCallback(() => {
+    invalidateCatalogLists();
+    lastRefreshRef.current = Date.now();
+    live.reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Date.now() - lastRefreshRef.current > 90_000) {
+        reloadTrending();
+      }
+      const timer = setInterval(reloadTrending, 90_000);
+      return () => clearInterval(timer);
+    }, [reloadTrending]),
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active' && Date.now() - lastRefreshRef.current > 60_000) {
+        reloadTrending();
+      }
+    });
+    return () => sub.remove();
+  }, [reloadTrending]);
+
   const saved = useMemo(() => trendingDramas(state, 20), [state]);
   const rawDramas = useMemo(
     () => (live.data?.length ? live.data : !live.loading ? saved : []),
     [live.data, live.loading, saved],
   );
-  const dramas = useMemo(
-    () => (worldFilter === 'all' ? rawDramas : rawDramas.filter((d) => formatFandomOf(d) === worldFilter)),
-    [rawDramas, worldFilter],
-  );
+  const dramas = useMemo(() => {
+    const pool = worldFilter === 'all' ? rawDramas : rawDramas.filter((d) => formatFandomOf(d) === worldFilter);
+    const ranked = computeTopBillboard({
+      trending: pool,
+      posts: state.posts,
+      watchlist: state.watchlist,
+      category: worldFilter,
+      limit: 20,
+    });
+    return ranked.length ? ranked.map((r) => r.drama) : pool;
+  }, [rawDramas, worldFilter, state.posts, state.watchlist]);
+
   const rawPosts = useMemo(() => trendingDiscussions(state, 30), [state]);
   const posts = useMemo(
     () =>
@@ -54,10 +101,24 @@ export default function Trending() {
     [rawPosts, worldFilter, getDrama],
   );
   return (
-    <Screen header={<TopBar mode="stack" title="Trending" subtitle={tab === 'dramas' ? (live.data ? 'This week across your worlds' : 'Across K-Drama, C-Drama, Anime & Hollywood') : 'Top conversations'} />}>
+    <Screen
+      header={
+        <TopBar
+          mode="stack"
+          title="Top 10 Billboard & Trending"
+          subtitle={
+            tab === 'dramas'
+              ? live.data
+                ? `Auto-updating · ${formatBillboardUpdatedAt(updatedAt)}`
+                : 'Across K-Drama, C-Drama, Anime & Hollywood'
+              : 'Top conversations'
+          }
+        />
+      }
+    >
       <Segmented
         items={[
-          { key: 'dramas', label: 'Dramas' },
+          { key: 'dramas', label: 'Top Billboard' },
           { key: 'posts', label: 'Conversations' },
         ]}
         value={tab}
@@ -86,7 +147,7 @@ export default function Trending() {
             }
             ListEmptyComponent={
               <View style={{ paddingTop: space.x6 }}>
-                <ErrorState kind={classifyError(live.error)} onRetry={live.reload} />
+                <ErrorState kind={classifyError(live.error)} onRetry={reloadTrending} />
               </View>
             }
             renderItem={({ item, index }) => (
@@ -94,8 +155,8 @@ export default function Trending() {
                 drama={item}
                 subtitle={[item.rating ? `★ ${item.rating.toFixed(1)}` : null, item.status === 'airing' ? 'Airing' : String(item.year), item.network ?? null].filter(Boolean).join(' · ')}
                 right={
-                  <Text variant="titleSmall" tone="tertiary" numeric>
-                    {index + 1}
+                  <Text variant={index < 3 ? 'title' : 'titleSmall'} tone={index < 3 ? 'accent' : 'tertiary'} numeric style={index === 0 ? { color: colors.accent } : undefined}>
+                    #{index + 1}
                   </Text>
                 }
               />

@@ -77,6 +77,8 @@ export interface OperatorConversation {
   id: string;
   channel: OperatorChannel;
   member_profile_id: string | null;
+  member_handle?: string | null;
+  member_display_name?: string | null;
   external_thread_id: string | null;
   subject: string | null;
   status: string;
@@ -213,14 +215,18 @@ export interface OperatorCampaign {
 }
 
 export interface OperatorSchedule {
+  id?: string;
   name: string;
   task_type: string;
-  cadence_seconds: number;
+  cron?: string | null;
+  interval_seconds?: number | null;
+  cadence_seconds?: number | null;
   enabled: boolean;
   last_run_at: string | null;
   next_run_at: string | null;
-  input: Record<string, unknown> | null;
-  priority: number;
+  payload?: Record<string, unknown> | null;
+  input?: Record<string, unknown> | null;
+  priority?: number | null;
 }
 
 export interface OperatorAuditEntry {

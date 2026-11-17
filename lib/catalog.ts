@@ -623,7 +623,7 @@ function memo<T>(key: string, ttlMs: number, run: () => Promise<T>): Promise<T> 
   memoStore.set(key, { at: Date.now(), value });
   return value;
 }
-const TEN_MIN = 10 * 60_000;
+const TEN_MIN = 2 * 60_000;
 /** Drop memoised editorial lists (pull-to-refresh) — server and device-local adapters both. */
 export function invalidateCatalogLists() {
   memoStore.clear();

@@ -47,8 +47,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Never intercept cross-origin API calls (Supabase REST/Auth/Storage/TMDB) or APK downloads
-  if (url.origin !== self.location.origin || url.pathname.endsWith('.apk')) {
+  // Never intercept dev server requests or cross-origin API calls (Supabase/TMDB) or APK downloads
+  if (
+    url.hostname === 'localhost' ||
+    url.hostname === '127.0.0.1' ||
+    url.origin !== self.location.origin ||
+    url.pathname.endsWith('.apk')
+  ) {
     return;
   }
 
@@ -86,7 +91,9 @@ self.addEventListener('fetch', (event) => {
         cache.match(req).then((hit) => {
           if (hit) return hit;
           return fetch(req).then((res) => {
-            if (res && res.status === 200) {
+            const contentType = (res && res.headers && res.headers.get('content-type')) || '';
+            // Never cache HTML SPA fallbacks returned for stale JS/CSS bundle URLs.
+            if (res && res.status === 200 && !contentType.includes('text/html')) {
               cache.put(req, res.clone()).catch(() => {});
             }
             return res;

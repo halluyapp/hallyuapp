@@ -1,15 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { colors, radius, space } from '../../constants/theme';
 import {
   operatorApi,
@@ -17,6 +9,7 @@ import {
   type OperatorApproval,
   type OperatorAuditEntry,
   type OperatorCampaign,
+  type OperatorModelOption,
   type OperatorModerationCase,
   type OperatorModerationQueueItem,
   type OperatorOverview,
@@ -59,7 +52,7 @@ interface TabData {
   overview?: OperatorOverview;
   tasks?: OperatorTask[];
   approvals?: OperatorApproval[];
-  providers?: { providers: OperatorProvider[]; recent_usage: OperatorUsageRow[] };
+  providers?: { providers: OperatorProvider[]; recent_usage: OperatorUsageRow[]; models: OperatorModelOption[] };
   tools?: OperatorTool[];
   policy?: OperatorPolicy | null;
   moderation?: { queue: OperatorModerationQueueItem[]; cases: OperatorModerationCase[] };
@@ -131,8 +124,16 @@ export function OperatorControlCentre() {
             break;
           }
           case 'providers': {
-            const [providers, policy] = await Promise.all([operatorApi.providers(), operatorApi.policy()]);
-            setData((prev) => ({ ...prev, providers, policy: policy.policy }));
+            const [providers, modelsRes, policy] = await Promise.all([
+              operatorApi.providers(),
+              operatorApi.models().catch(() => ({ models: [] as OperatorModelOption[] })),
+              operatorApi.policy(),
+            ]);
+            setData((prev) => ({
+              ...prev,
+              providers: { ...providers, models: modelsRes.models ?? [] },
+              policy: policy.policy,
+            }));
             break;
           }
           case 'tools': {
@@ -205,6 +206,46 @@ export function OperatorControlCentre() {
       try {
         await operatorApi.decideApproval(approvalId, decision);
         await load('approvals', { silent: true });
+      } catch (caught) {
+        setError(errorMessage(caught));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [load],
+  );
+
+  const [commandStatus, setCommandStatus] = useState<string | null>(null);
+
+  const sendQuickCommand = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      setBusy('command:send');
+      setError(null);
+      setCommandStatus(null);
+      try {
+        const res = await operatorApi.sendAdminMessage(trimmed);
+        setCommandStatus(`Task queued (${res.task_id.slice(0, 8)}…). Reply delivers in @hallyu.ai DMs.`);
+        await load('overview', { silent: true });
+        return true;
+      } catch (caught) {
+        setError(errorMessage(caught));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [load],
+  );
+
+  const switchModel = useCallback(
+    async (provider: string, model: string) => {
+      setBusy(`model:${provider}:${model}`);
+      setError(null);
+      try {
+        await operatorApi.setActiveModel(provider, model);
+        await load('providers', { silent: true });
       } catch (caught) {
         setError(errorMessage(caught));
       } finally {
@@ -296,13 +337,26 @@ export function OperatorControlCentre() {
           </View>
         ) : (
           <>
-            {tab === 'overview' ? <OverviewScreen data={data.overview} /> : null}
+            {tab === 'overview' ? (
+              <OverviewScreen
+                data={data.overview}
+                onSendCommand={sendQuickCommand}
+                busy={busy === 'command:send'}
+                commandStatus={commandStatus}
+              />
+            ) : null}
             {tab === 'queue' ? <QueueScreen tasks={data.tasks ?? []} onRetry={retryTask} busyId={busy} /> : null}
             {tab === 'approvals' ? (
               <ApprovalsScreen approvals={data.approvals ?? []} onDecide={decideApproval} busyId={busy} />
             ) : null}
             {tab === 'providers' ? (
-              <ProvidersScreen providers={data.providers?.providers ?? []} usage={data.providers?.recent_usage ?? []} />
+              <ProvidersScreen
+                providers={data.providers?.providers ?? []}
+                models={data.providers?.models ?? []}
+                usage={data.providers?.recent_usage ?? []}
+                onSwitchModel={switchModel}
+                busyId={busy}
+              />
             ) : null}
             {tab === 'tools' ? (
               <ToolsScreen tools={data.tools ?? []} policy={data.policy ?? null} onToggle={toggleAutonomy} busyId={busy} />
@@ -383,14 +437,31 @@ function Empty({ icon, title, body }: { icon: keyof typeof Ionicons.glyphMap; ti
 
 // ── screens ─────────────────────────────────────────────────────────────────
 
-function OverviewScreen({ data }: { data?: OperatorOverview }) {
+function OverviewScreen({
+  data,
+  onSendCommand,
+  busy,
+  commandStatus,
+}: {
+  data?: OperatorOverview;
+  onSendCommand: (text: string) => Promise<boolean>;
+  busy: boolean;
+  commandStatus: string | null;
+}) {
   const router = useRouter();
+  const [command, setCommand] = useState('');
   if (!data) return <Empty icon="pulse-outline" title="No overview yet" body="Pull to refresh the operator state." />;
   const analytics = data.analytics ?? {};
   const worlds = analytics.worlds ?? {};
+
+  const submitCommand = async () => {
+    const ok = await onSendCommand(command);
+    if (ok) setCommand('');
+  };
+
   return (
     <>
-      <Section title="Talk to Hallyu AI" caption="Your executive conversation lives in Direct Messages, not here">
+      <Section title="Talk to Hallyu AI" caption="Your executive conversation lives in Direct Messages, or enqueue a task directly below">
         <Pressable
           onPress={() => router.push('/messages/hallyu.ai')}
           accessibilityRole="button"
@@ -399,15 +470,48 @@ function OverviewScreen({ data }: { data?: OperatorOverview }) {
           <Card>
             <View style={styles.rowBetween}>
               <View style={{ flex: 1 }}>
-                <Text variant="label">Open Direct Messages</Text>
+                <Text variant="label">Open Direct Messages (@hallyu.ai)</Text>
                 <Text variant="caption" tone="tertiary" style={{ marginTop: 2 }}>
-                  This console manages the operator. Chat with Hallyu AI as a peer in Messages.
+                  Chat with Nari directly, switch active models, or review task replies in Messages.
                 </Text>
               </View>
               <Ionicons name="arrow-forward" size={18} color={colors.accent} />
             </View>
           </Card>
         </Pressable>
+
+        <Card style={{ marginTop: space.x2 }}>
+          <Text variant="label">Dispatch executive command</Text>
+          <Text variant="caption" tone="tertiary" style={{ marginBottom: space.x2 }}>
+            Queues an admin_command task for the worker and records the reply in your @hallyu.ai thread.
+          </Text>
+          <TextInput
+            value={command}
+            onChangeText={setCommand}
+            placeholder="e.g. Audit open moderation queue and summarize today's posts…"
+            placeholderTextColor={colors.textTertiary}
+            multiline
+            maxLength={4000}
+            style={styles.input}
+            accessibilityLabel="Executive command for Nari"
+          />
+          {commandStatus ? (
+            <Text variant="caption" tone="success" style={{ marginTop: space.x2 }}>
+              {commandStatus}
+            </Text>
+          ) : null}
+          <Pressable
+            onPress={() => void submitCommand()}
+            disabled={busy || !command.trim()}
+            accessibilityRole="button"
+            accessibilityLabel="Queue executive command"
+            style={[styles.primaryButton, (busy || !command.trim()) && styles.buttonDisabled]}
+          >
+            <Text variant="label" tone="onAccent">
+              {busy ? 'Queueing command…' : 'Queue command'}
+            </Text>
+          </Pressable>
+        </Card>
       </Section>
 
       <Section title="Platform pulse" caption="Live from operator_platform_analytics()">
@@ -598,45 +702,91 @@ function ApprovalsScreen({
   );
 }
 
-function ProvidersScreen({ providers, usage }: { providers: OperatorProvider[]; usage: OperatorUsageRow[] }) {
+function ProvidersScreen({
+  providers,
+  models,
+  usage,
+  onSwitchModel,
+  busyId,
+}: {
+  providers: OperatorProvider[];
+  models: OperatorModelOption[];
+  usage: OperatorUsageRow[];
+  onSwitchModel: (provider: string, model: string) => void;
+  busyId: string | null;
+}) {
   return (
     <>
       <Section title="Model providers" caption="Two isolated pools · separate credentials · no automatic fallback">
         {providers.length === 0 ? (
           <Empty icon="git-network-outline" title="No providers" body="Provider rows are seeded by the operator migration." />
         ) : (
-          providers.map((provider) => (
-            <Card key={provider.provider}>
-              <View style={styles.rowBetween}>
-                <View style={{ flex: 1 }}>
-                  <Text variant="label">{provider.label}</Text>
+          providers.map((provider) => {
+            const option = models.find((m) => m.provider === provider.provider);
+            const candidateModels = option?.models?.length ? option.models : [provider.model_id];
+            return (
+              <Card key={provider.provider}>
+                <View style={styles.rowBetween}>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="label">{provider.label}</Text>
+                    <Text variant="caption" tone="tertiary">
+                      Active model: {provider.model_id}
+                    </Text>
+                    <Text variant="caption" tone="tertiary" style={{ marginTop: 2 }}>
+                      {provider.base_url ?? ''}
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                    <Pill label={provider.health} tone={statusTone(provider.health)} />
+                    {provider.is_default ? <Pill label="default" tone={colors.accent} /> : null}
+                  </View>
+                </View>
+                <View style={styles.metaRow}>
                   <Text variant="caption" tone="tertiary">
-                    {provider.model_id}
+                    {provider.enabled ? 'enabled' : 'disabled'} · rpm {provider.rpm_limit ?? '—'}
                   </Text>
-                  <Text variant="caption" tone="tertiary" style={{ marginTop: 2 }}>
-                    {provider.base_url ?? ''}
+                  <Text variant="caption" tone="tertiary">
+                    last ok {provider.last_ok_at ? timeAgo(provider.last_ok_at) : 'never'}
                   </Text>
                 </View>
-                <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                  <Pill label={provider.health} tone={statusTone(provider.health)} />
-                  {provider.is_default ? <Pill label="default" tone={colors.accent} /> : null}
-                </View>
-              </View>
-              <View style={styles.metaRow}>
-                <Text variant="caption" tone="tertiary">
-                  {provider.enabled ? 'enabled' : 'disabled'} · rpm {provider.rpm_limit ?? '—'}
-                </Text>
-                <Text variant="caption" tone="tertiary">
-                  last ok {provider.last_ok_at ? timeAgo(provider.last_ok_at) : 'never'}
-                </Text>
-              </View>
-              {provider.last_error_code ? (
-                <Text variant="caption" tone="danger" style={{ marginTop: 4 }}>
-                  {provider.last_error_code}
-                </Text>
-              ) : null}
-            </Card>
-          ))
+                {provider.enabled && candidateModels.length > 0 ? (
+                  <View style={[styles.pillRow, { marginTop: space.x3 }]}>
+                    {candidateModels.map((modelName) => {
+                      const active = provider.is_default && provider.model_id === modelName;
+                      const isBusy = busyId === `model:${provider.provider}:${modelName}`;
+                      return (
+                        <Pressable
+                          key={modelName}
+                          onPress={() => onSwitchModel(provider.provider, modelName)}
+                          disabled={active || busyId !== null}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Set active model to ${provider.label} ${modelName}`}
+                          style={[
+                            styles.smallButton,
+                            {
+                              backgroundColor: active ? colors.accent : colors.surface2,
+                              borderWidth: StyleSheet.hairlineWidth,
+                              borderColor: active ? colors.accent : colors.borderSubtle,
+                              opacity: busyId && !isBusy ? 0.5 : 1,
+                            },
+                          ]}
+                        >
+                          <Text variant="caption" style={{ color: active ? colors.onAccent : colors.textSecondary, fontWeight: active ? '700' : '500' }}>
+                            {isBusy ? 'Switching…' : active ? `${modelName} · active` : `Use ${modelName}`}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+                {provider.last_error_code ? (
+                  <Text variant="caption" tone="danger" style={{ marginTop: 4 }}>
+                    {provider.last_error_code}
+                  </Text>
+                ) : null}
+              </Card>
+            );
+          })
         )}
       </Section>
 
@@ -896,17 +1046,25 @@ function HealthScreen({
             No schedules configured.
           </Text>
         ) : (
-          schedules.map((schedule) => (
-            <Card key={schedule.name}>
-              <View style={styles.rowBetween}>
-                <Text variant="label">{schedule.name}</Text>
-                <Pill label={schedule.enabled ? 'enabled' : 'paused'} tone={schedule.enabled ? colors.success : colors.textTertiary} />
-              </View>
-              <Text variant="caption" tone="tertiary" style={{ marginTop: 2 }}>
-                {schedule.task_type} · every {Math.round(schedule.cadence_seconds / 60)}m · last {schedule.last_run_at ? timeAgo(schedule.last_run_at) : 'never'}
-              </Text>
-            </Card>
-          ))
+          schedules.map((schedule) => {
+            const cadenceSec = schedule.interval_seconds ?? schedule.cadence_seconds;
+            const cadenceLabel = cadenceSec
+              ? `every ${Math.max(1, Math.round(cadenceSec / 60))}m`
+              : schedule.cron
+                ? `cron ${schedule.cron}`
+                : 'scheduled';
+            return (
+              <Card key={schedule.name}>
+                <View style={styles.rowBetween}>
+                  <Text variant="label">{schedule.name}</Text>
+                  <Pill label={schedule.enabled ? 'enabled' : 'paused'} tone={schedule.enabled ? colors.success : colors.textTertiary} />
+                </View>
+                <Text variant="caption" tone="tertiary" style={{ marginTop: 2 }}>
+                  {schedule.task_type} · {cadenceLabel} · last {schedule.last_run_at ? timeAgo(schedule.last_run_at) : 'never'}
+                </Text>
+              </Card>
+            );
+          })
         )}
       </Section>
 

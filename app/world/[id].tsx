@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { DramaRail } from '../../components/drama/DramaCard';
 import { WorldTile } from '../../components/fandom/WorldTile';
 import { PostCard } from '../../components/feed/PostCard';
@@ -16,12 +16,13 @@ import { InlineNotice } from '../../components/ui/States';
 import { Text } from '../../components/ui/Text';
 import { TopBar } from '../../components/ui/TopBar';
 import { colors, radius, space } from '../../constants/theme';
-import { catalog, friendlyCatalogCopy, invalidateCatalogLists } from '../../lib/catalog';
+import { catalog, invalidateCatalogLists, friendlyCatalogCopy } from '../../lib/catalog';
 import { adoptDramas } from '../../lib/catalogSync';
 import { FANDOMS, Fandom, fandomById, isFandomId } from '../../lib/fandoms';
 import { useApp, useCatalogHealth, useLayout, useLoad } from '../../lib/hooks';
 import { Drama } from '../../lib/model';
 import { dramasInWorld, followsWorld, postsInWorld } from '../../lib/selectors';
+import { formatBillboardUpdatedAt } from '../../lib/topBillboard';
 
 type Sort = 'trending' | 'top' | 'new';
 
@@ -48,6 +49,42 @@ export default function WorldScreen() {
   const live = useLoad<Drama[]>(async (signal) => adoptDramas(await catalog.byFandom(world!.id, sort, 1, signal)), [world?.id, sort], !!world && catalog.available);
   const local = useMemo(() => (world ? dramasInWorld(state, world.id, 12) : []), [state, world]);
   const posts = useMemo(() => (world ? postsInWorld(state, world.id, 4) : []), [state, world]);
+
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const lastRefreshRef = useRef(0);
+
+  useEffect(() => {
+    if (live.data) {
+      setUpdatedAt(Date.now());
+      lastRefreshRef.current = Date.now();
+    }
+  }, [live.data]);
+
+  const reloadWorld = useCallback(() => {
+    invalidateCatalogLists();
+    lastRefreshRef.current = Date.now();
+    live.reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Date.now() - lastRefreshRef.current > 90_000) {
+        reloadWorld();
+      }
+      const timer = setInterval(reloadWorld, 90_000);
+      return () => clearInterval(timer);
+    }, [reloadWorld]),
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active' && Date.now() - lastRefreshRef.current > 60_000) {
+        reloadWorld();
+      }
+    });
+    return () => sub.remove();
+  }, [reloadWorld]);
 
   useEffect(() => {
     if (!refresh.refreshing || !world) return;
@@ -160,9 +197,23 @@ export default function WorldScreen() {
         ) : null}
 
         <View style={styles.section}>
-          <SectionHeader eyebrow={`Live from ${world.home}`} title={sort === 'top' ? 'Highest rated' : sort === 'new' ? 'Just arrived' : 'What everyone is watching'} />
+          <SectionHeader
+            eyebrow={`Live Top 10 · ${world.home}`}
+            title={sort === 'top' ? 'Highest rated' : sort === 'new' ? 'Just arrived' : 'Top 10 watching now'}
+            subtitle={formatBillboardUpdatedAt(updatedAt)}
+            actionLabel="Refresh"
+            onAction={reloadWorld}
+          />
           {live.data?.length ? (
-            <DramaRail dramas={live.data} size="l" />
+            <DramaRail
+              dramas={live.data}
+              size="l"
+              badges={
+                sort === 'trending'
+                  ? Object.fromEntries(live.data.slice(0, 10).map((d, idx) => [d.id, `#${idx + 1}`]))
+                  : undefined
+              }
+            />
           ) : live.loading ? (
             <PosterRowSkeleton count={4} width={140} />
           ) : (

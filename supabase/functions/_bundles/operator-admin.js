@@ -191,15 +191,36 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 async function resolveCaller(token) {
+  const admin = adminClient();
+  let row;
   const userResponse = await fetch(`${SUPABASE_URL2}/auth/v1/user`, {
     headers: { apikey: SERVICE_ROLE_KEY2, Authorization: `Bearer ${token}` }
   });
-  if (!userResponse.ok) return null;
-  const user = await userResponse.json().catch(() => null);
-  if (!user?.id) return null;
-  const admin = adminClient();
-  const profile = await admin.from("profiles").select("id,role,handle,display_name,account_status").eq("auth_sub", user.id).limit(1);
-  const row = asArray(profile.data)[0];
+  if (userResponse.ok) {
+    const user = await userResponse.json().catch(() => null);
+    if (user?.id) {
+      const profile = await admin.from("profiles").select("id,role,handle,display_name,account_status").eq("auth_sub", user.id).limit(1);
+      row = asArray(profile.data)[0];
+    }
+  }
+  if (!row) {
+    const rpcRes = await fetch(`${SUPABASE_URL2}/rest/v1/rpc/current_profile_id`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_ROLE_KEY2,
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: "{}"
+    });
+    if (rpcRes.ok) {
+      const profileId = await rpcRes.json().catch(() => null);
+      if (typeof profileId === "string" && profileId.length > 0) {
+        const profile = await admin.from("profiles").select("id,role,handle,display_name,account_status").eq("id", profileId).limit(1);
+        row = asArray(profile.data)[0];
+      }
+    }
+  }
   if (!row || row.account_status !== "active") return null;
   if (row.role !== "admin" && row.role !== "ceo") return null;
   return {
@@ -252,7 +273,29 @@ Deno.serve(async (request) => {
       }
       case "conversations": {
         const result = await admin.from("operator_conversation").select("id,channel,member_profile_id,external_thread_id,subject,status,last_inbound_at,last_outbound_at,created_at").order("last_inbound_at", { ascending: false, nullsFirst: false }).limit(60);
-        return jsonResponse({ conversations: result.data ?? [] });
+        const rows = asArray(result.data);
+        const memberIds = Array.from(
+          new Set(rows.map((r) => typeof r.member_profile_id === "string" ? r.member_profile_id : "").filter(Boolean))
+        );
+        const memberMap = /* @__PURE__ */ new Map();
+        if (memberIds.length > 0) {
+          const profilesRes = await admin.from("profiles").select("id,handle,display_name").in("id", memberIds);
+          for (const p of asArray(profilesRes.data)) {
+            memberMap.set(String(p.id), {
+              handle: String(p.handle ?? ""),
+              display_name: String(p.display_name ?? "")
+            });
+          }
+        }
+        const hydrated = rows.map((row) => {
+          const m = typeof row.member_profile_id === "string" ? memberMap.get(row.member_profile_id) : void 0;
+          return {
+            ...row,
+            member_handle: m?.handle ?? null,
+            member_display_name: m?.display_name ?? null
+          };
+        });
+        return jsonResponse({ conversations: hydrated });
       }
       case "conversation": {
         const conversationId = String(body.conversation_id ?? "");
@@ -368,13 +411,22 @@ Deno.serve(async (request) => {
         const provider = String(body.provider ?? "");
         const model = String(body.model ?? "");
         if (!provider || !model) return errorResponse("provider and model required", 400);
-        const rpcRes = await admin.rpc("operator_set_active_model", {
-          p_provider: provider,
-          p_model: model,
-          p_actor: caller.profileId
+        const rpcResponse = await fetch(`${SUPABASE_URL2}/rest/v1/rpc/operator_set_active_model`, {
+          method: "POST",
+          headers: {
+            apikey: SERVICE_ROLE_KEY2,
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            p_provider: provider,
+            p_model: model,
+            p_actor: caller.profileId
+          })
         });
-        if (rpcRes.error) return errorResponse(rpcRes.error.message, 400);
-        return jsonResponse({ ok: true, result: rpcRes.data });
+        const rpcText = await rpcResponse.text().catch(() => "");
+        if (!rpcResponse.ok) return errorResponse(rpcText.slice(0, 300) || "model switch failed", 400);
+        return jsonResponse({ ok: true, result: rpcText ? JSON.parse(rpcText) : null });
       }
       case "models": {
         const rpcRes = await admin.rpc("operator_list_models");
@@ -404,8 +456,14 @@ Deno.serve(async (request) => {
         return jsonResponse({ campaigns: result.data ?? [] });
       }
       case "schedules": {
-        const result = await admin.from("operator_schedule").select("name,task_type,cadence_seconds,enabled,last_run_at,next_run_at,input,priority").order("name", { ascending: true });
-        return jsonResponse({ schedules: result.data ?? [] });
+        const result = await admin.from("operator_schedule").select("id,name,task_type,cron,interval_seconds,enabled,last_run_at,next_run_at,payload").order("name", { ascending: true });
+        if (result.error) return errorResponse(result.error.message, 500);
+        const schedules = asArray(result.data).map((row) => ({
+          ...row,
+          cadence_seconds: row.interval_seconds ?? null,
+          input: row.payload ?? null
+        }));
+        return jsonResponse({ schedules });
       }
       case "audit": {
         const result = await admin.from("operator_audit").select("id,task_id,actor_profile_id,actor_type,action,outcome,resource_type,resource_id,details,created_at").order("created_at", { ascending: false }).limit(80);

@@ -26,20 +26,49 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 async function resolveCaller(token: string): Promise<Caller | null> {
+  const admin = adminClient();
+  let row: Record<string, unknown> | undefined;
+
+  // 1. Standard Supabase GoTrue token check.
   const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
     headers: { apikey: SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` },
   });
-  if (!userResponse.ok) return null;
-  const user = (await userResponse.json().catch(() => null)) as { id?: string } | null;
-  if (!user?.id) return null;
+  if (userResponse.ok) {
+    const user = (await userResponse.json().catch(() => null)) as { id?: string } | null;
+    if (user?.id) {
+      const profile = await admin
+        .from<Record<string, unknown>>('profiles')
+        .select('id,role,handle,display_name,account_status')
+        .eq('auth_sub', user.id)
+        .limit(1);
+      row = asArray<Record<string, unknown>>(profile.data)[0];
+    }
+  }
 
-  const admin = adminClient();
-  const profile = await admin
-    .from<Record<string, unknown>>('profiles')
-    .select('id,role,handle,display_name,account_status')
-    .eq('auth_sub', user.id)
-    .limit(1);
-  const row = asArray<Record<string, unknown>>(profile.data)[0];
+  // 2. Fallback for Rork OAuth custom JWTs verified cryptographically inside PostgREST.
+  if (!row) {
+    const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/current_profile_id`, {
+      method: 'POST',
+      headers: {
+        apikey: SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    if (rpcRes.ok) {
+      const profileId = (await rpcRes.json().catch(() => null)) as string | null;
+      if (typeof profileId === 'string' && profileId.length > 0) {
+        const profile = await admin
+          .from<Record<string, unknown>>('profiles')
+          .select('id,role,handle,display_name,account_status')
+          .eq('id', profileId)
+          .limit(1);
+        row = asArray<Record<string, unknown>>(profile.data)[0];
+      }
+    }
+  }
+
   if (!row || row.account_status !== 'active') return null;
   if (row.role !== 'admin' && row.role !== 'ceo') return null;
 
@@ -104,7 +133,32 @@ Deno.serve(async (request: Request) => {
           .select('id,channel,member_profile_id,external_thread_id,subject,status,last_inbound_at,last_outbound_at,created_at')
           .order('last_inbound_at', { ascending: false, nullsFirst: false })
           .limit(60);
-        return jsonResponse({ conversations: result.data ?? [] });
+        const rows = asArray<Record<string, unknown>>(result.data);
+        const memberIds = Array.from(
+          new Set(rows.map((r) => (typeof r.member_profile_id === 'string' ? r.member_profile_id : '')).filter(Boolean)),
+        );
+        const memberMap = new Map<string, { handle: string; display_name: string }>();
+        if (memberIds.length > 0) {
+          const profilesRes = await admin
+            .from<Record<string, unknown>>('profiles')
+            .select('id,handle,display_name')
+            .in('id', memberIds);
+          for (const p of asArray<Record<string, unknown>>(profilesRes.data)) {
+            memberMap.set(String(p.id), {
+              handle: String(p.handle ?? ''),
+              display_name: String(p.display_name ?? ''),
+            });
+          }
+        }
+        const hydrated = rows.map((row) => {
+          const m = typeof row.member_profile_id === 'string' ? memberMap.get(row.member_profile_id) : undefined;
+          return {
+            ...row,
+            member_handle: m?.handle ?? null,
+            member_display_name: m?.display_name ?? null,
+          };
+        });
+        return jsonResponse({ conversations: hydrated });
       }
 
       case 'conversation': {
@@ -256,13 +310,22 @@ Deno.serve(async (request: Request) => {
         const provider = String(body.provider ?? '');
         const model = String(body.model ?? '');
         if (!provider || !model) return errorResponse('provider and model required', 400);
-        const rpcRes = await admin.rpc('operator_set_active_model', {
-          p_provider: provider,
-          p_model: model,
-          p_actor: caller.profileId,
+        const rpcResponse = await fetch(`${SUPABASE_URL}/rest/v1/rpc/operator_set_active_model`, {
+          method: 'POST',
+          headers: {
+            apikey: SERVICE_ROLE_KEY,
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            p_provider: provider,
+            p_model: model,
+            p_actor: caller.profileId,
+          }),
         });
-        if (rpcRes.error) return errorResponse(rpcRes.error.message, 400);
-        return jsonResponse({ ok: true, result: rpcRes.data });
+        const rpcText = await rpcResponse.text().catch(() => '');
+        if (!rpcResponse.ok) return errorResponse(rpcText.slice(0, 300) || 'model switch failed', 400);
+        return jsonResponse({ ok: true, result: rpcText ? JSON.parse(rpcText) : null });
       }
 
       case 'models': {
@@ -315,10 +378,16 @@ Deno.serve(async (request: Request) => {
 
       case 'schedules': {
         const result = await admin
-          .from('operator_schedule')
-          .select('name,task_type,cadence_seconds,enabled,last_run_at,next_run_at,input,priority')
+          .from<Record<string, unknown>>('operator_schedule')
+          .select('id,name,task_type,cron,interval_seconds,enabled,last_run_at,next_run_at,payload')
           .order('name', { ascending: true });
-        return jsonResponse({ schedules: result.data ?? [] });
+        if (result.error) return errorResponse(result.error.message, 500);
+        const schedules = asArray<Record<string, unknown>>(result.data).map((row) => ({
+          ...row,
+          cadence_seconds: row.interval_seconds ?? null,
+          input: row.payload ?? null,
+        }));
+        return jsonResponse({ schedules });
       }
 
       case 'audit': {

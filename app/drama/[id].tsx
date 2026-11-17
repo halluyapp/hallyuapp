@@ -390,9 +390,18 @@ export default function DramaHub() {
             label={notify ? 'Episode alerts on' : 'Episode alerts off'}
             filled
             onPress={() => {
-              dispatch({ type: 'dramaNotify', id: drama.id, on: !notify });
+              const nextOn = !notify;
+              dispatch({ type: 'dramaNotify', id: drama.id, on: nextOn });
+              if (nextOn && !state.prefs.notifications.episodes) {
+                dispatch({ type: 'prefs', patch: { notifications: { ...state.prefs.notifications, episodes: true } } });
+              }
+              if (nextOn && typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'default') {
+                void window.Notification.requestPermission().catch(() => {});
+              }
               toast.show({
-                message: notify ? 'Episode alerts off for this drama' : 'You’ll hear when an episode airs',
+                message: nextOn ? 'Episode alerts on — we’ll notify you when a new episode airs' : 'Episode alerts off for this drama',
+                tone: nextOn ? 'success' : 'default',
+                icon: nextOn ? 'notifications' : 'notifications-off-outline',
               });
             }}
           />

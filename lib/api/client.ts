@@ -66,8 +66,24 @@ const client: SupabaseClient | null =
       })
     : null;
 
-/** The shared Supabase client, or null when this build has no backend connection. */
+/** Dedicated Supabase Auth (GoTrue) client for email/password sign-up, sign-in, verification, and reset. */
+const authClient: SupabaseClient | null =
+  backendConfigured && SUPABASE_URL && SUPABASE_ANON_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          storage: AsyncStorage,
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: false,
+        },
+      })
+    : null;
+
+/** The shared Supabase client (Data/RPC/Realtime), or null when this build has no backend connection. */
 export const supabase = client;
+
+/** The Supabase GoTrue client for email/password auth flows. */
+export const supabaseAuth = authClient;
 
 /** True when the build carries a backend connection. */
 export function isBackendConfigured(): boolean {

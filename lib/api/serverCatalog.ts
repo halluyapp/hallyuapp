@@ -282,7 +282,7 @@ function toActor(row: PersonRow, externalId: string): Actor {
 const norm = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
 const memoStore = new Map<string, { at: number; value: Promise<unknown> }>();
-const TEN_MIN = 10 * 60_000;
+const TEN_MIN = 2 * 60_000;
 /** Drop the memoised server lists (pull-to-refresh). */
 export function clearServerCatalogLists(): void {
   memoStore.clear();

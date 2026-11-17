@@ -122,6 +122,8 @@ export default function DirectMessageThreadScreen() {
     }
   };
 
+  const [awaitingWorkerNotice, setAwaitingWorkerNotice] = useState(false);
+
   const loadThread = useCallback(async () => {
     if (!cleanHandle) return;
     const data = await fetchDirectMessages(cleanHandle);
@@ -136,8 +138,30 @@ export default function DirectMessageThreadScreen() {
     });
   }, [loadThread, me.id]);
 
-  const handleSend = async () => {
-    const text = draft.trim() || (attachedDrama ? `Check out ${attachedDrama.title}!` : '');
+  // Detect if the user sent the latest DM to Nari and no reply has arrived after 15 seconds,
+  // surfacing an honest pending/check notice without fabricating any reply.
+  useEffect(() => {
+    if (!isOperator || messages.length === 0) {
+      setAwaitingWorkerNotice(false);
+      return;
+    }
+    const last = messages[messages.length - 1];
+    if (last.senderId !== me.id) {
+      setAwaitingWorkerNotice(false);
+      return;
+    }
+    const elapsed = Date.now() - new Date(last.createdAt).getTime();
+    if (elapsed >= 15_000) {
+      setAwaitingWorkerNotice(true);
+      return;
+    }
+    setAwaitingWorkerNotice(false);
+    const timer = setTimeout(() => setAwaitingWorkerNotice(true), Math.max(1000, 15_000 - elapsed));
+    return () => clearTimeout(timer);
+  }, [isOperator, messages, me.id]);
+
+  const sendTextOrAttachment = async (overrideText?: string) => {
+    const text = (overrideText ?? draft).trim() || (attachedDrama ? `Check out ${attachedDrama.title}!` : '');
     if (!text || sending) return;
     setSending(true);
     haptic.light();
@@ -150,7 +174,7 @@ export default function DirectMessageThreadScreen() {
       createdAt: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
-    setDraft('');
+    if (overrideText === undefined) setDraft('');
     const sharedId = attachedDrama?.id;
     setAttachedDrama(null);
 
@@ -170,6 +194,8 @@ export default function DirectMessageThreadScreen() {
       setSending(false);
     }
   };
+
+  const handleSend = () => sendTextOrAttachment();
 
   // Voice notes exist for the Nari thread: the Edge Function transcribes the clip and hands the
   // turn to this same DM, so Nari's answer arrives here through the ordinary subscription.
@@ -269,12 +295,36 @@ export default function DirectMessageThreadScreen() {
           contentContainerStyle={{ padding: space.margin, gap: space.x3 }}
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           ListEmptyComponent={
-            <View style={{ alignItems: 'center', paddingVertical: space.x8, gap: space.x2 }}>
+            <View style={{ alignItems: 'center', paddingVertical: space.x8, gap: space.x3 }}>
               <Avatar uri={peer?.avatarUrl} name={peer?.displayName ?? cleanHandle} size="xl" />
               <Text variant="titleSmall">{peer?.displayName ?? `@${cleanHandle}`}</Text>
-              <Text variant="caption" tone="secondary" align="center">
-                Send a message or tap + to share a drama recommendation.
+              <Text variant="caption" tone="secondary" align="center" style={{ maxWidth: 320 }}>
+                {isOperator
+                  ? 'Nari is Hallyu’s official AI staff operator. Ask for K-drama recommendations, fandom pulse, or executive operations.'
+                  : 'Send a message or tap the film icon to share a drama recommendation.'}
               </Text>
+              {isOperator ? (
+                <View style={styles.starterGrid}>
+                  {[
+                    'Recommend a top-rated K-drama to start tonight',
+                    'What worlds and dramas are trending on Hallyu right now?',
+                    ...(canSwitchModel ? ['Summarize platform pulse and open moderation reports'] : []),
+                  ].map((prompt) => (
+                    <Pressable
+                      key={prompt}
+                      onPress={() => requireMember('message Nari', () => void sendTextOrAttachment(prompt))}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Ask Nari: ${prompt}`}
+                      style={styles.starterChip}
+                    >
+                      <Ionicons name="sparkles-outline" size={14} color={colors.accent} />
+                      <Text variant="caption" tone="secondary" style={{ flex: 1 }}>
+                        {prompt}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
             </View>
           }
           renderItem={({ item: m }) => {
@@ -373,6 +423,27 @@ export default function DirectMessageThreadScreen() {
           </View>
         ) : null}
 
+        {isOperator && awaitingWorkerNotice ? (
+          <View style={styles.waitBanner}>
+            <Ionicons name="time-outline" size={14} color={colors.warm} />
+            <Text variant="caption" tone="secondary" style={{ flex: 1 }}>
+              Waiting for Nari’s background worker to reply. Your message is saved in the queue.
+            </Text>
+            <Pressable onPress={() => void loadThread()} accessibilityRole="button" accessibilityLabel="Refresh Nari replies">
+              <Text variant="caption" tone="accent">
+                Check now
+              </Text>
+            </Pressable>
+            {canSwitchModel ? (
+              <Pressable onPress={() => router.push('/admin')} accessibilityRole="button" accessibilityLabel="Open Operator Control Centre">
+                <Text variant="caption" tone="secondary" style={{ marginLeft: 8 }}>
+                  Console
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
         <View style={[styles.composerBar, { paddingBottom: Math.max(insets.bottom, space.x2) }]}>
           <IconButton
             icon="film-outline"
@@ -398,6 +469,15 @@ export default function DirectMessageThreadScreen() {
             style={styles.input}
             multiline
             maxLength={2000}
+            onKeyPress={(e) => {
+              if (Platform.OS === 'web') {
+                const native = e.nativeEvent as { key?: string; shiftKey?: boolean };
+                if (native.key === 'Enter' && !native.shiftKey) {
+                  e.preventDefault();
+                  requireMember('send messages', () => void handleSend());
+                }
+              }
+            }}
           />
           <Pressable
             onPress={() => requireMember('send messages', () => void handleSend())}
@@ -668,5 +748,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: radius.full,
+  },
+  starterGrid: {
+    width: '100%',
+    maxWidth: 420,
+    gap: space.x2,
+    marginTop: space.x2,
+  },
+  starterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.x2,
+    paddingHorizontal: space.x3,
+    paddingVertical: space.x3,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface1,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+  },
+  waitBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.x2,
+    paddingHorizontal: space.margin,
+    paddingVertical: 6,
+    backgroundColor: colors.surface1,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderSubtle,
   },
 });

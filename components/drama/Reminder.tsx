@@ -2,10 +2,13 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback } from 'react';
 import { Linking, Pressable, StyleSheet, View } from 'react-native';
 import { colors, radius, space } from '../../constants/theme';
+import { catalog } from '../../lib/catalog';
+import { requestWebEpisodeNotificationPermission } from '../../lib/episodeNotifications';
 import { countdown, dayLabel, timeOfDay } from '../../lib/format';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
-import { ensureNotificationPermission } from '../../lib/reminders';
+import { ensureNotificationPermission, syncEpisodeReminders } from '../../lib/reminders';
 import { Drama, Episode } from '../../lib/model';
+import { getState } from '../../lib/store';
 import { Button } from '../ui/Button';
 import { Text } from '../ui/Text';
 import { useToast } from '../ui/Toast';
@@ -35,12 +38,30 @@ export function useReminder(drama: Drama | undefined) {
         if (!following) dispatch({ type: 'follow', kind: 'dramas', id: drama.id, on: true });
         dispatch({ type: 'dramaNotify', id: drama.id, on: true });
         if (!state.prefs.notifications.episodes) dispatch({ type: 'prefs', patch: { notifications: { ...state.prefs.notifications, episodes: true } } });
+        requestWebEpisodeNotificationPermission();
+
+        // Hydrate full episode schedule immediately if this title only has a thin catalog stub
+        if (drama.provider && !drama.episodes.some((e) => e.airDate)) {
+          void catalog
+            .getDrama(drama.provider.id, drama.mediaType ?? 'tv')
+            .then((full) => {
+              if (full) {
+                dispatch({ type: 'import', dramas: [{ ...full, id: drama.id }] });
+              }
+            })
+            .catch(() => {});
+        }
+
         const when = episode?.airDate ? ` ${dayLabel(episode.airDate)} at ${timeOfDay(episode.airDate)}` : '';
-        // Ask for permission now — the one moment the request makes sense — and be honest if it's off.
         void ensureNotificationPermission().then((perm) => {
-          if (perm === 'granted' || perm === 'unsupported')
-            toast.show({ message: episode ? `We’ll nudge you when Episode ${episode.number} airs${when}` : `Episode alerts on for ${drama.title}`, tone: 'success', icon: 'notifications' });
-          else
+          if (perm === 'granted' || perm === 'unsupported') {
+            void syncEpisodeReminders(getState());
+            toast.show({
+              message: episode ? `We’ll notify you when Episode ${episode.number} airs${when}` : `Episode alerts on for ${drama.title}`,
+              tone: 'success',
+              icon: 'notifications',
+            });
+          } else {
             toast.show({
               message: 'Reminder saved, but notifications are off for Hallyu on this device.',
               icon: 'notifications-off-outline',
@@ -48,6 +69,7 @@ export function useReminder(drama: Drama | undefined) {
               onAction: () => Linking.openSettings().catch(() => {}),
               duration: 6000,
             });
+          }
         });
       });
     },

@@ -17,99 +17,65 @@
  * Both cold start (the route mounts with the URL already in it) and warm start (expo-router pushes
  * the route when the link arrives) go through this same path.
  */
-import { supabase } from './client';
+import { setBackendAccessToken, supabaseAuth } from './client';
+import { completePendingRorkRedirect, hasPendingRorkRedirect, readStoredTokens } from '../rorkAuth';
+import { parseAuthCallback, type CallbackKind, type ParsedCallback } from '../authCallbackParse';
 
-/** Decode an `a=1&b=2` string into a map. Later keys win, matching normal query semantics. */
-function parseQueryString(input: string, into: Map<string, string> = new Map()): Map<string, string> {
-  for (const pair of input.split('&')) {
-    if (!pair) continue;
-    const eq = pair.indexOf('=');
-    const key = eq === -1 ? pair : pair.slice(0, eq);
-    const value = eq === -1 ? '' : pair.slice(eq + 1);
-    try {
-      into.set(decodeURIComponent(key.replace(/\+/g, ' ')), decodeURIComponent(value.replace(/\+/g, ' ')));
-    } catch {
-      into.set(key, value);
-    }
-  }
-  return into;
-}
+export { parseAuthCallback, type CallbackKind, type ParsedCallback };
 
-export type CallbackKind = 'session' | 'recovery' | 'unsupported';
-
-export interface ParsedCallback {
-  kind: CallbackKind;
-  /** PKCE authorisation code, when the link carries one. */
-  code?: string;
-  accessToken?: string;
-  refreshToken?: string;
-  /** Present on a password-recovery link; tells the app to show "choose a new password". */
-  recovery?: boolean;
-  error?: string;
-  errorDescription?: string;
-}
-
-/** Parse a callback URL without touching the network — used to classify before acting. */
-export function parseAuthCallback(url: string): ParsedCallback | null {
-  if (!url || !/^(hallyu|exp|https?):\/\//i.test(url.trim())) return null;
-
-  const raw = url.trim();
-  // The implicit flow puts the tokens in the fragment; the PKCE flow uses the query. Parsed by
-  // hand rather than with URLSearchParams: Hermes ships an incomplete one, and this runs on the
-  // cold-start path where a surprise exception means the member is stranded on a blank screen.
-  const [beforeHash, fragment] = raw.split('#', 2);
-  const qIndex = beforeHash.indexOf('?');
-  const query = qIndex === -1 ? '' : beforeHash.slice(qIndex + 1);
-  const params = parseQueryString(query);
-  parseQueryString(fragment ?? '', params);
-
-  const error = params.get('error') ?? undefined;
-  const errorDescription = params.get('error_description') ?? undefined;
-  // Recovery links carry type=recovery; signup verification does not.
-  const recovery = params.get('type') === 'recovery' || error === 'recovery_link_expired';
-
-  const code = params.get('code') ?? undefined;
-  const accessToken = params.get('access_token') ?? undefined;
-  const refreshToken = params.get('refresh_token') ?? undefined;
-
-  if (error) return { kind: 'unsupported', error, errorDescription, recovery };
-  if (code) return { kind: 'session', code, recovery };
-  if (accessToken && refreshToken) return { kind: 'session', accessToken, refreshToken, recovery };
-  // A link that carries nothing usable is not a session link; treating it as one would send the
-  // member to a "you're signed in" screen with no account behind it.
-  return { kind: 'unsupported', error: 'no_tokens', errorDescription: 'The link carried no session information.' };
-}
-
-export type CallbackResult = { ok: true; recovery: boolean } | { ok: false; message: string };
+export type CallbackResult =
+  | { ok: true; recovery: boolean; provider: 'email' | 'google'; closePopup?: boolean }
+  | { ok: false; message: string };
 
 /**
- * Consume the callback URL and establish the session.
- *
- * Returns the outcome rather than throwing, so the route can show the actual reason a link failed
- * instead of bouncing to a home screen that looks like nothing happened.
+ * Consume the callback URL and establish the session (for either Google OAuth or Email sign-up/reset).
  */
 export async function consumeAuthCallback(url: string): Promise<CallbackResult> {
-  if (!supabase) return { ok: false, message: 'This build has no backend, so there is no session to restore.' };
+  if (!supabaseAuth) return { ok: false, message: 'This build has no backend, so there is no session to restore.' };
   const parsed = parseAuthCallback(url);
   if (!parsed) return { ok: false, message: 'That link is not a Hallyu sign-in link.' };
   if (parsed.kind === 'unsupported') {
-    if (parsed.error === 'no_tokens') return { ok: false, message: parsed.errorDescription ?? 'That link is missing its session information.' };
+    if (parsed.error === 'no_tokens') {
+      return { ok: false, message: `${parsed.errorDescription ?? 'That link is missing its session information.'} Try Gmail login.` };
+    }
     if (parsed.recovery && parsed.error === 'recovery_link_expired') {
       return { ok: false, message: 'That password-reset link has expired. Ask for a new one.' };
     }
-    return { ok: false, message: parsed.errorDescription ?? `The link could not be used (${parsed.error}).` };
+    return {
+      ok: false,
+      message: `${parsed.errorDescription ?? `The link could not be used (${parsed.error}).`} Try Gmail login.`,
+    };
   }
 
+  // Handle Google OAuth redirect (custom rork- scheme OR pending Rork PKCE code on web).
+  if (parsed.code && !parsed.recovery && (parsed.isRorkScheme || hasPendingRorkRedirect())) {
+    try {
+      await completePendingRorkRedirect(parsed.code);
+      const tokens = await readStoredTokens();
+      if (tokens?.accessToken) {
+        setBackendAccessToken(tokens.accessToken);
+      }
+      const isPopup = typeof window !== 'undefined' && Boolean(window.opener && window.opener !== window);
+      return { ok: true, recovery: false, provider: 'google', closePopup: isPopup };
+    } catch (e) {
+      return {
+        ok: false,
+        message: e instanceof Error ? e.message : 'Google sign-in redirect failed. Try Gmail login.',
+      };
+    }
+  }
+
+  // Handle Supabase GoTrue Email verification or Password recovery callback.
   try {
     const { error } = parsed.code
-      ? await supabase.auth.exchangeCodeForSession(parsed.code)
-      : await supabase.auth.setSession({ access_token: parsed.accessToken!, refresh_token: parsed.refreshToken! });
-    if (error) return { ok: false, message: error.message };
-    // A verified-email link that did not actually sign anyone in must not look like success.
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) return { ok: false, message: 'The link was accepted but no session was created. Sign in to continue.' };
-    return { ok: true, recovery: Boolean(parsed.recovery) };
+      ? await supabaseAuth.auth.exchangeCodeForSession(parsed.code)
+      : await supabaseAuth.auth.setSession({ access_token: parsed.accessToken!, refresh_token: parsed.refreshToken! });
+    if (error) return { ok: false, message: `${error.message}. Try Gmail login.` };
+    const { data } = await supabaseAuth.auth.getSession();
+    if (!data.session) return { ok: false, message: 'The link was accepted but no session was created. Sign in to continue or try Gmail login.' };
+    setBackendAccessToken(data.session.access_token);
+    return { ok: true, recovery: Boolean(parsed.recovery), provider: 'email' };
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : 'The sign-in link could not be completed.' };
+    return { ok: false, message: e instanceof Error ? e.message : 'The sign-in link could not be completed. Try Gmail login.' };
   }
 }

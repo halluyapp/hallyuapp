@@ -71,7 +71,7 @@ export function SpoilerBlock({ id, level, drama, season, episode, veiled, childr
   };
 
   const veilBox = (
-    <View style={[styles.veil, compact ? styles.veilCompact : null]} accessibilityRole="button" accessibilityLabel={`${copy}. Double tap to reveal.`} accessibilityHint="Hidden spoiler">
+    <View style={[styles.veil, compact ? styles.veilCompact : null]} accessibilityLabel={`${copy}. Use reveal controls below.`}>
       <View style={styles.veilHeader}>
         <Ionicons name="eye-off-outline" size={compact ? 14 : 16} color={colors.textSecondary} />
         <Text variant={compact ? 'caption' : 'label'} tone="secondary" style={{ flex: 1 }} numberOfLines={2}>
