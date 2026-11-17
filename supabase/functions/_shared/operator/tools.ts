@@ -749,16 +749,20 @@ const READ_ONLY_PERMISSIONS = new Set([
   'ops.read',
 ]);
 
-export function permissionAllowed(tool: ToolRow, ctx: ToolContext): { allowed: boolean; reason?: string } {
+// High-impact operations require a human even if a registry/policy flag was omitted.
+const HUMAN_APPROVAL_TOOLS = new Set(['post.create', 'post.publish', 'post.delete', 'poll.create',
+  'notification.send', 'moderation.remove_content', 'moderation.suspend', 'moderation.ban', 'moderation.restore']);
+
+export function permissionAllowed(tool: ToolRow, ctx: ToolContext, approved = false): { allowed: boolean; reason?: string } {
   // A model in a member/public conversation cannot acquire operator authority via prompt injection.
   const conversationalTools = new Set(['conversation.context', 'message.reply', 'research.search', 'research.web']);
   if (ctx.channel !== 'admin_control' && !conversationalTools.has(tool.name) &&
       !(ctx.channel === 'member_ai' && ['member.get', 'member.status'].includes(tool.name))) {
     return { allowed: false, reason: 'privileged_tool_requires_admin_channel' };
   }
-  if (tool.approval_required || ctx.policy.approval_required?.includes(tool.name) ||
+  if (!approved && (HUMAN_APPROVAL_TOOLS.has(tool.name) || tool.approval_required || ctx.policy.approval_required?.includes(tool.name) ||
       ctx.policy.approval_required?.includes(tool.permission) ||
-      (tool.name === 'post.publish' && ctx.policy.autonomy?.require_approval_for_publish === true)) {
+      (tool.name === 'post.publish' && ctx.policy.autonomy?.require_approval_for_publish === true))) {
     return { allowed: false, reason: 'approval_required' };
   }
   if (READ_ONLY_PERMISSIONS.has(tool.permission)) return { allowed: true };
@@ -785,7 +789,7 @@ export function permissionAllowed(tool: ToolRow, ctx: ToolContext): { allowed: b
         ? { allowed: true }
         : { allowed: false, reason: 'autonomy_disabled:moderation' };
     case 'moderation.reverse':
-      return { allowed: false, reason: 'approval_required' };
+      return approved ? { allowed: true } : { allowed: false, reason: 'approval_required' };
     case 'research.write':
       return autonomy.research === true ? { allowed: true } : { allowed: false, reason: 'autonomy_disabled:research' };
     case 'ops.write':
@@ -847,6 +851,7 @@ export async function executeTool(
   ctx: ToolContext,
   tool: ToolRow,
   rawArguments: string,
+  approvalId?: string,
 ): Promise<ToolExecution> {
   const startedAt = Date.now();
   const finish = (outcome: ToolOutcome): ToolExecution => ({
@@ -874,7 +879,9 @@ export async function executeTool(
   const schemaError = validateAgainstSchema(tool.input_schema, input);
   if (schemaError) return finish(fail('schema_validation', schemaError));
 
-  const permission = permissionAllowed(tool, ctx);
+  // The id is supplied only by the worker replay path, never by tool arguments.
+  // Merely supplying it cannot grant authority: atomic DB consumption below must succeed.
+  const permission = permissionAllowed(tool, ctx, Boolean(approvalId));
   if (!permission.allowed) {
     return finish(fail(permission.reason === 'approval_required' ? 'approval_required' : 'permission_denied', permission.reason ?? 'not permitted'));
   }
@@ -888,6 +895,16 @@ export async function executeTool(
   }
   if (await rateLimitExceeded(ctx, tool)) {
     return finish(fail('rate_limited', `${tool.name} exceeded its per-task rate limit`));
+  }
+
+  if (approvalId) {
+    if (!ctx.taskId || ctx.channel !== 'admin_control') return finish(fail('approval_invalid', 'approval requires a bound admin task'));
+    try {
+      const grant = await ctx.admin.rpc('operator_consume_approval', {
+        p_approval: approvalId, p_task: ctx.taskId, p_action: tool.name, p_arguments: input,
+      });
+      if (grant.error || grant.data !== true) return finish(fail('approval_invalid', 'approval expired, changed, revoked or already consumed'));
+    } catch { return finish(fail('approval_invalid', 'approval verification unavailable')); }
   }
 
   const timeoutMs = Math.min(Math.max(tool.timeout_ms ?? 15_000, 1_000), 60_000);

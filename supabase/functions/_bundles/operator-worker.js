@@ -1120,12 +1120,23 @@ var READ_ONLY_PERMISSIONS = /* @__PURE__ */ new Set([
   "research.read",
   "ops.read"
 ]);
-function permissionAllowed(tool, ctx) {
+var HUMAN_APPROVAL_TOOLS = /* @__PURE__ */ new Set([
+  "post.create",
+  "post.publish",
+  "post.delete",
+  "poll.create",
+  "notification.send",
+  "moderation.remove_content",
+  "moderation.suspend",
+  "moderation.ban",
+  "moderation.restore"
+]);
+function permissionAllowed(tool, ctx, approved = false) {
   const conversationalTools = /* @__PURE__ */ new Set(["conversation.context", "message.reply", "research.search", "research.web"]);
   if (ctx.channel !== "admin_control" && !conversationalTools.has(tool.name) && !(ctx.channel === "member_ai" && ["member.get", "member.status"].includes(tool.name))) {
     return { allowed: false, reason: "privileged_tool_requires_admin_channel" };
   }
-  if (tool.approval_required || ctx.policy.approval_required?.includes(tool.name) || ctx.policy.approval_required?.includes(tool.permission) || tool.name === "post.publish" && ctx.policy.autonomy?.require_approval_for_publish === true) {
+  if (!approved && (HUMAN_APPROVAL_TOOLS.has(tool.name) || tool.approval_required || ctx.policy.approval_required?.includes(tool.name) || ctx.policy.approval_required?.includes(tool.permission) || tool.name === "post.publish" && ctx.policy.autonomy?.require_approval_for_publish === true)) {
     return { allowed: false, reason: "approval_required" };
   }
   if (READ_ONLY_PERMISSIONS.has(tool.permission)) return { allowed: true };
@@ -1148,7 +1159,7 @@ function permissionAllowed(tool, ctx) {
       }
       return autonomy.moderate_explicit_sexual === true || autonomy.moderate_other_violations === true ? { allowed: true } : { allowed: false, reason: "autonomy_disabled:moderation" };
     case "moderation.reverse":
-      return { allowed: false, reason: "approval_required" };
+      return approved ? { allowed: true } : { allowed: false, reason: "approval_required" };
     case "research.write":
       return autonomy.research === true ? { allowed: true } : { allowed: false, reason: "autonomy_disabled:research" };
     case "ops.write":
@@ -1183,7 +1194,7 @@ function toToolSchemas(rows) {
     }
   }));
 }
-async function executeTool(ctx, tool, rawArguments) {
+async function executeTool(ctx, tool, rawArguments, approvalId) {
   const startedAt = Date.now();
   const finish = (outcome) => ({
     ...outcome,
@@ -1206,7 +1217,7 @@ async function executeTool(ctx, tool, rawArguments) {
   }
   const schemaError = validateAgainstSchema(tool.input_schema, input);
   if (schemaError) return finish(fail("schema_validation", schemaError));
-  const permission = permissionAllowed(tool, ctx);
+  const permission = permissionAllowed(tool, ctx, Boolean(approvalId));
   if (!permission.allowed) {
     return finish(fail(permission.reason === "approval_required" ? "approval_required" : "permission_denied", permission.reason ?? "not permitted"));
   }
@@ -1218,6 +1229,20 @@ async function executeTool(ctx, tool, rawArguments) {
   }
   if (await rateLimitExceeded(ctx, tool)) {
     return finish(fail("rate_limited", `${tool.name} exceeded its per-task rate limit`));
+  }
+  if (approvalId) {
+    if (!ctx.taskId || ctx.channel !== "admin_control") return finish(fail("approval_invalid", "approval requires a bound admin task"));
+    try {
+      const grant = await ctx.admin.rpc("operator_consume_approval", {
+        p_approval: approvalId,
+        p_task: ctx.taskId,
+        p_action: tool.name,
+        p_arguments: input
+      });
+      if (grant.error || grant.data !== true) return finish(fail("approval_invalid", "approval expired, changed, revoked or already consumed"));
+    } catch {
+      return finish(fail("approval_invalid", "approval verification unavailable"));
+    }
   }
   const timeoutMs = Math.min(Math.max(tool.timeout_ms ?? 15e3, 1e3), 6e4);
   try {
@@ -1386,25 +1411,6 @@ async function processTask(args) {
   const channel = context?.channel ?? "admin_control";
   const member = context ? asRecord(context.member) : null;
   await admin.rpc("operator_transition_task", { p_task: task.id, p_status: "executing", p_note: null }).catch(() => void 0);
-  if (await providerBudgetExhausted(admin, provider, policy)) {
-    const failed = await admin.rpc("operator_fail_task", {
-      p_task: task.id,
-      p_error_code: "budget_exhausted",
-      p_error_detail: `daily request budget for ${provider} is spent`,
-      p_retryable: false
-    });
-    await admin.rpc("operator_audit_write", {
-      p_action: "task.budget_exhausted",
-      p_outcome: "failed",
-      p_task: task.id,
-      p_actor: staff.profile_id,
-      p_actor_type: "staff",
-      p_resource_type: "task",
-      p_resource_id: task.id,
-      p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null }
-    });
-    return { task_id: task.id, outcome: "failed", provider, model, error: "budget_exhausted", retryable: false, next_status: failed.data ?? null };
-  }
   const query = String(input.instruction ?? input.body ?? task.task_type ?? "").slice(0, 400);
   const [constitutionResult, knowledgeResult] = await Promise.all([
     admin.rpc("operator_active_constitution", {}),
@@ -1453,6 +1459,60 @@ async function processTask(args) {
     memberProfileId: typeof context?.member_profile_id === "string" ? context.member_profile_id : null,
     policy
   };
+  if (typeof input._approved_action_id === "string") {
+    const approvalId = input._approved_action_id;
+    const failReplay = async (code) => {
+      await admin.rpc("operator_fail_task", {
+        p_task: task.id,
+        p_error_code: code,
+        p_error_detail: "Approved action did not complete; inspect tool audit. Approval cannot be reused.",
+        p_retryable: false
+      });
+      return { task_id: task.id, outcome: "failed", error: code };
+    };
+    try {
+      if (channel !== "admin_control") return await failReplay("approval_context_denied");
+      const response = await admin.from("operator_approval").select("action,payload").eq("id", approvalId).eq("task_id", task.id).eq("status", "approved").limit(1);
+      const approved = asRecord(asArray(response.data)[0]);
+      const tool = toolByName.get(String(approved.action));
+      if (response.error || !tool) return await failReplay("approval_missing");
+      const payload = asRecord(approved.payload);
+      const raw = typeof payload.arguments === "string" ? payload.arguments : JSON.stringify(payload.arguments);
+      if (typeof raw !== "string") return await failReplay("approval_arguments_missing");
+      const execution = await executeTool(toolCtx, tool, raw, approvalId);
+      await recordToolCall(toolCtx, execution, raw);
+      if (!execution.ok) return await failReplay(execution.code ?? "approved_tool_failed");
+      await completeTask(admin, task, staff, {
+        content: "Approved action result: " + JSON.stringify(execution.data),
+        approval_id: approvalId,
+        tool: tool.name,
+        tool_result: execution.data,
+        rounds: 0
+      });
+      return { task_id: task.id, outcome: "completed", approval_id: approvalId, tool: tool.name };
+    } catch {
+      return await failReplay("approval_execution_failed");
+    }
+  }
+  if (await providerBudgetExhausted(admin, provider, policy)) {
+    const failed = await admin.rpc("operator_fail_task", {
+      p_task: task.id,
+      p_error_code: "budget_exhausted",
+      p_error_detail: `daily request budget for ${provider} is spent`,
+      p_retryable: false
+    });
+    await admin.rpc("operator_audit_write", {
+      p_action: "task.budget_exhausted",
+      p_outcome: "failed",
+      p_task: task.id,
+      p_actor: staff.profile_id,
+      p_actor_type: "staff",
+      p_resource_type: "task",
+      p_resource_id: task.id,
+      p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null }
+    });
+    return { task_id: task.id, outcome: "failed", provider, model, error: "budget_exhausted", retryable: false, next_status: failed.data ?? null };
+  }
   const toolSchemas = channel === "admin_control" ? configuredToolSchemas : toToolSchemas([...toolByName.values()].filter((tool) => permissionAllowed(tool, toolCtx).allowed));
   let lastContent = "";
   let totalInput = 0;
@@ -1530,9 +1590,13 @@ async function processTask(args) {
               reason: execution.error
             }
           });
+          if (approval.error || !approval.data) {
+            await admin.rpc("operator_fail_task", { p_task: task.id, p_error_code: "approval_request_failed", p_error_detail: "Could not persist approval request", p_retryable: false });
+            return { task_id: task.id, outcome: "failed", error: "approval_request_failed" };
+          }
           await admin.rpc("operator_audit_write", {
             p_action: "approval.requested",
-            p_outcome: "ok",
+            p_outcome: "succeeded",
             p_task: task.id,
             p_actor: staff.profile_id,
             p_actor_type: "staff",

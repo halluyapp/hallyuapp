@@ -232,29 +232,6 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
     .rpc('operator_transition_task', { p_task: task.id, p_status: 'executing', p_note: null })
     .catch(() => undefined);
 
-  // Spend guard. The policy's daily request budget used to be decorative: nothing ever consulted
-  // it. It is checked before a provider call, and exhausting it fails the task without retrying,
-  // because waiting for the next window cannot fix a budget.
-  if (await providerBudgetExhausted(admin, provider, policy)) {
-    const failed = await admin.rpc<string>('operator_fail_task', {
-      p_task: task.id,
-      p_error_code: 'budget_exhausted',
-      p_error_detail: `daily request budget for ${provider} is spent`,
-      p_retryable: false,
-    });
-    await admin.rpc('operator_audit_write', {
-      p_action: 'task.budget_exhausted',
-      p_outcome: 'failed',
-      p_task: task.id,
-      p_actor: staff.profile_id,
-      p_actor_type: 'staff',
-      p_resource_type: 'task',
-      p_resource_id: task.id,
-      p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null },
-    });
-    return { task_id: task.id, outcome: 'failed', provider, model, error: 'budget_exhausted', retryable: false, next_status: failed.data ?? null };
-  }
-
   // Identity and knowledge are versioned data, not a hardcoded prompt. Load the active
   // constitution and retrieve the knowledge entries most relevant to this instruction.
   const query = String(input.instruction ?? input.body ?? task.task_type ?? '').slice(0, 400);
@@ -304,6 +281,56 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
     memberProfileId: typeof context?.member_profile_id === 'string' ? context.member_profile_id : null,
     policy,
   };
+
+  // Resume exactly the human-approved invocation. Do not ask a model to regenerate a plan.
+  if (typeof input._approved_action_id === 'string') {
+    const approvalId = input._approved_action_id;
+    const failReplay = async (code: string) => {
+      await admin.rpc('operator_fail_task', { p_task: task.id, p_error_code: code,
+        p_error_detail: 'Approved action did not complete; inspect tool audit. Approval cannot be reused.', p_retryable: false });
+      return { task_id: task.id, outcome: 'failed', error: code };
+    };
+    try {
+      if (channel !== 'admin_control') return await failReplay('approval_context_denied');
+      const response = await admin.from('operator_approval').select('action,payload')
+        .eq('id', approvalId).eq('task_id', task.id).eq('status', 'approved').limit(1);
+      const approved = asRecord(asArray(response.data)[0]);
+      const tool = toolByName.get(String(approved.action));
+      if (response.error || !tool) return await failReplay('approval_missing');
+      const payload = asRecord(approved.payload);
+      const raw = typeof payload.arguments === 'string' ? payload.arguments : JSON.stringify(payload.arguments);
+      if (typeof raw !== 'string') return await failReplay('approval_arguments_missing');
+      const execution = await executeTool(toolCtx, tool, raw, approvalId);
+      await recordToolCall(toolCtx, execution, raw);
+      if (!execution.ok) return await failReplay(execution.code ?? 'approved_tool_failed');
+      await completeTask(admin, task, staff, { content: 'Approved action result: ' + JSON.stringify(execution.data),
+        approval_id: approvalId, tool: tool.name, tool_result: execution.data, rounds: 0 });
+      return { task_id: task.id, outcome: 'completed', approval_id: approvalId, tool: tool.name };
+    } catch { return await failReplay('approval_execution_failed'); }
+  }
+
+  // Spend guard. The policy's daily request budget used to be decorative: nothing ever consulted
+  // it. It is checked before a provider call, and exhausting it fails the task without retrying,
+  // because waiting for the next window cannot fix a budget.
+  if (await providerBudgetExhausted(admin, provider, policy)) {
+    const failed = await admin.rpc<string>('operator_fail_task', {
+      p_task: task.id,
+      p_error_code: 'budget_exhausted',
+      p_error_detail: `daily request budget for ${provider} is spent`,
+      p_retryable: false,
+    });
+    await admin.rpc('operator_audit_write', {
+      p_action: 'task.budget_exhausted',
+      p_outcome: 'failed',
+      p_task: task.id,
+      p_actor: staff.profile_id,
+      p_actor_type: 'staff',
+      p_resource_type: 'task',
+      p_resource_id: task.id,
+      p_details: { provider, budget: asRecord(policy.providers)[`daily_request_budget_${provider}`] ?? null },
+    });
+    return { task_id: task.id, outcome: 'failed', provider, model, error: 'budget_exhausted', retryable: false, next_status: failed.data ?? null };
+  }
 
   const toolSchemas = channel === 'admin_control' ? configuredToolSchemas
     : toToolSchemas([...toolByName.values()].filter((tool) => permissionAllowed(tool, toolCtx).allowed));
@@ -393,9 +420,13 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
               reason: execution.error,
             },
           });
+          if (approval.error || !approval.data) {
+            await admin.rpc('operator_fail_task', { p_task: task.id, p_error_code: 'approval_request_failed', p_error_detail: 'Could not persist approval request', p_retryable: false });
+            return { task_id: task.id, outcome: 'failed', error: 'approval_request_failed' };
+          }
           await admin.rpc('operator_audit_write', {
             p_action: 'approval.requested',
-            p_outcome: 'ok',
+            p_outcome: 'succeeded',
             p_task: task.id,
             p_actor: staff.profile_id,
             p_actor_type: 'staff',

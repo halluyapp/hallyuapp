@@ -3008,6 +3008,8 @@ export type Database = {
           note: string;
           payload: Json;
           created_at: string;
+          expires_at: string;
+          consumed_at: string | null;
         };
         Insert: {
           id?: string;
@@ -3021,6 +3023,8 @@ export type Database = {
           note?: string;
           payload?: Json;
           created_at?: string;
+          expires_at?: string;
+          consumed_at?: string | null;
         };
         Update: {
           id?: string;
@@ -3034,6 +3038,8 @@ export type Database = {
           note?: string;
           payload?: Json;
           created_at?: string;
+          expires_at?: string;
+          consumed_at?: string | null;
         };
         Relationships: [];
       };
@@ -4042,6 +4048,11 @@ export type Database = {
     };
     Views: Record<never, never>;
     Functions: {
+      operator_consume_approval: {
+        Args: { p_approval: string; p_task: string; p_action: string; p_arguments: Json };
+        Returns: boolean;
+      };
+
       operator_campaign_save: {
         Args: { p_id: string | null; p_expected_version: number; p_name: string; p_kind: string; p_description: string; p_objective: string; p_timezone: string; p_starts_at: string | null; p_ends_at: string | null; p_status: string };
         Returns: Json;
