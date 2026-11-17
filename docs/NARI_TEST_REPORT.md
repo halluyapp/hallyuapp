@@ -30,3 +30,33 @@
   the verified completion of this switch. Stages 4–5 are not complete.
 
 Detailed chronology: [NARI_INTELLIGENCE.md](NARI_INTELLIGENCE.md).
+
+## 2026-11-17 — Stage 4 campaign planner and no-link email signup
+
+- Source deployed: `ba5ee10e1e657135b1fea082aa734815dba72297`.
+- Frontend `dpl_GouRP1rcQ8D3HRJttEKAXuPRcm1c`: **READY / PROMOTED**
+  at https://hallyuapp.vercel.app.
+- Migration 100 applied on existing Supabase project. Rollback-only live SQL checks
+  passed for active-admin authorization, member/suspended denial, optimistic edit
+  conflicts, timezone/offset preservation, invalid/reversed dates, cancellation
+  immutability, launch rejection and audit records. Anonymous EXECUTE denied.
+- Local `npm run check` and Expo web export passed. Campaign client tests cover
+  explicit offsets, RPC version/field contracts, server error propagation and
+  refusal to claim a save without a returned persisted record. Static auth
+  regressions verify removal of the link-request/waiting-room signup branch.
+- GitHub **44054068762**, **Explicit Nari deployed UI acceptance: PASS**;
+  **Clean temporary Nari UI fixture: PASS**. This was an ordinary `/auth/v1/signup`
+  with no admin `email_confirm` shortcut: immediate access token and confirmed
+  user required. Browser checked real password sign-in, memory lifecycle,
+  member knowledge/campaign denial, admin knowledge revisions, campaign draft
+  create/reload/edit/cancel. Full workflow was still running when these results
+  were recorded; do not infer an overall workflow pass from its browser step.
+- Backend cleanup check: UI fixture state finished/cleanup pass, zero remaining
+  `nari-ui-%` campaign records and zero transactional `cmp_%` fixture profiles.
+- Fixture v3 uses scoped OIDC and cleans campaigns only when the creation audit
+  identifies its own fixture actor and the record has the generated run name.
+
+Email confirmation is disabled in production (`mailer_autoconfirm=true`), matching
+the requested behavior. Password reset links remain intentionally supported.
+Campaign launches/automation/delegation are not claimed implemented by this tranche.
+See [NARI_OPERATIONS.md](NARI_OPERATIONS.md) for remaining Stage 4 gates.

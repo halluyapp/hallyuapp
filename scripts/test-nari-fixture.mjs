@@ -41,3 +41,10 @@ test('browser workflow does not need the invalid service-role secret',()=>{
   assert.ok(!fixtureSource.includes('body.profile_id'));
   assert.ok(!fixtureSource.includes('body.user_id'));
 });
+test('fixture verifies ordinary signup without an admin email-confirm shortcut',()=>{
+  const fixtureSource=readFileSync('supabase/functions/operator-ui-fixture/index.ts','utf8');
+  assert.match(fixtureSource,/api\('\/auth\/v1\/signup'/);
+  assert.match(fixtureSource,/!signup\.access_token \|\| !user\.email_confirmed_at/);
+  assert.doesNotMatch(fixtureSource,/email_confirm:true/);
+  assert.match(fixtureSource,/actor_profile_id=eq\.\$\{profile\.id\}&action=eq\.campaign\.created/);
+});

@@ -93,3 +93,21 @@ bounded, source-preserving, transient and scoped to the authorized conversation.
 Android/voice verification and full-duplex voice remain prior-stage gaps; stages 4–5 have not
 been represented as complete. Do not advance past the unresolved acceptance gates by relabelling
 failed or blocked tests as successes.
+
+## Current update — Stage 4 started (2026-11-17)
+
+This update supersedes the older billing-blocked/browser-unverified statements
+above: Coarena/gpt-6-luna reasoning and deployed memory/knowledge UI acceptance
+have passed (see NARI_TEST_REPORT). At the user's direction work has advanced to
+Stage 4; earlier device/full-duplex voice gaps remain explicit, not relabelled.
+
+Stage 4 now includes a deployed independent admin campaign **draft planner** with
+server authorization, objective/description, UTC instants/IANA timezone, optimistic
+versioning, cancellation and audit. Live database checks and deployed browser
+create/reload/edit/cancel acceptance passed. Launches, recurring actions, reminders,
+full approval execution, specialist delegation and full tool coverage remain open.
+
+Email signup no longer requests a confirmation redirect or routes users to a
+verification waiting room. Production already has auto-confirm enabled; ordinary
+signup's immediate confirmed session was checked by the deployed fixture. Password
+recovery remains intact. Source, deployment and test IDs: NARI_TEST_REPORT.md.
