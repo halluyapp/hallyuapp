@@ -586,7 +586,7 @@ async function deliverAnswer(
       .select('id', { count: 'exact', head: true })
       .eq('task_id', task.id)
       .eq('tool', 'message.reply')
-      .eq('status', 'succeeded');
+      .eq('outcome', 'succeeded');
     if ((used.count ?? 0) > 0) return null;
   } catch {
     // If the check itself fails we still deliver: a missing reply is worse than a duplicate guard

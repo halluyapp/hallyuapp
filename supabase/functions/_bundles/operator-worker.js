@@ -1655,7 +1655,7 @@ async function deliverAnswer(admin, task, result) {
   if (!content || !task.conversation_id) return null;
   if (task.task_type !== "admin_command" && task.task_type !== "reply_member_dm") return null;
   try {
-    const used = await admin.from("operator_tool_call").select("id", { count: "exact", head: true }).eq("task_id", task.id).eq("tool", "message.reply").eq("status", "succeeded");
+    const used = await admin.from("operator_tool_call").select("id", { count: "exact", head: true }).eq("task_id", task.id).eq("tool", "message.reply").eq("outcome", "succeeded");
     if ((used.count ?? 0) > 0) return null;
   } catch {
   }

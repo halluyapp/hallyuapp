@@ -139,5 +139,5 @@ test('bounded factuality evaluation cases reject fabricated recall, missing sour
 
 test('worker reply dedupe matches the actual succeeded tool ledger contract', () => {
   const worker=readFileSync('supabase/functions/operator-worker/index.ts','utf8');
-  assert.match(worker,/\.eq\('tool', 'message.reply'\)\s*\.eq\('status', 'succeeded'\)/);
+  assert.match(worker,/\.eq\('tool', 'message.reply'\)\s*\.eq\('outcome', 'succeeded'\)/);
 });
