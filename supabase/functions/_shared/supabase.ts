@@ -121,6 +121,7 @@ class QueryBuilder<T = Record<string, unknown>> implements PromiseLike<Postgrest
       method: this.method,
       headers,
       body: this.patchBody !== null ? JSON.stringify(this.patchBody) : undefined,
+      signal: AbortSignal.timeout(30_000),
     });
 
     const contentRange = res.headers.get('content-range');
@@ -153,7 +154,7 @@ class QueryBuilder<T = Record<string, unknown>> implements PromiseLike<Postgrest
 }
 
 export interface AdminClient {
-  rpc<T = unknown>(fn: string, params?: Record<string, unknown>): Promise<{ data: T | null; error: PostgrestError | null }>;
+  rpc<T = unknown>(fn: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<{ data: T | null; error: PostgrestError | null }>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   from<T = any>(table: string): QueryBuilder<T>;
   storage: {
@@ -169,7 +170,7 @@ export function adminClient(): AdminClient {
   }
 
   return {
-    async rpc<T = unknown>(fn: string, params: Record<string, unknown> = {}) {
+    async rpc<T = unknown>(fn: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
         method: 'POST',
         headers: {
@@ -179,6 +180,7 @@ export function adminClient(): AdminClient {
           'x-application-name': 'hallyu-edge',
         },
         body: JSON.stringify(params),
+        signal: signal ?? AbortSignal.timeout(30_000),
       });
 
       if (!res.ok) {

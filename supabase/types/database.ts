@@ -3136,6 +3136,7 @@ export type Database = {
       operator_campaign: {
         Row: {
           id: string;
+          ballot_month: string | null;
           name: string;
           kind: string;
           status: string;
@@ -3151,6 +3152,7 @@ export type Database = {
           updated_at: string;
         };
         Insert: {
+          ballot_month?: string | null;
           id?: string;
           name: string;
           kind: string;
@@ -3168,6 +3170,7 @@ export type Database = {
         };
         Update: {
           id?: string;
+          ballot_month?: string | null;
           name?: string;
           kind?: string;
           status?: string;
@@ -4116,6 +4119,12 @@ export type Database = {
         Args: Record<string, never>;
         Returns: number;
       };
+      operator_stage4_status: { Args: Record<string,never>; Returns:Json; };
+      operator_campaign_ballot_launch: { Args: {p_campaign:string;p_version:number;p_key:string;p_question:string;p_options:string[];p_closes:string;p_month?:string|null}; Returns:Json; };
+      operator_campaign_finish: { Args: {p_campaign:string;p_version:number;p_cancel?:boolean}; Returns:Json; };
+      operator_campaign_report: { Args: {p_campaign:string}; Returns:Json; };
+      operator_campaign_ballot_tick: { Args: Record<string,never>; Returns:undefined; };
+      operator_notify_approved: { Args: {p_task:string;p_staff:string;p_title:string;p_body:string;p_audience:string;p_world?:string|null}; Returns:Json; };
       operator_campaign_save: {
         Args: { p_id: string | null; p_expected_version: number; p_name: string; p_kind: string; p_description: string; p_objective: string; p_timezone: string; p_starts_at: string | null; p_ends_at: string | null; p_status: string };
         Returns: Json;

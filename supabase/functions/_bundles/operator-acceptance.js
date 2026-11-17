@@ -105,7 +105,8 @@ var QueryBuilder = class {
     const res = await fetch(url, {
       method: this.method,
       headers,
-      body: this.patchBody !== null ? JSON.stringify(this.patchBody) : void 0
+      body: this.patchBody !== null ? JSON.stringify(this.patchBody) : void 0,
+      signal: AbortSignal.timeout(3e4)
     });
     const contentRange = res.headers.get("content-range");
     let count = null;
@@ -133,7 +134,7 @@ function adminClient() {
     throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set as function secrets");
   }
   return {
-    async rpc(fn, params = {}) {
+    async rpc(fn, params = {}, signal) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
         method: "POST",
         headers: {
@@ -142,7 +143,8 @@ function adminClient() {
           Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
           "x-application-name": "hallyu-edge"
         },
-        body: JSON.stringify(params)
+        body: JSON.stringify(params),
+        signal: signal ?? AbortSignal.timeout(3e4)
       });
       if (!res.ok) {
         const text2 = await res.text().catch(() => "");

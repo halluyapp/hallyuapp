@@ -6,6 +6,7 @@ import { Text } from '../../components/ui/Text';
 import { TextField } from '../../components/ui/TextField';
 import { TopBar } from '../../components/ui/TopBar';
 import { campaignsApi, type CampaignDraft } from '../../lib/api/campaigns';
+import { CampaignBallots } from '../../components/operator/CampaignBallots';
 import { CampaignSchedule } from '../../components/operator/CampaignSchedule';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
@@ -51,7 +52,7 @@ export default function CampaignSettings() {
   return <Screen header={<TopBar mode="stack" title="Campaign planner" />}><ScrollScreen keyboard>
     <View style={{ padding: space.x4, gap: space.x3 }}>
       {!allowed ? <Text>Administrator access required.</Text> : <>
-        <Text>Create and edit campaign plans without Nari. Saving a draft does not schedule announcements, open voting or send reminders. Save first, then explicitly review and approve public announcement posts below. Poll/vote collection is not implemented by this planner.</Text>
+        <Text>Create and edit campaign plans without Nari. Saving a draft does not schedule announcements, open voting or send reminders. Save first, then explicitly review and approve public announcement posts below. Poll and monthly drama vote campaigns can launch a reviewed ballot below.</Text>
         {!!notice && <Text>{notice}</Text>}
         <Button label="Refresh campaigns" loading={busy} onPress={() => void load()} />
         {entries.map((row) => <Button key={row.id} label={`${row.name} · ${row.status} · v${row.version}`} variant="secondary" disabled={busy} onPress={() => { setEntry(row); setNotice(''); }} />)}
@@ -70,6 +71,7 @@ export default function CampaignSettings() {
           <Button label={`Save campaign draft (version ${entry.version})`} disabled={busy || !entry.name.trim()} loading={busy} onPress={() => void save()} />
           {!!entry.id && <Button label="Cancel campaign draft" variant="danger" disabled={busy} onPress={() => void save(true)} />}
         </> : <Text>This {entry.status} campaign is read only in the draft editor.</Text>}
+        {!!entry.id && <CampaignBallots key={`ballot:${identity}:${entry.id}`} campaign={entry} onChanged={load} />}
         {!!entry.id && <CampaignSchedule key={`${identity}:${entry.id}`} campaign={entry} onChanged={load} />}
       </>}
     </View>

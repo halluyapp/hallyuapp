@@ -126,7 +126,8 @@ export default function Settings() {
           <SettingsRow icon="bookmark-outline" label="Nari memory" detail="Review, correct or forget saved preferences" onPress={() => router.push('/settings/nari-memory')} />
           {hasAdminAccess(me.role) && <SettingsRow icon="library-outline" label="Nari knowledge & constitution" detail="Versioned facts, sources and organisational policy" onPress={() => router.push('/settings/nari-knowledge')} />}
           {hasAdminAccess(me.role) && <SettingsRow icon="shield-checkmark-outline" label="Nari approvals" detail="Review exact actions, expiry and decisions" onPress={() => router.push('/settings/nari-approvals')} />}
-          {hasAdminAccess(me.role) && <SettingsRow icon="calendar-outline" label="Campaign planner" detail="Independent campaign drafts, dates and objectives" onPress={() => router.push('/settings/campaigns')} />}
+          {hasAdminAccess(me.role) && <SettingsRow icon="pulse-outline" label="Nari operations status" detail="Live tasks, scheduler, budgets, agents and errors" onPress={() => router.push('/settings/nari-status')} />}
+          {hasAdminAccess(me.role) && <SettingsRow icon="calendar-outline" label="Campaign planner" detail="Independent announcements, polls, voting and performance" onPress={() => router.push('/settings/campaigns')} />}
         </SettingsGroup>}
         <SettingsGroup title={t('settings.account')}>
           {signedIn ? (

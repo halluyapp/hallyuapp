@@ -55,54 +55,6 @@ export interface ToolOutcome {
 
 type Handler = (ctx: ToolContext, input: Record<string, unknown>) => Promise<ToolOutcome>;
 
-/**
- * Server-side notification guardrails. Returns a suppression outcome when the send must not
- * happen, or null when it may proceed. Reads `operator_policy.notifications`.
- */
-async function enforceNotificationPolicy(ctx: ToolContext, title: string): Promise<ToolOutcome | null> {
-  const policy = (ctx.policy.notifications ?? {}) as Record<string, unknown>;
-  const maxPerDay = Number(policy.max_per_day ?? 0);
-  const maxPerHour = Number(policy.max_per_hour ?? 0);
-  const dedupeHours = Number(policy.dedupe_window_hours ?? 0);
-  const quiet = (policy.quiet_hours ?? null) as { start?: string; end?: string } | null;
-
-  const now = new Date();
-  const hour = now.getUTCHours();
-  if (quiet?.start && quiet?.end) {
-    const start = Number(String(quiet.start).split(':')[0]);
-    const end = Number(String(quiet.end).split(':')[0]);
-    const inWindow = start <= end ? hour >= start && hour < end : hour >= start || hour < end;
-    if (inWindow) return { ok: true, data: { suppressed: true, reason: 'quiet_hours', verified: true } };
-  }
-
-  if (dedupeHours > 0) {
-    const since = new Date(now.getTime() - dedupeHours * 3600_000).toISOString();
-    const dup = await restSelect(
-      'operator_notification_run',
-      `select=id&title=eq.${encodeURIComponent(title)}&created_at=gte.${since}&limit=1`,
-    );
-    if (dup.ok && Array.isArray(dup.data) && dup.data.length > 0) {
-      return { ok: true, data: { suppressed: true, reason: 'duplicate', verified: true } };
-    }
-  }
-
-  if (maxPerDay > 0) {
-    const since = new Date(now.getTime() - 24 * 3600_000).toISOString();
-    const day = await restSelect('operator_notification_run', `select=id&created_at=gte.${since}&limit=1000`);
-    if (day.ok && Array.isArray(day.data) && day.data.length >= maxPerDay) {
-      return { ok: true, data: { suppressed: true, reason: 'daily_cap', verified: true } };
-    }
-  }
-  if (maxPerHour > 0) {
-    const since = new Date(now.getTime() - 3600_000).toISOString();
-    const hr = await restSelect('operator_notification_run', `select=id&created_at=gte.${since}&limit=1000`);
-    if (hr.ok && Array.isArray(hr.data) && hr.data.length >= maxPerHour) {
-      return { ok: true, data: { suppressed: true, reason: 'hourly_cap', verified: true } };
-    }
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // PostgREST helpers (service role only; never exposed to the model)
 // ---------------------------------------------------------------------------
@@ -128,6 +80,7 @@ async function restRequest(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15_000),
   });
   const text = await response.text().catch(() => '');
   if (!response.ok) {
@@ -145,7 +98,9 @@ async function restRequest(
 }
 
 async function restInsert(table: string, values: Record<string, unknown> | Array<Record<string, unknown>>) {
-  return restRequest('POST', table, '', values);
+  const result = await restRequest('POST', table, '', values);
+  if (result.ok && (!Array.isArray(result.data) || result.data.length === 0)) return {ok:false,data:null,error:'Write returned no persisted rows'};
+  return result;
 }
 
 async function restSelect(table: string, query: string) {
@@ -159,6 +114,7 @@ async function restPatch(table: string, query: string, values: Record<string, un
 async function rpc<T = unknown>(ctx: ToolContext, fn: string, params: Record<string, unknown>) {
   const { data, error } = await ctx.admin.rpc<T>(fn, params);
   if (error) throw new Error(`${fn}: ${error.message}`);
+  if (data === null || data === undefined) throw new Error(`${fn}: no verified result`);
   return data;
 }
 
@@ -189,7 +145,7 @@ function firstRow(data: unknown): Record<string, unknown> | null {
 const MEMBER_FIELDS =
   'id,handle,display_name,bio,worlds,verified,role,account_status,follower_count,following_count,post_count,comment_count,is_ai,created_at';
 
-const handlers: Record<string, Handler> = {
+export const handlers: Record<string, Handler> = {
   'member.get': async (ctx, input) => {
     const id = str(input, 'profile_id');
     const result = await restSelect('profiles', `select=${MEMBER_FIELDS}&id=eq.${id}&limit=1`);
@@ -248,6 +204,9 @@ const handlers: Record<string, Handler> = {
     return { ok: true, data };
   },
 
+  'post.edit': async () => fail('approval_required','Use the atomic approved-action route'),
+  'campaign.schedule': async () => fail('approval_required','Use the atomic approved-action route'),
+
   'post.publish': async (_ctx, input) => {
     const postId = str(input, 'post_id');
     const patched = await restPatch('posts', `id=eq.${postId}`, { state: 'active' });
@@ -305,65 +264,17 @@ const handlers: Record<string, Handler> = {
   },
 
   'notification.send': async (ctx, input) => {
-    const title = str(input, 'title').slice(0, 120);
-    const body = str(input, 'body').slice(0, 500);
-    const audience = str(input, 'audience', 'all');
-    const world = str(input, 'world', '');
-    if (!title || !body) return fail('invalid_notification', 'title and body are required');
-
-    let recipientIds: string[] = [];
-    if (audience === 'world' && world) {
-      const result = await restSelect('profiles', `select=id&worlds=cs.{${world}}&account_status=eq.active&limit=5000`);
-      if (!result.ok) return fail('audience_failed', result.error ?? 'audience lookup failed');
-      recipientIds = (Array.isArray(result.data) ? result.data : []).map((r) => String((r as Record<string, unknown>).id));
-    } else if (audience === 'followers') {
-      const result = await restSelect('follows', `select=follower_id&target_id=eq.${ctx.staffId}&limit=5000`);
-      if (!result.ok) return fail('audience_failed', result.error ?? 'audience lookup failed');
-      recipientIds = (Array.isArray(result.data) ? result.data : []).map((r) => String((r as Record<string, unknown>).follower_id));
-    }
-
-    let delivered = 0;
-    if (recipientIds.length > 0) {
-      const rows = recipientIds.map((recipientId) => ({
-        recipient_id: recipientId,
-        kind: 'system',
-        group: 'system',
-        title,
-        body,
-      }));
-      for (let i = 0; i < rows.length; i += 500) {
-        const chunk = rows.slice(i, i + 500);
-        const inserted = await restInsert('notifications', chunk);
-        if (!inserted.ok) return fail('notify_failed', inserted.error ?? 'notify failed');
-        delivered += chunk.length;
-      }
-    } else {
-      const count = await rpc<number>(ctx, 'notify_all_members', {
-        p_kind: 'system',
-        p_group: 'system',
-        p_title: title,
-        p_body: body,
-        p_deep_link: '/',
-        p_dedupe_prefix: `operator:${ctx.taskId ?? Date.now()}`,
-      });
-      delivered = typeof count === 'number' ? count : 0;
-    }
-
-    const run = await restInsert('operator_notification_run', {
-      title,
-      body,
-      audience,
-      audience_filter: world ? { world } : {},
-      kind: 'system',
-      status: 'sent',
-      target_count: delivered,
-      delivered_count: delivered,
-      failed_count: 0,
-      task_id: ctx.taskId,
-      finished_at: new Date().toISOString(),
+    const data = await rpc(ctx, 'operator_notify_approved', {
+      p_task: ctx.taskId, p_staff: ctx.staffId, p_title: str(input,'title'),
+      p_body: str(input,'body'), p_audience: str(input,'audience','all'), p_world: str(input,'world') || null,
     });
-    if (!run.ok) return fail('run_log_failed', run.error ?? 'notification run log failed');
-    return { ok: true, data: { delivered, audience, verified: true } };
+    return { ok: true, data };
+  },
+
+  'moderation.flag': async (ctx,input) => {
+    const inserted=await restInsert('operator_moderation_case',{target_type:str(input,'target_type'),target_id:str(input,'target_id'),rule_code:'human_review',rule_text:str(input,'reason'),confidence:num(input,'confidence',0),decision:'contain',task_id:ctx.taskId,decided_by:null});
+    if(!inserted.ok)return fail('escalation_failed',inserted.error ?? 'Escalation unavailable');
+    return {ok:true,data:{case:firstRow(inserted.data),escalated:true,content_removed:false,account_restricted:false,verified:true}};
   },
 
   'moderation.queue': async (ctx, input) => {
@@ -577,7 +488,7 @@ const handlers: Record<string, Handler> = {
       status: 'draft',
       starts_at: str(input, 'starts_at', '') || null,
       ends_at: str(input, 'ends_at', '') || null,
-      payload: (input.payload as Record<string, unknown>) ?? {},
+      payload: {proposal: (input.payload as Record<string, unknown>) ?? {}},
     });
     if (!inserted.ok) return fail('campaign_failed', inserted.error ?? 'campaign failed');
     return { ok: true, data: { campaign: firstRow(inserted.data), verified: true } };
@@ -636,6 +547,7 @@ const handlers: Record<string, Handler> = {
         counts[key] = (counts[key] ?? 0) + 1;
       }
     }
+    if (!providers.ok || !workers.ok || !tasks.ok) return fail('health_unavailable','Backend health query failed; not healthy');
     return {
       ok: true,
       data: {
@@ -750,7 +662,7 @@ const READ_ONLY_PERMISSIONS = new Set([
 ]);
 
 // High-impact operations require a human even if a registry/policy flag was omitted.
-const HUMAN_APPROVAL_TOOLS = new Set(['post.create', 'post.publish', 'post.delete', 'poll.create',
+const HUMAN_APPROVAL_TOOLS = new Set(['post.edit','campaign.schedule','post.create', 'post.publish', 'post.delete', 'poll.create',
   'notification.send', 'moderation.remove_content', 'moderation.suspend', 'moderation.ban', 'moderation.restore']);
 
 export function permissionAllowed(tool: ToolRow, ctx: ToolContext, approved = false): { allowed: boolean; reason?: string } {
@@ -800,7 +712,7 @@ export function permissionAllowed(tool: ToolRow, ctx: ToolContext, approved = fa
 }
 
 export async function rateLimitExceeded(ctx: ToolContext, tool: ToolRow): Promise<boolean> {
-  if (!ctx.taskId) return false;
+  if (!ctx.taskId) return true;
   // Column is `tool` (not `tool_name`). If the count query fails we FAIL CLOSED: a broken
   // limiter must never silently allow unbounded tool execution.
   const result = await restSelect(
@@ -810,7 +722,9 @@ export async function rateLimitExceeded(ctx: ToolContext, tool: ToolRow): Promis
   if (!result.ok || !Array.isArray(result.data)) return true;
   const rpm = tool.rate_limit_per_min ?? 30;
   const perTaskCap = Math.max(rpm * 3, 10);
-  return result.data.length >= perTaskCap;
+  if (result.data.length >= perTaskCap) return true;
+  const minute = await restSelect('operator_tool_call', `select=id&tool=eq.${encodeURIComponent(tool.name)}&created_at=gte.${new Date(Date.now()-60_000).toISOString()}&limit=1000`);
+  return !minute.ok || !Array.isArray(minute.data) || minute.data.length >= rpm;
 }
 
 /**
@@ -861,9 +775,9 @@ export async function executeTool(
     permission: tool.permission,
   });
 
+  if (!tool.enabled) return finish(fail('tool_disabled', `${tool.name} is disabled`));
   const handler = handlers[tool.name];
   if (!handler) return finish(fail('unknown_tool', `no handler for ${tool.name}`));
-  if (!tool.enabled) return finish(fail('tool_disabled', `${tool.name} is disabled`));
 
   let input: Record<string, unknown>;
   try {
@@ -900,6 +814,13 @@ export async function executeTool(
   if (approvalId) {
     if (!ctx.taskId || ctx.channel !== 'admin_control') return finish(fail('approval_invalid', 'approval requires a bound admin task'));
     try {
+      if (HUMAN_APPROVAL_TOOLS.has(tool.name)) {
+        const performed = await ctx.admin.rpc('operator_execute_approved', {
+          p_approval: approvalId, p_task: ctx.taskId, p_action: tool.name, p_arguments: input,
+        }, AbortSignal.timeout(Math.min(Math.max(tool.timeout_ms ?? 15_000,1000),60000)));
+        if (performed.error || performed.data == null) return finish(fail('approved_action_failed','Atomic execution rejected or unavailable; inspect approval and action history before retrying'));
+        return finish({ok:true,data:performed.data});
+      }
       const grant = await ctx.admin.rpc('operator_consume_approval', {
         p_approval: approvalId, p_task: ctx.taskId, p_action: tool.name, p_arguments: input,
       });
@@ -908,17 +829,18 @@ export async function executeTool(
   }
 
   const timeoutMs = Math.min(Math.max(tool.timeout_ms ?? 15_000, 1_000), 60_000);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
       handler(ctx, input),
       new Promise<ToolOutcome>((resolve) =>
-        setTimeout(() => resolve(fail('timeout', `${tool.name} timed out after ${timeoutMs}ms`)), timeoutMs),
+        { timer = setTimeout(() => resolve(fail('timeout', `${tool.name} outcome unknown after ${timeoutMs}ms; inspect history before retrying`)), timeoutMs); },
       ),
     ]);
     return finish(outcome);
   } catch (error) {
     return finish(fail('tool_error', (error as Error).message.slice(0, 400)));
-  }
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 export async function recordToolCall(
@@ -926,7 +848,7 @@ export async function recordToolCall(
   execution: ToolExecution,
   argumentsJson: string,
 ): Promise<void> {
-  await restInsert('operator_tool_call', {
+  const persisted = await restInsert('operator_tool_call', {
     task_id: ctx.taskId,
     tool: execution.tool,
     args: safeJson(argumentsJson),
@@ -939,6 +861,7 @@ export async function recordToolCall(
     error_detail: execution.ok ? null : (execution.error ?? null),
     duration_ms: execution.durationMs,
   });
+  if (!persisted.ok) throw new Error('Tool audit persistence failed; stop execution and inspect side effects');
 }
 
 function safeJson(value: string): unknown {

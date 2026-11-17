@@ -72,10 +72,11 @@ test('publication obeys configured policy and saved research is not fact verific
   const original=globalThis.fetch;
   try {
     globalThis.fetch=async (_url,options)=>{
+      if(options.method==='GET') return new Response('[]');
       const body=JSON.parse(options.body); assert.equal(body.verification,'unverified'); assert.equal(body.source_url,'https://example.com/report');
       return new Response(JSON.stringify([{id:'research',...body}]),{status:201});
     };
-    const saved=await executeTool({channel:'admin_control',taskId:null,policy:{autonomy:{research:true}}},{name:'research.save',permission:'research.write',enabled:true,approval_required:false,timeout_ms:1000,input_schema:{type:'object'}},JSON.stringify({topic:'dramas',headline:'Reported casting',source_url:'https://example.com/report',verification:'confirmed'}));
+    const saved=await executeTool({channel:'admin_control',taskId:'test-task',policy:{autonomy:{research:true}}},{name:'research.save',permission:'research.write',enabled:true,approval_required:false,timeout_ms:1000,input_schema:{type:'object'}},JSON.stringify({topic:'dramas',headline:'Reported casting',source_url:'https://example.com/report',verification:'confirmed'}));
     assert.equal(saved.ok,true); assert.equal(saved.data.saved,true); assert.equal(saved.data.verified,false);
   } finally { globalThis.fetch=original; }
 });
@@ -108,9 +109,10 @@ test('context bounding preserves explicit preferences ahead of expendable histor
 test('research stores publication date separately from event date, keeps uncertainty and rejects malformed dates', async () => {
   const original = globalThis.fetch;
   const tool = {name:'research.save',permission:'research.write',enabled:true,approval_required:false,timeout_ms:1000,input_schema:{type:'object'}};
-  const ctx = {channel:'admin_control',taskId:null,policy:{autonomy:{research:true}}};
+  const ctx = {channel:'admin_control',taskId:'test-task',policy:{autonomy:{research:true}}};
   try {
     globalThis.fetch = async (_url, options) => {
+      if(options.method==='GET') return new Response('[]');
       const row = JSON.parse(options.body);
       assert.equal(row.published_at,'2026-11-01T00:00:00.000Z');
       assert.equal(row.event_at,'2026-12-01T00:00:00.000Z');
