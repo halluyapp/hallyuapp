@@ -1,5 +1,6 @@
 // Temporary release verifier: deploy only for acceptance, invoke with the Vault worker token,
 // then remove the deployed endpoint. Never returns credentials. Fixture users are removed in finally.
+import { verifyStage4Tools } from './stage4-tools.ts';
 import { reasoningCases, gradeReasoningReply } from '../_shared/operator/evaluation.ts';
 import { adminClient } from '../_shared/supabase.ts';
 import { jsonResponse, errorResponse } from '../_shared/cors.ts';
@@ -21,6 +22,7 @@ Deno.serve(async (request: Request) => {
   const body = await request.json().catch(() => null);
   const run = typeof body?.run_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.run_id) ? body.run_id : null;
   if (!run) return errorResponse('run_id required',400);
+  if (body?.mode === 'stage4_tools') return jsonResponse(await verifyStage4Tools(run));
   const reserved = await api('/rest/v1/operator_acceptance_run', 'POST', { id: run, state: 'running' }).catch(() => null);
   if (!reserved) return errorResponse('run already exists or ledger unavailable',409);
   const checks: Record<string, unknown> = {};
