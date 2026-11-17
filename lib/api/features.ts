@@ -230,8 +230,10 @@ export async function fetchDirectMessages(peerHandle: string): Promise<DirectMes
     p_peer_handle: peerHandle,
     p_limit: 80,
   });
-  if (error || !Array.isArray(data)) return [];
-  return (data as RawDirectMessage[]).map(toDirectMessage);
+  if (error) throw new Error(error.message);
+  const rows = Array.isArray(data) ? data : data && typeof data === 'object' && 'messages' in data ? data.messages : null;
+  if (!Array.isArray(rows)) throw new Error('Conversation response was invalid. Please retry.');
+  return (rows as RawDirectMessage[]).map(toDirectMessage);
 }
 
 export async function sendDirectMessage(

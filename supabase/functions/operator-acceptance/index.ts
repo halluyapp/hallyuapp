@@ -1,3 +1,4 @@
+import { stage5Smoke } from './stage5-smoke.ts';
 // Temporary release verifier: deploy only for acceptance, invoke with the Vault worker token,
 // then remove the deployed endpoint. Never returns credentials. Fixture users are removed in finally.
 import { verifyStage4Tools, verifyStage4Push } from './stage4-tools.ts';
@@ -22,6 +23,7 @@ Deno.serve(async (request: Request) => {
   const body = await request.json().catch(() => null);
   const run = typeof body?.run_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.run_id) ? body.run_id : null;
   if (!run) return errorResponse('run_id required',400);
+  if (body?.mode === 'stage5_smoke') return jsonResponse(await stage5Smoke(run,body.release_ref));
   if (body?.mode === 'stage4_push') return jsonResponse(await verifyStage4Push());
   if (body?.mode === 'stage4_tools') return jsonResponse(await verifyStage4Tools(run));
   const reserved = await api('/rest/v1/operator_acceptance_run', 'POST', { id: run, state: 'running' }).catch(() => null);

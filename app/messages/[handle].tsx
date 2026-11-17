@@ -3,9 +3,10 @@ import { SpokenMessage } from '../../components/operator/SpokenMessage';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { FlatList, KeyboardAvoidingView, AppState, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DramaPickerSheet } from '../../components/create/pickers';
+import { VerificationSeal } from '../../components/recognition/VerificationSeal';
 import { Avatar } from '../../components/ui/Avatar';
 import { IconButton } from '../../components/ui/IconButton';
 import { Markdown } from '../../components/ui/Markdown';
@@ -148,11 +149,16 @@ export default function DirectMessageThreadScreen() {
   }, [cleanHandle]);
 
   useEffect(() => {
-    void loadThread();
-    return subscribeDirectMessages(me.id, () => {
-      void loadThread();
+    const refresh = () => { void loadThread().catch(() => setAwaitingWorkerNotice(true)); };
+    refresh();
+    const appState = AppState.addEventListener('change', state => { if (state === 'active') refresh(); });
+    // Realtime can disconnect on Android/background tabs; bounded polling recovers replies.
+    const poll = setInterval(refresh, isOperator ? 5000 : 15000);
+    const unsubscribe = subscribeDirectMessages(me.id, () => {
+      refresh();
     });
-  }, [loadThread, me.id]);
+    return () => { unsubscribe(); clearInterval(poll); appState.remove(); };
+  }, [loadThread, me.id, isOperator]);
 
   // Detect if the user sent the latest DM to Nari and no reply has arrived after 15 seconds,
   // surfacing an honest pending/check notice without fabricating any reply.
@@ -269,7 +275,8 @@ export default function DirectMessageThreadScreen() {
       header={
         <TopBar
           mode="stack"
-          title={peer?.displayName ?? `@${cleanHandle}`}
+          title={isOperator ? 'Nari' : peer?.displayName ?? `@${cleanHandle}`}
+          center={isOperator ? <View style={{ alignItems: 'center', gap: 3 }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Avatar uri={peer?.avatarUrl} name="Nari" size={28} /><Text variant="title">Nari</Text><VerificationSeal tier={peer?.verificationTier} verified={peer?.verified} size={18} /></View><Text variant="caption" tone="secondary">Official AI assistant</Text></View> : undefined}
           subtitle={
             isOperator
               ? activeModel

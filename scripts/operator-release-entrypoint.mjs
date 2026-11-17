@@ -4,7 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 const [name,ref] = process.argv.slice(2);
-if (!['operator-worker','operator-voice','operator-acceptance','operator-ui-fixture'].includes(name) || !/^[a-f0-9]{40}$/.test(ref ?? '')) {
+if (!['operator-admin','operator-worker','operator-voice','operator-acceptance','operator-ui-fixture'].includes(name) || !/^[a-f0-9]{40}$/.test(ref ?? '')) {
   throw new Error('Expected an allowed operator function and immutable 40-character Git commit.');
 }
 const file = `supabase/functions/_bundles/${name}.js`;

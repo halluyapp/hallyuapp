@@ -195,34 +195,18 @@ function asArray(value) {
 async function resolveCaller(token) {
   const admin = adminClient();
   let row;
-  const userResponse = await fetch(`${SUPABASE_URL2}/auth/v1/user`, {
-    headers: { apikey: SERVICE_ROLE_KEY2, Authorization: `Bearer ${token}` }
+  const rpcRes = await fetch(`${SUPABASE_URL2}/rest/v1/rpc/current_profile_id`, {
+    method: "POST",
+    headers: { apikey: SERVICE_ROLE_KEY2, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: "{}",
+    signal: AbortSignal.timeout(15e3)
   });
-  if (userResponse.ok) {
-    const user = await userResponse.json().catch(() => null);
-    if (user?.id) {
-      const profile = await admin.from("profiles").select("id,role,handle,display_name,account_status").eq("auth_sub", user.id).limit(1);
-      row = asArray(profile.data)[0];
-    }
-  }
-  if (!row) {
-    const rpcRes = await fetch(`${SUPABASE_URL2}/rest/v1/rpc/current_profile_id`, {
-      method: "POST",
-      headers: {
-        apikey: SERVICE_ROLE_KEY2,
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: "{}"
-    });
-    if (rpcRes.ok) {
-      const profileId = await rpcRes.json().catch(() => null);
-      if (typeof profileId === "string" && profileId.length > 0) {
-        const profile = await admin.from("profiles").select("id,role,handle,display_name,account_status").eq("id", profileId).limit(1);
-        row = asArray(profile.data)[0];
-      }
-    }
-  }
+  if (!rpcRes.ok) return null;
+  const profileId = await rpcRes.json().catch(() => null);
+  if (typeof profileId !== "string" || !/^[0-9a-f-]{36}$/i.test(profileId)) return null;
+  const profile = await admin.from("profiles").select("id,role,handle,display_name,account_status").eq("id", profileId).limit(1);
+  if (profile.error) throw new Error("Administrator identity lookup unavailable");
+  row = asArray(profile.data)[0];
   if (!row || row.account_status !== "active") return null;
   if (row.role !== "admin" && row.role !== "ceo") return null;
   return {

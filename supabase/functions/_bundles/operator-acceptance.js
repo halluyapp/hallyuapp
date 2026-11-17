@@ -1,14 +1,351 @@
 // GENERATED FILE — do not edit by hand.
 // Source: supabase/functions/operator-acceptance/index.ts (plus its imports from supabase/functions/_shared).
 // Regenerate with: node scripts/build-operator-bundles.mjs
-// supabase/functions/_shared/operator/tools.ts
+// supabase/functions/_shared/supabase.ts
 var SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
 var SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+var QueryBuilder = class {
+  constructor(table) {
+    this.table = table;
+  }
+  table;
+  method = "GET";
+  selectCols = "*";
+  wantCount = false;
+  singleRow = false;
+  patchBody = null;
+  filters = [];
+  select(columns = "*", opts) {
+    this.selectCols = columns;
+    this.wantCount = opts?.count === "exact";
+    if (opts?.head) this.method = "HEAD";
+    return this;
+  }
+  update(values) {
+    this.method = "PATCH";
+    this.patchBody = values;
+    return this;
+  }
+  eq(column, value) {
+    this.filters.push([column, `eq.${value}`]);
+    return this;
+  }
+  in(column, values) {
+    const encoded = values.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(",");
+    this.filters.push([column, `in.(${encoded})`]);
+    return this;
+  }
+  is(column, value) {
+    this.filters.push([column, `is.${String(value)}`]);
+    return this;
+  }
+  lt(column, value) {
+    this.filters.push([column, `lt.${value}`]);
+    return this;
+  }
+  lte(column, value) {
+    this.filters.push([column, `lte.${value}`]);
+    return this;
+  }
+  gt(column, value) {
+    this.filters.push([column, `gt.${value}`]);
+    return this;
+  }
+  gte(column, value) {
+    this.filters.push([column, `gte.${value}`]);
+    return this;
+  }
+  order(column, opts) {
+    const dir = opts?.ascending === false ? "desc" : "asc";
+    const nulls = opts?.nullsFirst === false ? ".nullslast" : opts?.nullsFirst === true ? ".nullsfirst" : "";
+    this.filters.push(["order", `${column}.${dir}${nulls}`]);
+    return this;
+  }
+  limit(n) {
+    this.filters.push(["limit", String(n)]);
+    return this;
+  }
+  single() {
+    this.singleRow = true;
+    return this;
+  }
+  async execute() {
+    const url = new URL(`${SUPABASE_URL}/rest/v1/${this.table}`);
+    if (this.method !== "PATCH") {
+      url.searchParams.set("select", this.selectCols);
+    }
+    for (const [k, v] of this.filters) {
+      url.searchParams.append(k, v);
+    }
+    const prefer = [];
+    if (this.wantCount) prefer.push("count=exact");
+    if (this.method === "PATCH") prefer.push("return=minimal");
+    const headers = {
+      apikey: SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+      "x-application-name": "hallyu-edge",
+      Accept: this.singleRow ? "application/vnd.pgrst.object+json" : "application/json"
+    };
+    if (prefer.length > 0) headers.Prefer = prefer.join(",");
+    if (this.patchBody !== null) headers["Content-Type"] = "application/json";
+    const res = await fetch(url, {
+      method: this.method,
+      headers,
+      body: this.patchBody !== null ? JSON.stringify(this.patchBody) : void 0,
+      signal: AbortSignal.timeout(3e4)
+    });
+    const contentRange = res.headers.get("content-range");
+    let count = null;
+    if (contentRange && contentRange.includes("/")) {
+      const parsed = Number(contentRange.split("/")[1]);
+      if (Number.isFinite(parsed)) count = parsed;
+    }
+    if (!res.ok) {
+      const text2 = await res.text().catch(() => "");
+      return { data: null, count, error: { message: text2.slice(0, 300) || `HTTP ${res.status}`, status: res.status } };
+    }
+    if (this.method === "HEAD" || res.status === 204) {
+      return { data: null, count, error: null };
+    }
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    return { data, count, error: null };
+  }
+  then(onfulfilled, onrejected) {
+    return this.execute().then(onfulfilled, onrejected);
+  }
+};
+function adminClient() {
+  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set as function secrets");
+  }
+  return {
+    async rpc(fn, params = {}, signal) {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+          "x-application-name": "hallyu-edge"
+        },
+        body: JSON.stringify(params),
+        signal: signal ?? AbortSignal.timeout(3e4)
+      });
+      if (!res.ok) {
+        const text2 = await res.text().catch(() => "");
+        return { data: null, error: { message: text2.slice(0, 300) || `HTTP ${res.status}`, status: res.status } };
+      }
+      const text = await res.text();
+      return { data: text ? JSON.parse(text) : null, error: null };
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    from(table) {
+      return new QueryBuilder(table);
+    },
+    storage: {
+      from(bucket) {
+        return {
+          async remove(paths) {
+            const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${bucket}`, {
+              method: "DELETE",
+              headers: {
+                "Content-Type": "application/json",
+                apikey: SERVICE_ROLE_KEY,
+                Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+                "x-application-name": "hallyu-edge"
+              },
+              body: JSON.stringify({ prefixes: paths })
+            });
+            if (!res.ok) {
+              const text2 = await res.text().catch(() => "");
+              return { data: null, error: { message: text2.slice(0, 300) || `HTTP ${res.status}`, status: res.status } };
+            }
+            const text = await res.text();
+            return { data: text ? JSON.parse(text) : [], error: null };
+          }
+        };
+      }
+    }
+  };
+}
+
+// supabase/functions/_shared/operator/voice.ts
+var VoiceFailure = class extends Error {
+  constructor(code, status = 400) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+  code;
+  status;
+};
+var MAX_AUDIO_BYTES = 4 * 1024 * 1024;
+function normalizeSpeechAudio(data, mime) {
+  if (mime === "audio/wav") return { type: "audio", data, mime_type: mime };
+  if (!/^audio\/L16;codec=pcm;rate=24000$/i.test(mime)) throw new VoiceFailure("unsupported_audio_response", 502);
+  const raw = atob(data);
+  if (!raw.length || raw.length % 2 || raw.length > 8 * 1024 * 1024) throw new VoiceFailure("invalid_audio_response", 502);
+  const bytes = new Uint8Array(44 + raw.length);
+  const view = new DataView(bytes.buffer);
+  const text = (offset, value) => {
+    for (let i = 0; i < value.length; i++) bytes[offset + i] = value.charCodeAt(i);
+  };
+  text(0, "RIFF");
+  view.setUint32(4, 36 + raw.length, true);
+  text(8, "WAVE");
+  text(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 24e3, true);
+  view.setUint32(28, 48e3, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  text(36, "data");
+  view.setUint32(40, raw.length, true);
+  for (let i = 0; i < raw.length; i++) bytes[44 + i] = raw.charCodeAt(i);
+  let encoded = "";
+  for (let i = 0; i < bytes.length; i += 8192) encoded += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return { type: "audio", data: btoa(encoded), mime_type: "audio/wav" };
+}
+async function geminiInteraction(key, payload, signal) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) controller.abort();
+  const timer = setTimeout(abort, 45e3);
+  try {
+    const model = String(payload.model ?? "");
+    if (!/^[a-z0-9.-]+$/.test(model)) throw new VoiceFailure("invalid_voice_configuration", 503);
+    const input = payload.input;
+    const audio = input?.find((part) => part.type === "audio");
+    const spokenText = input?.flatMap((part) => part.content ?? []).find((part) => part.type === "text")?.text;
+    const contentPayload = audio ? {
+      contents: [{ role: "user", parts: [{ text: input.find((part) => part.type === "text")?.text }, { inlineData: { mimeType: audio.mime_type, data: audio.data } }] }],
+      generationConfig: { temperature: 0, maxOutputTokens: 4096 }
+    } : {
+      contents: [{ role: "user", parts: [{ text: spokenText }] }],
+      generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } } }
+    };
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify(contentPayload),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const code = response.status === 401 ? "invalid_credentials" : response.status === 403 ? "access_denied" : response.status === 429 ? "quota_or_rate_limit" : response.status >= 500 ? "provider_unavailable" : "provider_rejected";
+      throw new VoiceFailure(code, 502);
+    }
+    const result = await response.json();
+    const candidate = result.candidates?.[0];
+    if (!candidate || candidate.finishReason !== "STOP" || !Array.isArray(candidate.content?.parts)) throw new VoiceFailure("incomplete_provider_response", 502);
+    return { steps: [{ type: "model_output", content: candidate.content.parts.filter((part) => !part.thought).map((part) => part.inlineData ? normalizeSpeechAudio(part.inlineData.data, part.inlineData.mimeType) : { type: "text", text: part.text ?? "" }) }], usage: result.usageMetadata };
+  } catch (error) {
+    if (error instanceof VoiceFailure) throw error;
+    throw new VoiceFailure(controller.signal.aborted ? "voice_cancelled_or_timeout" : "voice_network_error", 502);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+function outputContent(result) {
+  return result.steps.filter((step) => step.type === "model_output").flatMap((step) => Array.isArray(step.content) ? step.content : []);
+}
+
+// supabase/functions/operator-acceptance/stage5-smoke.ts
+async function stage5Smoke(run, ref) {
+  const base2 = Deno.env.get("SUPABASE_URL") ?? "";
+  const service2 = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  const admin2 = adminClient();
+  const checks = {};
+  let authId = "";
+  let profileId = "";
+  let error = "";
+  const api2 = async (path, method = "GET", body, token = service2) => {
+    const r = await fetch(base2 + path, { method, headers: { apikey: service2, Authorization: "Bearer " + token, "Content-Type": "application/json", Prefer: "return=representation" }, body: body === void 0 ? void 0 : JSON.stringify(body), signal: AbortSignal.timeout(6e4) });
+    const d = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(path + ":" + r.status + ":" + JSON.stringify(d).slice(0, 160));
+    return d;
+  };
+  const check = (name, ok) => {
+    checks[name] = ok ? "pass" : "fail";
+    if (!ok) throw new Error(name);
+  };
+  await api2("/rest/v1/operator_acceptance_run", "POST", { id: run, state: "running", report: { kind: "stage5_smoke" } });
+  try {
+    if (!/^[a-f0-9]{40}$/.test(ref)) throw new Error("immutable asset ref required");
+    const image = await fetch("https://api.github.com/repos/halluyapp/hallyuapp/contents/public/nari-avatar.png?ref=" + ref, { headers: { Accept: "application/vnd.github.raw+json" }, signal: AbortSignal.timeout(15e3) });
+    if (!image.ok) throw new Error("avatar source unavailable");
+    const bytes = await image.arrayBuffer();
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+    check("avatar_integrity", digest === "b9b4a43e3fc89e08f919f1b3e1f4d08114f6cb432a4681bb98036f10677452cd");
+    const upload = await admin2.storage.from("media").upload("avatars/nari/portrait-v1.png", bytes, "image/png");
+    if (upload.error) throw new Error("avatar upload failed");
+    const staff = (await api2("/rest/v1/operator_staff?active=eq.true&select=profile_id"))[0]?.profile_id;
+    if (!staff) throw new Error("staff missing");
+    await api2("/rest/v1/profiles?id=eq." + staff, "PATCH", { avatar_path: "avatars/nari/portrait-v1.png", display_name: "Nari" });
+    check("avatar_installed", (await api2("/rest/v1/profiles?id=eq." + staff + "&select=avatar_path"))[0]?.avatar_path === "avatars/nari/portrait-v1.png");
+    const email = "stage5-" + run.slice(0, 8) + "@example.invalid", password = crypto.randomUUID() + "Aa7!";
+    const user = await api2("/auth/v1/admin/users", "POST", { email, password, email_confirm: true });
+    authId = user.id;
+    await api2("/rest/v1/operator_acceptance_run?id=eq." + run, "PATCH", { fixture_user_ids: [authId] });
+    const signed = await api2("/auth/v1/token?grant_type=password", "POST", { email, password });
+    const token = signed.access_token;
+    profileId = await api2("/rest/v1/rpc/register_profile", "POST", { p_handle: "s5" + run.replace(/-/g, "").slice(0, 16), p_display_name: "Stage5 isolated fixture" }, token);
+    const sent = await admin2.rpc("operator_send_staff_message", { p_conversation: (await api2("/rest/v1/operator_conversation", "POST", { channel: "member_ai", member_profile_id: profileId }))[0].id, p_body: "Nari visible text acceptance " + run });
+    if (sent.error) throw new Error(sent.error.message);
+    const history = await api2("/rest/v1/rpc/list_direct_messages", "POST", { p_peer_handle: "hallyu.ai", p_limit: 80 }, token);
+    check("legacy_apk_history_visible", Array.isArray(history) && history.some((m) => m.body === "Nari visible text acceptance " + run));
+    const page = await api2("/rest/v1/rpc/list_direct_messages", "POST", { p_peer_handle: "hallyu.ai", p_limit: 80, p_before: null }, token);
+    check("paginated_history_visible", Array.isArray(page.messages) && page.messages.length === 1);
+    let denied = false;
+    try {
+      await api2("/functions/v1/operator-admin", "POST", { action: "campaigns" }, token);
+    } catch (e) {
+      denied = String(e).includes(":403:");
+    }
+    check("member_admin_denial", denied);
+    await api2("/rest/v1/profiles?id=eq." + profileId, "PATCH", { role: "admin" });
+    const campaigns = await api2("/functions/v1/operator-admin", "POST", { action: "campaigns" }, token);
+    check("admin_campaign_access", campaigns !== null);
+    const status = await api2("/functions/v1/operator-voice", "POST", { action: "status" }, token);
+    checks.voice_status = status;
+    const key = Deno.env.get("GEMINI_VOICE_API_KEY") ?? "", model = Deno.env.get("GEMINI_VOICE_TTS_MODEL") ?? "";
+    const generated = await geminiInteraction(key, { model, input: [{ type: "user_input", content: [{ type: "text", text: "Hello Nari. Please recommend a Korean drama." }] }] });
+    const audio = outputContent(generated).find((p) => p.type === "audio");
+    check("real_tts_wav", audio?.mime_type === "audio/wav" && audio.data.length > 100);
+    const transcript = await api2("/functions/v1/operator-voice", "POST", { action: "transcribe", audio_base64: audio.data, mime_type: "audio/wav" }, token);
+    check("real_voice_transcription", transcript.ok && /drama/i.test(transcript.transcript));
+    checks.transcript = String(transcript.transcript).slice(0, 200);
+  } catch (e) {
+    error = String(e).slice(0, 500);
+  } finally {
+    try {
+      if (profileId) {
+        await api2("/rest/v1/operator_conversation?member_profile_id=eq." + profileId, "DELETE");
+        await api2("/rest/v1/direct_messages?recipient_id=eq." + profileId, "DELETE");
+        await api2("/rest/v1/profiles?id=eq." + profileId, "DELETE");
+      }
+      if (authId) await api2("/auth/v1/admin/users/" + authId, "DELETE");
+      checks.cleanup = "pass";
+    } catch (e) {
+      checks.cleanup = String(e).slice(0, 200);
+    }
+    await api2("/rest/v1/operator_acceptance_run?id=eq." + run, "PATCH", { state: error ? "failed" : "finished", finished_at: (/* @__PURE__ */ new Date()).toISOString(), report: { kind: "stage5_smoke", checks, error: error || null } });
+  }
+  return { ok: !error, checks, error: error || null };
+}
+
+// supabase/functions/_shared/operator/tools.ts
+var SUPABASE_URL2 = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
+var SERVICE_ROLE_KEY2 = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 async function restRequest(method, table, query, body) {
-  const url = `${SUPABASE_URL}/rest/v1/${table}${query ? `?${query}` : ""}`;
+  const url = `${SUPABASE_URL2}/rest/v1/${table}${query ? `?${query}` : ""}`;
   const headers = {
-    apikey: SERVICE_ROLE_KEY,
-    Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+    apikey: SERVICE_ROLE_KEY2,
+    Authorization: `Bearer ${SERVICE_ROLE_KEY2}`,
     "x-application-name": "hallyu-operator-tools",
     Accept: "application/json"
   };
@@ -720,175 +1057,6 @@ function summarize(execution) {
   return { value: String(data).slice(0, 120) };
 }
 
-// supabase/functions/_shared/supabase.ts
-var SUPABASE_URL2 = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
-var SERVICE_ROLE_KEY2 = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-var QueryBuilder = class {
-  constructor(table) {
-    this.table = table;
-  }
-  table;
-  method = "GET";
-  selectCols = "*";
-  wantCount = false;
-  singleRow = false;
-  patchBody = null;
-  filters = [];
-  select(columns = "*", opts) {
-    this.selectCols = columns;
-    this.wantCount = opts?.count === "exact";
-    if (opts?.head) this.method = "HEAD";
-    return this;
-  }
-  update(values) {
-    this.method = "PATCH";
-    this.patchBody = values;
-    return this;
-  }
-  eq(column, value) {
-    this.filters.push([column, `eq.${value}`]);
-    return this;
-  }
-  in(column, values) {
-    const encoded = values.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(",");
-    this.filters.push([column, `in.(${encoded})`]);
-    return this;
-  }
-  is(column, value) {
-    this.filters.push([column, `is.${String(value)}`]);
-    return this;
-  }
-  lt(column, value) {
-    this.filters.push([column, `lt.${value}`]);
-    return this;
-  }
-  lte(column, value) {
-    this.filters.push([column, `lte.${value}`]);
-    return this;
-  }
-  gt(column, value) {
-    this.filters.push([column, `gt.${value}`]);
-    return this;
-  }
-  gte(column, value) {
-    this.filters.push([column, `gte.${value}`]);
-    return this;
-  }
-  order(column, opts) {
-    const dir = opts?.ascending === false ? "desc" : "asc";
-    const nulls = opts?.nullsFirst === false ? ".nullslast" : opts?.nullsFirst === true ? ".nullsfirst" : "";
-    this.filters.push(["order", `${column}.${dir}${nulls}`]);
-    return this;
-  }
-  limit(n) {
-    this.filters.push(["limit", String(n)]);
-    return this;
-  }
-  single() {
-    this.singleRow = true;
-    return this;
-  }
-  async execute() {
-    const url = new URL(`${SUPABASE_URL2}/rest/v1/${this.table}`);
-    if (this.method !== "PATCH") {
-      url.searchParams.set("select", this.selectCols);
-    }
-    for (const [k, v] of this.filters) {
-      url.searchParams.append(k, v);
-    }
-    const prefer = [];
-    if (this.wantCount) prefer.push("count=exact");
-    if (this.method === "PATCH") prefer.push("return=minimal");
-    const headers = {
-      apikey: SERVICE_ROLE_KEY2,
-      Authorization: `Bearer ${SERVICE_ROLE_KEY2}`,
-      "x-application-name": "hallyu-edge",
-      Accept: this.singleRow ? "application/vnd.pgrst.object+json" : "application/json"
-    };
-    if (prefer.length > 0) headers.Prefer = prefer.join(",");
-    if (this.patchBody !== null) headers["Content-Type"] = "application/json";
-    const res = await fetch(url, {
-      method: this.method,
-      headers,
-      body: this.patchBody !== null ? JSON.stringify(this.patchBody) : void 0,
-      signal: AbortSignal.timeout(3e4)
-    });
-    const contentRange = res.headers.get("content-range");
-    let count = null;
-    if (contentRange && contentRange.includes("/")) {
-      const parsed = Number(contentRange.split("/")[1]);
-      if (Number.isFinite(parsed)) count = parsed;
-    }
-    if (!res.ok) {
-      const text2 = await res.text().catch(() => "");
-      return { data: null, count, error: { message: text2.slice(0, 300) || `HTTP ${res.status}`, status: res.status } };
-    }
-    if (this.method === "HEAD" || res.status === 204) {
-      return { data: null, count, error: null };
-    }
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
-    return { data, count, error: null };
-  }
-  then(onfulfilled, onrejected) {
-    return this.execute().then(onfulfilled, onrejected);
-  }
-};
-function adminClient() {
-  if (!SUPABASE_URL2 || !SERVICE_ROLE_KEY2) {
-    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set as function secrets");
-  }
-  return {
-    async rpc(fn, params = {}, signal) {
-      const res = await fetch(`${SUPABASE_URL2}/rest/v1/rpc/${fn}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: SERVICE_ROLE_KEY2,
-          Authorization: `Bearer ${SERVICE_ROLE_KEY2}`,
-          "x-application-name": "hallyu-edge"
-        },
-        body: JSON.stringify(params),
-        signal: signal ?? AbortSignal.timeout(3e4)
-      });
-      if (!res.ok) {
-        const text2 = await res.text().catch(() => "");
-        return { data: null, error: { message: text2.slice(0, 300) || `HTTP ${res.status}`, status: res.status } };
-      }
-      const text = await res.text();
-      return { data: text ? JSON.parse(text) : null, error: null };
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    from(table) {
-      return new QueryBuilder(table);
-    },
-    storage: {
-      from(bucket) {
-        return {
-          async remove(paths) {
-            const res = await fetch(`${SUPABASE_URL2}/storage/v1/object/${bucket}`, {
-              method: "DELETE",
-              headers: {
-                "Content-Type": "application/json",
-                apikey: SERVICE_ROLE_KEY2,
-                Authorization: `Bearer ${SERVICE_ROLE_KEY2}`,
-                "x-application-name": "hallyu-edge"
-              },
-              body: JSON.stringify({ prefixes: paths })
-            });
-            if (!res.ok) {
-              const text2 = await res.text().catch(() => "");
-              return { data: null, error: { message: text2.slice(0, 300) || `HTTP ${res.status}`, status: res.status } };
-            }
-            const text = await res.text();
-            return { data: text ? JSON.parse(text) : [], error: null };
-          }
-        };
-      }
-    }
-  };
-}
-
 // supabase/functions/operator-acceptance/stage4-tools.ts
 async function verifyStage4Tools(run) {
   const base2 = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
@@ -1052,6 +1220,7 @@ Deno.serve(async (request) => {
   const body = await request.json().catch(() => null);
   const run = typeof body?.run_id === "string" && /^[0-9a-f-]{36}$/i.test(body.run_id) ? body.run_id : null;
   if (!run) return errorResponse("run_id required", 400);
+  if (body?.mode === "stage5_smoke") return jsonResponse(await stage5Smoke(run, body.release_ref));
   if (body?.mode === "stage4_push") return jsonResponse(await verifyStage4Push());
   if (body?.mode === "stage4_tools") return jsonResponse(await verifyStage4Tools(run));
   const reserved = await api("/rest/v1/operator_acceptance_run", "POST", { id: run, state: "running" }).catch(() => null);

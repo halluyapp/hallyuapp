@@ -29,45 +29,19 @@ async function resolveCaller(token: string): Promise<Caller | null> {
   const admin = adminClient();
   let row: Record<string, unknown> | undefined;
 
-  // 1. Standard Supabase GoTrue token check.
-  const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: { apikey: SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` },
+  // Use the same cryptographically verified identity resolver as RLS, including legacy
+  // Rork CEO sessions. GoTrue alone is not authoritative for custom JWT accounts.
+  const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/current_profile_id`, {
+    method: 'POST', headers: { apikey: SERVICE_ROLE_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: '{}', signal: AbortSignal.timeout(15000),
   });
-  if (userResponse.ok) {
-    const user = (await userResponse.json().catch(() => null)) as { id?: string } | null;
-    if (user?.id) {
-      const profile = await admin
-        .from<Record<string, unknown>>('profiles')
-        .select('id,role,handle,display_name,account_status')
-        .eq('auth_sub', user.id)
-        .limit(1);
-      row = asArray<Record<string, unknown>>(profile.data)[0];
-    }
-  }
-
-  // 2. Fallback for Rork OAuth custom JWTs verified cryptographically inside PostgREST.
-  if (!row) {
-    const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/current_profile_id`, {
-      method: 'POST',
-      headers: {
-        apikey: SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: '{}',
-    });
-    if (rpcRes.ok) {
-      const profileId = (await rpcRes.json().catch(() => null)) as string | null;
-      if (typeof profileId === 'string' && profileId.length > 0) {
-        const profile = await admin
-          .from<Record<string, unknown>>('profiles')
-          .select('id,role,handle,display_name,account_status')
-          .eq('id', profileId)
-          .limit(1);
-        row = asArray<Record<string, unknown>>(profile.data)[0];
-      }
-    }
-  }
+  if (!rpcRes.ok) return null;
+  const profileId = await rpcRes.json().catch(() => null);
+  if (typeof profileId !== 'string' || !/^[0-9a-f-]{36}$/i.test(profileId)) return null;
+  const profile = await admin.from<Record<string, unknown>>('profiles')
+    .select('id,role,handle,display_name,account_status').eq('id', profileId).limit(1);
+  if (profile.error) throw new Error('Administrator identity lookup unavailable');
+  row = asArray<Record<string, unknown>>(profile.data)[0];
 
   if (!row || row.account_status !== 'active') return null;
   if (row.role !== 'admin' && row.role !== 'ceo') return null;

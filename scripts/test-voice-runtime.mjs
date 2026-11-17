@@ -26,12 +26,12 @@ test('voice contracts (HTTP doubles; not real Gemini verification)', async (t) =
     });
     await t.test('transport fixed endpoint, secret header, no storage and no fallback', async () => {
       let calls = 0;
-      globalThis.fetch = async (url, options) => { calls++; assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/interactions'); assert.equal(options.headers['x-goog-api-key'], 'test'); assert.equal(JSON.parse(options.body).store, false); return json({}, 403); };
-      await assert.rejects(geminiInteraction('test', { model: 'configured-only' }), { code: 'access_denied' }); assert.equal(calls, 1);
+      globalThis.fetch = async (url, options) => { calls++; assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/configured-only:generateContent'); assert.equal(options.headers['x-goog-api-key'], 'test'); assert.equal(JSON.parse(options.body).store, undefined); return json({}, 403); };
+      await assert.rejects(geminiInteraction('test', { model: 'configured-only', input: [{type:'user_input',content:[{type:'text',text:'Hello'}]}] }), { code: 'access_denied' }); assert.equal(calls, 1);
     });
     await t.test('incomplete responses fail and output ignores user input', async () => {
       globalThis.fetch = async () => json({ status: 'incomplete', steps: [] });
-      await assert.rejects(geminiInteraction('test', {}), { code: 'incomplete_provider_response' });
+      await assert.rejects(geminiInteraction('test', {model:'configured-only',input:[]}), { code: 'incomplete_provider_response' });
       assert.deepEqual(outputContent({ steps: [{ type: 'user_input', content: [{ text: 'secret' }] }, { type: 'model_output', content: [{ type: 'text', text: 'hello' }] }] }), [{ type: 'text', text: 'hello' }]);
     });
     await t.test('missing auth performs no network calls', async () => {
@@ -50,7 +50,7 @@ test('voice contracts (HTTP doubles; not real Gemini verification)', async (t) =
       if (path.includes('generativelanguage')) {
         providerCalls++;
         const payload = JSON.parse(options.body);
-        return json({ status: 'completed', steps: [{ type: 'model_output', content: payload.response_format ? [{ type: 'audio', data: 'UklGRg==', mime_type: 'audio/wav' }] : [{ type: 'text', text: 'My spoken request' }] }], usage: { total_input_tokens: 4 } });
+        return json({candidates:[{finishReason:'STOP',content:{parts:payload.generationConfig?.responseModalities ? [{inlineData:{data:'UklGRg==',mimeType:'audio/wav'}}] : [{text:'My spoken request'}]}}],usageMetadata:{totalTokenCount:4}});
       }
       throw new Error(`unexpected request ${path}`);
     };
