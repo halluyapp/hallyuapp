@@ -35,11 +35,11 @@ Deno.serve(async (request: Request) => {
       const created = await api('/auth/v1/admin/users','POST',{ email,password,email_confirm:true,user_metadata:{handle:prefix.replace(/-/g,'')+suffix,full_name:'IDEAL Acceptance',ideal_acceptance_run:run} });
       const user = { auth: String(created.id), profile: '', token: '' }; users.push(user);
       await api(`/rest/v1/operator_acceptance_run?id=eq.${run}`,'PATCH',{ fixture_user_ids: users.map((entry) => entry.auth) });
-      const profiles = await api(`/rest/v1/profiles?select=id&id=eq.${encodeURIComponent(user.auth)}`);
-      if (!profiles?.[0]?.id) throw new Error('test_profile_provisioning_failed');
-      user.profile = profiles[0].id;
       const signed = await api('/auth/v1/token?grant_type=password','POST',{email,password});
       user.token = signed.access_token;
+      // Match the actual app: authentication and application profile provisioning are separate.
+      user.profile = await rpc('register_profile',{p_handle:prefix.replace(/-/g,'')+suffix,p_display_name:'IDEAL Acceptance'},user.token);
+      if (!user.profile) throw new Error('test_profile_provisioning_failed');
       check('identity_' + suffix,(await rpc('current_profile_id',{},user.token)) === user.profile);
     }
     const [a,b] = users;
