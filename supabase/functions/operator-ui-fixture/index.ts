@@ -4,8 +4,8 @@ import { verifyGitHubActionsToken, type GitHubActionsIdentity } from '../_shared
 import { jsonResponse, errorResponse } from '../_shared/cors.ts';
 const base = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/,'');
 const service = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-async function api(path: string, method='GET', body?: unknown): Promise<any> {
-  const response = await fetch(base+path,{method,headers:{apikey:service,Authorization:`Bearer ${service}`,'Content-Type':'application/json',Prefer:'return=representation'},body:body===undefined ? undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
+async function api(path: string, method='GET', body?: unknown, token=service): Promise<any> {
+  const response = await fetch(base+path,{method,headers:{apikey:service,Authorization:`Bearer ${token}`,'Content-Type':'application/json',Prefer:'return=representation'},body:body===undefined ? undefined:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
   const result = await response.json().catch(()=>null);
   if (!response.ok) throw new Error(`fixture_backend_${response.status}:${String(result?.code ?? result?.error_code ?? 'request_failed')}`);
   return result;
@@ -66,8 +66,19 @@ Deno.serve(async (request: Request) => {
       try {
         user = await api('/auth/v1/admin/users','POST',{email,password,email_confirm:true,user_metadata:{full_name:'Nari UI Acceptance',nari_ui_fixture:id}});
         await api(`/rest/v1/operator_acceptance_run?id=eq.${id}`,'PATCH',{fixture_user_ids:[user.id]});
+        // Settings acceptance is not onboarding acceptance. Provision the fixture normally, then
+        // mark only its own onboarding complete so the real router permits the settings screens.
+        const signed = await api('/auth/v1/token?grant_type=password','POST',{email,password});
+        const profileId = await api('/rest/v1/rpc/register_profile','POST',{p_handle:`nariui${id.slice(0,8)}`,p_display_name:'Nari UI Acceptance'},signed.access_token);
+        const profiles = await api(`/rest/v1/profiles?select=id&auth_sub=eq.${user.id}`);
+        if(profiles[0]?.id !== profileId) throw new Error('fixture_profile_identity_mismatch');
+        await api(`/rest/v1/profiles?id=eq.${profileId}`,'PATCH',{onboarding_completed:true,onboarding_step:5,worlds:['kdrama']});
+
       } catch (error) {
-        if(user?.id) await api(`/auth/v1/admin/users/${user.id}`,'DELETE');
+        if(user?.id) {
+          await api(`/rest/v1/profiles?auth_sub=eq.${user.id}`,'DELETE');
+          await api(`/auth/v1/admin/users/${user.id}`,'DELETE');
+        }
         await api(`/rest/v1/operator_acceptance_run?id=eq.${id}`,'PATCH',{state:'failed',finished_at:new Date().toISOString()});
         throw error;
       }

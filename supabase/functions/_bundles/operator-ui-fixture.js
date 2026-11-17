@@ -76,8 +76,8 @@ function errorResponse(message, status = 400) {
 // supabase/functions/operator-ui-fixture/index.ts
 var base = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
 var service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-async function api(path, method = "GET", body) {
-  const response = await fetch(base + path, { method, headers: { apikey: service, Authorization: `Bearer ${service}`, "Content-Type": "application/json", Prefer: "return=representation" }, body: body === void 0 ? void 0 : JSON.stringify(body), signal: AbortSignal.timeout(2e4) });
+async function api(path, method = "GET", body, token = service) {
+  const response = await fetch(base + path, { method, headers: { apikey: service, Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: "return=representation" }, body: body === void 0 ? void 0 : JSON.stringify(body), signal: AbortSignal.timeout(2e4) });
   const result = await response.json().catch(() => null);
   if (!response.ok) throw new Error(`fixture_backend_${response.status}:${String(result?.code ?? result?.error_code ?? "request_failed")}`);
   return result;
@@ -145,8 +145,16 @@ Deno.serve(async (request) => {
       try {
         user = await api("/auth/v1/admin/users", "POST", { email, password, email_confirm: true, user_metadata: { full_name: "Nari UI Acceptance", nari_ui_fixture: id } });
         await api(`/rest/v1/operator_acceptance_run?id=eq.${id}`, "PATCH", { fixture_user_ids: [user.id] });
+        const signed = await api("/auth/v1/token?grant_type=password", "POST", { email, password });
+        const profileId = await api("/rest/v1/rpc/register_profile", "POST", { p_handle: `nariui${id.slice(0, 8)}`, p_display_name: "Nari UI Acceptance" }, signed.access_token);
+        const profiles = await api(`/rest/v1/profiles?select=id&auth_sub=eq.${user.id}`);
+        if (profiles[0]?.id !== profileId) throw new Error("fixture_profile_identity_mismatch");
+        await api(`/rest/v1/profiles?id=eq.${profileId}`, "PATCH", { onboarding_completed: true, onboarding_step: 5, worlds: ["kdrama"] });
       } catch (error) {
-        if (user?.id) await api(`/auth/v1/admin/users/${user.id}`, "DELETE");
+        if (user?.id) {
+          await api(`/rest/v1/profiles?auth_sub=eq.${user.id}`, "DELETE");
+          await api(`/auth/v1/admin/users/${user.id}`, "DELETE");
+        }
         await api(`/rest/v1/operator_acceptance_run?id=eq.${id}`, "PATCH", { state: "failed", finished_at: (/* @__PURE__ */ new Date()).toISOString() });
         throw error;
       }
