@@ -19,6 +19,15 @@ try {
   await page.waitForURL((target)=>!target.pathname.includes('sign-in'),{timeout:60000});
   checks.push('ordinary email signup auto-confirmed by backend fixture; real email sign-in');
   assert.ok((await fixture('inspect')).profile_id);
+  await page.goto(site+'/messages/hallyu.ai');
+  await page.getByText('Nari',{exact:true}).first().waitFor({timeout:60000});
+  const memberMarker='member-'+slug.slice(-8);
+  await page.getByPlaceholder('Message @hallyu.ai…',{exact:true}).fill('Reply with only this code: '+memberMarker+'. Do not call tools or send other messages.');
+  await page.getByRole('button',{name:'Send message',exact:true}).click();
+  await page.getByText(memberMarker,{exact:true}).waitFor({timeout:120000});
+  await page.reload();
+  await page.getByText(memberMarker,{exact:true}).waitFor({timeout:60000});
+  checks.push('real member reasoning reply is visible and remains visible after reload');
   await page.goto(site+'/settings/nari-memory');
   await page.getByRole('button',{name:'thriller',exact:true}).click({timeout:60000});
   await page.getByText(/^Saved: thriller/).waitFor();
@@ -124,6 +133,19 @@ try {
   await page.getByRole('button',{name:'Refresh approvals',exact:true}).waitFor({timeout:60000});
   await page.getByText(/Review the exact target and content below/).waitFor();
   checks.push('admin approval queue renders; no real proposals decided by this browser test');
+  await page.goto(site+'/admin?section=operator');
+  await page.getByText('Official Hallyu AI staff',{exact:false}).waitFor({timeout:60000});
+  await page.getByRole('button',{name:'Campaigns',exact:true}).click();
+  await page.getByRole('button',{name:'Open independent campaign planner',exact:true}).waitFor({timeout:60000});
+  assert.equal(await page.getByText('admin access required',{exact:true}).count(),0);
+  checks.push('screenshot regression: admin AI Operator campaigns accessible');
+  await page.goto(site+'/messages/hallyu.ai');
+  const adminMarker='admin-'+slug.slice(-8);
+  await page.getByPlaceholder('Message @hallyu.ai…',{exact:true}).fill('Reply with only this code: '+adminMarker+'. Do not call tools or send other messages.');
+  await page.getByRole('button',{name:'Send message',exact:true}).click();
+  await page.getByText(adminMarker,{exact:true}).waitFor({timeout:120000});
+  checks.push('real admin reasoning reply visible in ordinary DM thread');
+
   console.log(JSON.stringify({site,checks,status:'pass'}));
 } catch (error) {
   const screen = page ? await page.locator('body').innerText({timeout:3000}).catch(()=> 'unavailable') : 'not opened';

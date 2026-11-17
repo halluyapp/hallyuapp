@@ -968,8 +968,10 @@ function ResearchScreen({ items }: { items: OperatorResearchItem[] }) {
 }
 
 function CampaignsScreen({ campaigns }: { campaigns: OperatorCampaign[] }) {
+  const router = useRouter();
   return (
     <Section title="Campaigns" caption="Content and marketing pushes the operator runs">
+      <Pressable accessibilityRole="button" accessibilityLabel="Open independent campaign planner" onPress={() => router.push('/settings/campaigns')} style={{ padding: space.x3 }}><Text tone="accent">Manage campaigns, ballots & schedules →</Text><Text variant="caption" tone="secondary">Works independently of Nari and reasoning providers.</Text></Pressable>
       {campaigns.length === 0 ? (
         <Empty icon="megaphone-outline" title="No campaigns" body="Campaigns created by the operator will appear here." />
       ) : (

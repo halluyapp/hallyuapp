@@ -1301,7 +1301,7 @@ function summarize(execution) {
 
 // supabase/functions/operator-worker/index.ts
 var WORKER_ID = Deno.env.get("OPERATOR_WORKER_ID") ?? "operator-worker";
-var WORKER_VERSION = "1.4.0";
+var WORKER_VERSION = "1.4.1";
 var MAX_TOOL_ROUNDS = 6;
 var MAX_TOOL_CALLS_PER_ROUND = 3;
 var WALL_CLOCK_BUDGET_MS = 1e5;
@@ -1633,6 +1633,14 @@ async function processTask(args) {
             p_resource_id: approval.data ? String(approval.data) : null,
             p_details: { tool: call.function.name }
           });
+          if (task.conversation_id) {
+            const notice = await admin.rpc("operator_send_staff_message", {
+              p_conversation: task.conversation_id,
+              p_task: task.id,
+              p_body: `I need your approval before I can run ${call.function.name}. Nothing has been executed. Open Settings \u2192 Nari approvals to review the exact action, then approve or reject it.`
+            });
+            if (notice.error) await admin.rpc("operator_audit_write", { p_action: "reply.delivery_failed", p_outcome: "failed", p_task: task.id, p_actor_type: "system", p_details: { stage: "approval_notice" } });
+          }
           return {
             task_id: task.id,
             outcome: "awaiting_approval",
@@ -1769,7 +1777,11 @@ async function deliverAnswer(admin, task, result) {
   return firstMessageId;
 }
 async function completeTask(admin, task, staff, result) {
-  const deliveredMessageId = await deliverAnswer(admin, task, result).catch(() => null);
+  const deliveredMessageId = await deliverAnswer(admin, task, result);
+  if (task.conversation_id && ["admin_command", "reply_member_dm"].includes(task.task_type)) {
+    const visible = await admin.from("operator_message").select("id").eq("task_id", task.id).eq("direction", "outbound").eq("delivery_status", "sent").limit(1);
+    if (visible.error || !Array.isArray(visible.data) || visible.data.length === 0) throw new Error("reply_delivery_not_verified");
+  }
   await admin.rpc("operator_transition_task", { p_task: task.id, p_status: "verifying", p_note: "model finished; verifying result" }).catch(() => void 0);
   await admin.rpc("operator_complete_task", { p_task: task.id, p_result: result });
   await admin.rpc("operator_transition_task", { p_task: task.id, p_status: "completed", p_note: null }).catch(() => void 0);

@@ -26,7 +26,7 @@ import {
 } from '../_shared/operator/tools.ts';
 
 const WORKER_ID = Deno.env.get('OPERATOR_WORKER_ID') ?? 'operator-worker';
-const WORKER_VERSION = '1.4.0';
+const WORKER_VERSION = '1.4.1';
 const MAX_TOOL_ROUNDS = 6;
 const MAX_TOOL_CALLS_PER_ROUND = 3;
 const WALL_CLOCK_BUDGET_MS = 100_000;
@@ -456,6 +456,14 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
             p_resource_id: approval.data ? String(approval.data) : null,
             p_details: { tool: call.function.name },
           });
+          // Persist a visible DM status instead of leaving the administrator with silence.
+          if (task.conversation_id) {
+            const notice = await admin.rpc('operator_send_staff_message', {
+              p_conversation: task.conversation_id, p_task: task.id,
+              p_body: `I need your approval before I can run ${call.function.name}. Nothing has been executed. Open Settings → Nari approvals to review the exact action, then approve or reject it.`,
+            });
+            if (notice.error) await admin.rpc('operator_audit_write', { p_action:'reply.delivery_failed',p_outcome:'failed',p_task:task.id,p_actor_type:'system',p_details:{stage:'approval_notice'} });
+          }
           return {
             task_id: task.id,
             outcome: 'awaiting_approval',
@@ -674,7 +682,11 @@ async function completeTask(
 ): Promise<void> {
   // The answer is delivered before the task is closed, so a completed task always corresponds to a
   // message the recipient can actually see.
-  const deliveredMessageId = await deliverAnswer(admin, task, result).catch(() => null);
+  const deliveredMessageId = await deliverAnswer(admin, task, result);
+  if (task.conversation_id && ['admin_command','reply_member_dm'].includes(task.task_type)) {
+    const visible = await admin.from('operator_message').select('id').eq('task_id',task.id).eq('direction','outbound').eq('delivery_status','sent').limit(1);
+    if (visible.error || !Array.isArray(visible.data) || visible.data.length === 0) throw new Error('reply_delivery_not_verified');
+  }
   await admin
     .rpc('operator_transition_task', { p_task: task.id, p_status: 'verifying', p_note: 'model finished; verifying result' })
     .catch(() => undefined);

@@ -230,10 +230,12 @@ async function geminiInteraction(key, payload, signal) {
       contents: [{ role: "user", parts: [{ text: spokenText }] }],
       generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } } }
     };
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    const useInteractions = Boolean(audio) && Deno.env.get("GEMINI_VOICE_STT_TRANSPORT") === "interactions";
+    const endpoint = useInteractions ? "https://generativelanguage.googleapis.com/v1beta/interactions" : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify(contentPayload),
+      body: JSON.stringify(useInteractions ? { ...payload, store: false } : contentPayload),
       signal: controller.signal
     });
     if (!response.ok) {
@@ -243,6 +245,10 @@ async function geminiInteraction(key, payload, signal) {
       throw new VoiceFailure(code, 502, detail);
     }
     const result = await response.json();
+    if (useInteractions) {
+      if (result.status !== "completed" || !Array.isArray(result.steps)) throw new VoiceFailure("incomplete_provider_response", 502);
+      return result;
+    }
     const candidate = result.candidates?.[0];
     if (!candidate || candidate.finishReason !== "STOP" || !Array.isArray(candidate.content?.parts)) throw new VoiceFailure("incomplete_provider_response", 502);
     return { steps: [{ type: "model_output", content: candidate.content.parts.filter((part) => !part.thought).map((part) => part.inlineData ? normalizeSpeechAudio(part.inlineData.data, part.inlineData.mimeType) : { type: "text", text: part.text ?? "" }) }], usage: result.usageMetadata };
