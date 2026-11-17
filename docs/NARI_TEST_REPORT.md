@@ -124,3 +124,30 @@ transactional side effects or all campaign/scheduling/delegation acceptance gate
 - The rollback test is not committed public publication or proof of external push
   delivery. No member announcements were published. UI/browser release evidence
   and two-connection concurrency acceptance are not yet recorded here.
+
+
+Scheduler release follow-up:
+- Real `authenticated` role boundary test: PASS for admin save/schedule/history,
+  member RLS read denial, schedule denial and sweep execute denial. Rollback-only;
+  fixture absence verified.
+- Production overlapping schedule requests on backends `762871` and `762873`
+  started `11:17:31.734843Z` / `11:17:33.484109Z` (first held its transaction three
+  seconds). Results: `duplicate:false` / `duplicate:true`. Verified one occurrence,
+  one campaign version increment and one approval audit. Deleted only fixture
+  campaign `c6974c4c-1856-49a2-aa96-0206a7c09220` and fixture profile
+  `7416b252-43d2-4ee0-9b02-a83b024085e1`; remaining fixture counts zero, no posts.
+  This verifies concurrent schedule creation, not every sweep/cancel race.
+- Cron run history: consecutive minute runs succeeded (11:16–11:18 UTC).
+- Frontend `dpl_94dEmqg7km41ZLAth1h8PEq2bTZL`, commit `6119a37`:
+  READY/PROMOTED at `hallyuapp.vercel.app`.
+- Browser run `44072729921` failed because it loaded the old production bundle
+  before deployment promotion (old planner text, missing schedule field); fixture
+  cleanup PASS. Fresh run after confirmed promotion
+  `44073107108`: targeted deployed UI acceptance **PASS**, cleanup **PASS**. Covers
+  weekly two-occurrence exact-text review/approval, reload-persisted history and
+  cancellation of both future occurrences, plus prior member/admin regressions.
+  Backend ledger `b73438e5-c12f-486b-b208-976f53d841d6`: finished, cleanup pass;
+  remaining fixture profiles/campaigns/actions **0**. No public posts were created
+  by browser tests. The broader workflow was still running at this checkpoint;
+  these targeted results do not assert its overall outcome. Do not count the
+  first old-bundle browser attempt as a scheduler UI pass.

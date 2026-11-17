@@ -123,7 +123,7 @@ memory/knowledge/campaign regressions. No real approval proposal was decided by
 that browser test. Final backend checks found no remaining probe profile, task or
 campaign; authenticated users cannot execute grant consumption directly.
 
-### Stage 4 independent announcement scheduler — migration applied, UI release in progress
+### Stage 4 independent announcement scheduler — deployed and targeted acceptance passed
 
 Migration `20261125000003_103_campaign_announcements.sql` adds admin-approved,
 immutable per-occurrence public posts. The campaign planner now has a separate
@@ -155,5 +155,14 @@ a rollback-only transaction: authenticated-profile identity, schedule and exact
 replay, repeat cancellation, real post insert/triggers/readback, repeated sweep,
 completed lifecycle and client ACL. All fixture rows/posts/audits from that
 transaction were rolled back; final occurrence count was zero. No test announcement
-became visible to members. UI deployment/browser checks are in progress. Remaining
-broader gates: two-connection concurrency and notification-policy integration.
+became visible to members. Production frontend `dpl_94dEmqg7km41ZLAth1h8PEq2bTZL` is READY/PROMOTED
+at `https://hallyuapp.vercel.app`, commit `6119a37`. Two genuinely overlapping
+schedule requests on distinct PostgreSQL backends returned new/duplicate and
+persisted one occurrence, one version increment and one approval audit. The future
+fixture campaign/profile/occurrence were removed without publication. Browser
+run `44073107108` passed weekly exact-text approval, history persistence and
+cancellation of both future occurrences, plus existing member/admin regressions.
+Fixture cleanup passed and was independently checked in the backend: no fixture
+profiles/campaigns/actions remain. Broader notification-policy integration,
+concurrent sweep/cancel testing, polls/voting and remaining Stage 4 gates are not
+completed by this release.
