@@ -162,15 +162,34 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
   const apiKey = await providerCredential(request.provider);
   const timeoutMs = Math.min(Math.max(request.timeoutMs ?? 45_000, 5_000), 120_000);
 
+  // OpenAI-compatible transports reject dotted internal tool names. Keep registry/permission
+  // identifiers unchanged and use request-local reversible wire aliases (including replay).
+  const toWire = new Map<string, string>();
+  const fromWire = new Map<string, string>();
+  for (const [index, tool] of (request.tools ?? []).entries()) {
+    const internal = tool.function.name;
+    const wire = `nari_${index}_${internal.replace(/[^A-Za-z0-9_-]/g, '_')}`.slice(0, 64);
+    if (toWire.has(internal)) throw new ProviderError(request.provider,'duplicate tool schema',0,'invalid_tool_schema',false);
+    toWire.set(internal,wire); fromWire.set(wire,internal);
+  }
+  const wireName = (name: string): string => {
+    const mapped = toWire.get(name);
+    if (!mapped) throw new ProviderError(request.provider,'unadvertised tool in history',0,'invalid_tool_history',false);
+    return mapped;
+  };
+  const wireMessages = request.messages.map((message) => ({...message,
+    ...(message.name && message.role === 'tool' ? {name:wireName(message.name)} : {}),
+    ...(message.tool_calls ? {tool_calls:message.tool_calls.map((call)=>({...call,function:{...call.function,name:wireName(call.function.name)}}))} : {}),
+  }));
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: request.messages,
+    messages: wireMessages,
     temperature: request.temperature ?? 0.6,
     max_tokens: request.maxTokens ?? 1_400,
     stream: false,
   };
   if (request.tools && request.tools.length > 0) {
-    body.tools = request.tools;
+    body.tools = request.tools.map((tool)=>({...tool,function:{...tool.function,name:wireName(tool.function.name)}}));
     body.tool_choice = 'auto';
   }
 
@@ -234,6 +253,9 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
         !call.function.name || typeof call.function.arguments !== 'string')) {
     throw new ProviderError(request.provider, 'invalid completion message', response.status, 'bad_response', false);
   }
+  if (rawToolCalls.some((call)=>!fromWire.has(call.function.name))) {
+    throw new ProviderError(request.provider,'provider requested an unadvertised tool',response.status,'bad_response',false);
+  }
   const usageRaw = (payload.usage ?? {}) as Record<string, number>;
   const input = Number(usageRaw.prompt_tokens ?? 0) || 0;
   const output = Number(usageRaw.completion_tokens ?? 0) || 0;
@@ -242,7 +264,7 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
     provider: request.provider,
     model: String(payload.model ?? request.model),
     content: typeof message.content === 'string' ? message.content : '',
-    toolCalls: rawToolCalls.filter((call) => call && call.type === 'function' && call.function?.name),
+    toolCalls: rawToolCalls.map((call)=>({...call,function:{...call.function,name:fromWire.get(call.function.name)!}})),
     usage: { input, output, total: Number(usageRaw.total_tokens ?? input + output) || input + output },
     latencyMs,
     httpStatus: response.status,

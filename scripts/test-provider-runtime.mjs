@@ -30,6 +30,24 @@ test('provider runtime contracts (test doubles, not provider availability)', asy
       mock({ data: [{ id: 'test-model' }] }); const result = await probeProvider('apinex', 'test-model');
       assert.equal(result.ok, true); assert.match(result.detail, /generation and capabilities unverified/);
     });
+    await t.test('wire aliases support dotted tool schemas, returned calls and replay without changing registry names', async () => {
+      const tools=[{type:'function',function:{name:'conversation.context',description:'Context',parameters:{type:'object'}}}];
+      const messages=[{role:'user',content:'context'}, {role:'assistant',content:null,tool_calls:[{id:'t1',type:'function',function:{name:'conversation.context',arguments:'{}'}}]}, {role:'tool',tool_call_id:'t1',name:'conversation.context',content:'{}'}];
+      globalThis.fetch=async(_url,options)=>{
+        const body=JSON.parse(options.body);
+        const name=body.tools[0].function.name;
+        assert.match(name,/^[A-Za-z0-9_-]{1,64}$/);
+        assert.equal(body.messages[1].tool_calls[0].function.name,name);
+        assert.equal(body.messages[2].name,name);
+        return new Response(JSON.stringify({choices:[{message:{content:null,tool_calls:[{id:'t2',type:'function',function:{name,arguments:'{}'}}]}}]}));
+      };
+      const result=await callProvider({...request,tools,messages});
+      assert.equal(result.toolCalls[0].function.name,'conversation.context');
+      assert.equal(tools[0].function.name,'conversation.context');
+      assert.equal(messages[1].tool_calls[0].function.name,'conversation.context');
+      mock({choices:[{message:{content:null,tool_calls:[{id:'attack',type:'function',function:{name:'post.publish',arguments:'{}'}}]}}]});
+      await assert.rejects(callProvider({...request,tools}),{code:'bad_response'});
+    });
     await t.test('failure never invokes another provider', async () => {
       let calls = 0;
       globalThis.fetch = async (url) => { calls++; assert.match(url, /api\.apinex\.bond/); return new Response('', { status: 402 }); };

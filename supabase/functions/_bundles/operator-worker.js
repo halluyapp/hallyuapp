@@ -259,15 +259,34 @@ async function callProvider(request) {
   const runtime = PROVIDERS[request.provider];
   const apiKey = await providerCredential(request.provider);
   const timeoutMs = Math.min(Math.max(request.timeoutMs ?? 45e3, 5e3), 12e4);
+  const toWire = /* @__PURE__ */ new Map();
+  const fromWire = /* @__PURE__ */ new Map();
+  for (const [index, tool] of (request.tools ?? []).entries()) {
+    const internal = tool.function.name;
+    const wire = `nari_${index}_${internal.replace(/[^A-Za-z0-9_-]/g, "_")}`.slice(0, 64);
+    if (toWire.has(internal)) throw new ProviderError(request.provider, "duplicate tool schema", 0, "invalid_tool_schema", false);
+    toWire.set(internal, wire);
+    fromWire.set(wire, internal);
+  }
+  const wireName = (name) => {
+    const mapped = toWire.get(name);
+    if (!mapped) throw new ProviderError(request.provider, "unadvertised tool in history", 0, "invalid_tool_history", false);
+    return mapped;
+  };
+  const wireMessages = request.messages.map((message2) => ({
+    ...message2,
+    ...message2.name && message2.role === "tool" ? { name: wireName(message2.name) } : {},
+    ...message2.tool_calls ? { tool_calls: message2.tool_calls.map((call) => ({ ...call, function: { ...call.function, name: wireName(call.function.name) } })) } : {}
+  }));
   const body = {
     model: request.model,
-    messages: request.messages,
+    messages: wireMessages,
     temperature: request.temperature ?? 0.6,
     max_tokens: request.maxTokens ?? 1400,
     stream: false
   };
   if (request.tools && request.tools.length > 0) {
-    body.tools = request.tools;
+    body.tools = request.tools.map((tool) => ({ ...tool, function: { ...tool.function, name: wireName(tool.function.name) } }));
     body.tool_choice = "auto";
   }
   const controller = new AbortController();
@@ -323,6 +342,9 @@ async function callProvider(request) {
   if (!choices.length || typeof message.content !== "string" && !rawToolCalls.length || rawToolCalls.some((call) => !call || call.type !== "function" || typeof call.id !== "string" || !call.id || typeof call.function?.name !== "string" || !call.function.name || typeof call.function.arguments !== "string")) {
     throw new ProviderError(request.provider, "invalid completion message", response.status, "bad_response", false);
   }
+  if (rawToolCalls.some((call) => !fromWire.has(call.function.name))) {
+    throw new ProviderError(request.provider, "provider requested an unadvertised tool", response.status, "bad_response", false);
+  }
   const usageRaw = payload.usage ?? {};
   const input = Number(usageRaw.prompt_tokens ?? 0) || 0;
   const output = Number(usageRaw.completion_tokens ?? 0) || 0;
@@ -330,7 +352,7 @@ async function callProvider(request) {
     provider: request.provider,
     model: String(payload.model ?? request.model),
     content: typeof message.content === "string" ? message.content : "",
-    toolCalls: rawToolCalls.filter((call) => call && call.type === "function" && call.function?.name),
+    toolCalls: rawToolCalls.map((call) => ({ ...call, function: { ...call.function, name: fromWire.get(call.function.name) } })),
     usage: { input, output, total: Number(usageRaw.total_tokens ?? input + output) || input + output },
     latencyMs,
     httpStatus: response.status,
