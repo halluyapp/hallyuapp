@@ -56,14 +56,40 @@ Migration `operator_voice_limits` was applied to the existing Supabase project t
 Status: voice-note/speech code **Implemented but not production-verified**; missing explicit account-verified model choices **Blocked by external account configuration**; live two-way voice **Not implemented**. Actual recording/playback and PostgreSQL concurrency tests remain unverified implementation work, not permission blockers. Stage 1 also remains only partially complete.
 
 
-## Stage 3 update (supersedes initial intelligence gaps above)
+## Stage 3 release update (supersedes earlier intelligence deployment status)
 
-See [NARI_INTELLIGENCE.md](NARI_INTELLIGENCE.md) for full changed files, architecture, migrations, evidence and release gates.
+See [NARI_INTELLIGENCE.md](NARI_INTELLIGENCE.md) for the current architecture, precise evidence,
+release source hashes and remaining acceptance gates.
 
-Implemented explicit opt-in preference lifecycle and settings, owner/public isolation, admin knowledge/source editing with revision conflicts/history, atomic versioned constitution activation, task-bound relevant knowledge retrieval, lower-trust evidence assembly, bounded context, conversation/profile-bound tool access, publication approval enforcement and honest sourced-research storage. General free-text semantic memory and generated historical summaries remain unimplemented.
+- Implemented and deployed: owner-only opt-in preference lifecycle, expiry/deletion, admin
+  knowledge/source editing and revision browser, versioned constitution loading, task-bound
+  relevant retrieval, transient source-preserving extractive recaps, explicit context limits,
+  channel/tool/approval boundaries, and distinct research publication/event dates and uncertainty.
+- Migrations **96–99** are applied to the existing Supabase project. Existing user data and the
+  active `2026.11.3` constitution are preserved. New sourced knowledge covers feature status,
+  community rules, roles, event/announcement evidence and operational/release limitations.
+- Settings client is deployed READY at **https://hallyuapp.vercel.app** from source `ad4bb1e`.
+  Worker source `b6bf635` is deployed and boot-verified. Voice contract-v2 source is deployed;
+  voice device/model acceptance is not inferred from deployment.
+- Actual live authenticated tests passed identity provisioning, cross-user memory isolation,
+  correction/deletion, unauthorized knowledge refusal, admin knowledge revision/conflict behavior
+  and ordinary-DM worker context/constitution loading. Temporary fixture cleanup passed and the
+  temporary acceptance endpoint was deleted.
+- The actual configured APINEX / GPT-6 Luna generation attempt returned **billing_error**.
+  No fallback provider or alternate credit pool was used. Successful reasoning/factuality
+  acceptance is **Blocked by external billing/account state**, not marked complete.
+- Explicit live browser workflow `44045085580` failed with **Invalid API key** from its configured
+  Supabase admin request. Its repository `SUPABASE_SERVICE_ROLE_KEY` secret needs administrator
+  repair through secure GitHub settings. The available GitHub integration cannot administer
+  repository secrets. Browser UI acceptance is not counted as passed.
+- Intelligence suite: **24 tests reported**, provider contracts: **6**, voice contracts: **10**.
+  These include parent counts and HTTP doubles; see the evidence document for limits. Full static/
+  type/regression check, Deno checks, SQL/type contracts and lint pass (one existing lint warning).
+- Bounded live factuality cases are implemented for saved recall, sourced features, unsupported
+  statistics and injection/refusal; model execution of them remains billing-blocked.
 
-Migrations **96–97** were successfully applied to the existing production database. Verified grants/RLS, 7 knowledge baseline revisions, the active retention cron, preserved active constitution `2026.11.3`, no legacy staff-knowledge leakage in tested queries, and zero irrelevant matches. No production user preferences were fabricated or existing constitution/knowledge bodies overwritten.
-
-`test:intelligence`: 18 tests including parent; combined provider/voice/intelligence: 34 passed. Real PostgreSQL/PGlite lifecycle and isolation tests supplement runtime assembly/gateway tests. Typecheck, Deno check, SQL/type contracts, web build and targeted regression checks pass; lint has one existing warning.
-
-**Worker and settings client are not deployed; no real-provider conversation acceptance is claimed.** Database safeguards are deployed, while the new prompt/gateway/context pipeline and UI remain implemented but not production-verified. No missing Supabase permission is claimed. Earlier provider/voice release gaps and unfinished foundation/operator work still apply.
+No arbitrary free-text personal memory or unbounded recall is advertised. Summarization is
+bounded, source-preserving, transient and scoped to the authorized conversation. Physical
+Android/voice verification and full-duplex voice remain prior-stage gaps; stages 4–5 have not
+been represented as complete. Do not advance past the unresolved acceptance gates by relabelling
+failed or blocked tests as successes.

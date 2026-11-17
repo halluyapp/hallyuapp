@@ -88,3 +88,14 @@ Not tested: real Gemini STT/TTS, WAV playback on Android/web browser, microphone
 - This document and the project evidence index.
 
 The worker bundle was also regenerated to reflect Stage 1 provider/worker source changes; it was not deployed.
+
+
+## Coordinated contract deployment update (2026-11-17)
+
+The message-bound voice/transcription source from `ad4bb1e` and matching client are now deployed
+through the existing Supabase/Vercel projects. Status includes `contract_version: 2`; matching
+client controls require that version. This supersedes earlier statements that the source/client
+were not deployed. It does **not** establish actual Gemini model generation, physical-device
+recording/playback, or live full-duplex voice. See `NARI_INTELLIGENCE.md` for deployed source hashes,
+transport caveats and actual reasoning-provider billing evidence. No voice model was silently
+substituted and no text-provider fallback was added.

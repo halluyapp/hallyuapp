@@ -1,165 +1,190 @@
-# Stage 3 — Intelligence implementation evidence
+# Stage 3 — Intelligence implementation and release evidence
 
-## Status
+## Current status (2026-11-17)
 
-**Core implementation tested locally; database safeguards deployed; worker/client not deployed.** This is not a claim that Stage 3 live acceptance or the whole IDEAL project is complete.
+**Implemented and deployed; live backend isolation/lifecycle acceptance passed. Successful model
+reasoning remains blocked by a confirmed APINEX `billing_error`.** This is not a certificate that
+all five IDEAL stages or every live acceptance criterion are complete. Stage 4 has not started.
 
-## Audit findings and repairs
+## Memory lifecycle
 
-1. Existing `operator_conversation_context` included member memories regardless of channel, unscoped admin memories from all executives, and global/operational memory. Expiry was not applied uniformly. Replaced with owner-bound explicitly saved preference retrieval, including expiry checks. Public threads receive no private memory. Unreviewed legacy memories are preserved in storage but never automatically injected.
-2. The worker placed memory and knowledge in system-role instructions, and said database constitution could override everything below. Immutable identity/privacy/approval rules now take precedence; retrieved evidence is a separate user-role data block. Prompt text is not a security boundary: gateway checks enforce member/public tool restrictions and conversation/profile ownership independently.
-3. Whole-question ILIKE usually returned unrelated score-zero knowledge. Task-bound lexical retrieval now matches individual literal terms, excludes score-zero results and derives staff/public visibility from durable task/channel/current-role data. Existing knowledge is staff-only by default; only `platform-overview` and `tone-guide` were explicitly marked public. No existing knowledge bodies or constitution were overwritten.
-4. Model-supplied conversation IDs could redirect `message.reply`; profile/context fallback could use an unbound input identity. Reads and replies now require the task's bound conversation, member profile reads are owner-bound, and worker context mismatches fail closed. Executive requests also recheck current admin/CEO role and active account state.
-5. `research.save` accepted a model's verification claim and returned `verified:true` simply because insertion succeeded. It now requires an HTTPS source, stores `unverified`, and reports storage success separately from factual verification. Wikipedia search returns source URLs, retrieval time, unknown publication/event dates and an explicit snippet limitation. It is not a comprehensive news crawler and does not verify that an event occurred.
-6. Provider input accumulated without a whole-request limit and tool-result JSON was sliced mid-document. Added conservative UTF-8 byte-budget accounting including schemas/overhead, lossless JSON serialization, explicit omission notices and permanent context-limit failures rather than repeated credit-consuming retries. Model-provided tool-call lists are matched to the bounded executed subset.
-7. Publication now obeys both registry approval flags, configured tool/permission approval lists, and `require_approval_for_publish`, rather than merely describing them in a prompt.
+Settings → **Nari memory** (`app/settings/nari-memory.tsx`) provides explicit opt-in storage of
+language (`en/ko/zh/ja`), favorite genre (eight choices), and spoiler preference (`avoid/allow`).
+The server derives the owner from the authenticated identity and requires an active account;
+clients cannot supply another profile ID. A unique owner/key record supports atomic correction,
+deduplication and deletion. Saving renews a 90-day expiry. Retrieval excludes expired values
+immediately; the daily `operator-memory-retention` job at 03:17 UTC removes expired preferences.
+Audits record keys and actors, not private values. The UI displays stored values and expiry.
 
-## Memory lifecycle and UI
+This deliberately constrained memory contract cannot accept passwords, arbitrary free-text
+personal details, addresses or health records. No silent fact extraction or cross-user semantic
+memory exists. Existing legacy memories are preserved but excluded from automatic prompts.
+Private preferences enter only the owner's private Nari conversation, never public replies.
+Conversation history and temporary task state remain separate from durable preferences and
+organizational knowledge. Deleting a preference does not purport to delete DM history.
 
-Settings → **Nari memory** (`app/settings/nari-memory.tsx`).
+General free-text semantic recall and permanently stored generated summaries are not supported.
+The implemented context strategy uses scoped history plus transient extractive summarization;
+it does not claim unbounded or invented recall.
 
-- Explicit opt-in only; no automatic private fact extraction.
-- Allowed preference keys/values: reply language (`en`, `ko`, `zh`, `ja`); favorite genre (enumerated choices); spoiler preference (`avoid`, `allow`). Free-text secrets, addresses, health facts or arbitrary personal details cannot be stored through this API.
-- Owner derived by `current_profile_id`, not a submitted profile ID. Requires an active account.
-- One record per owner/key using the existing unique index. Saving corrects the value atomically and renews the 90-day expiry.
-- UI displays current values and expiry, supports correction and individual deletion, and distinguishes no saved preference from retrieval failure.
-- Daily `operator-memory-retention`, schedule `17 3 * * *`, deletes expired explicitly saved preferences. Retrieval excludes expired records immediately even before cleanup.
-- Memory mutation audits contain the key and actor, not the private value.
-- Deleting a preference does **not** delete conversation history. Conversation history has separate existing storage/retention behavior.
-- General free-text semantic memory and persisted long-conversation summaries are **not implemented**. This bounded preference memory is an intentional safe subset, not a claim of arbitrary long-term recall.
+## Constitution, knowledge and authorization
 
-## Organizational knowledge and constitution
+Settings → **Nari knowledge & policy** is shown only to admin/CEO users. Its server RPCs require
+actual administrator authorization, regardless of UI visibility. Editors can create, correct,
+deactivate and classify entries as public/staff; set HTTPS sources and tags; and inspect the
+latest 20 immutable revisions. Optimistic version checks reject stale writes.
 
-Settings → **Nari knowledge & constitution** (`app/settings/nari-knowledge.tsx`), shown to admin/CEO only. Server RPCs independently require `is_admin() IS TRUE`; hidden controls are not authorization.
+Constitution publication preserves immutable versions and atomically activates exactly one.
+The existing active constitution `2026.11.3` was preserved. The worker loads it from the database
+for each task, with its version label. Missing/oversized constitution or failed knowledge
+retrieval stops the task rather than silently discarding policy. Immutable security instructions
+remain above editable policy. Retrieved evidence is untrusted user-role data, never system
+instructions. Knowledge cannot grant permissions or override approvals.
 
-- Create/edit/deactivate knowledge with title, body, search tags, HTTPS source, and public/staff visibility.
-- Optimistic expected-version check prevents lost updates. Full snapshots in `operator_knowledge_revision` preserve versions, sources and editors; baseline existing entries were snapshotted. Revision history is in the database; a dedicated revision-history browsing UI is not implemented.
-- Current constitution can be loaded for editing, then activated under a new unique version. A transaction advisory lock and unique active index ensure one active version. Duplicate version activation rolls back, preserving the previous active version.
-- Worker reads the active constitution at task time; the RPC includes the active version in returned prompt text. No build required to edit content. Missing/oversized constitution or knowledge retrieval failure stops work rather than silently dropping policy.
-- `context.loaded` audit records knowledge slugs/versions, channel and preference count, not private values or raw prompts.
-- Publication/permission rules cannot be granted by knowledge or constitution text.
-- Existing production fact bodies were preserved, not re-certified as current. Admin review of feature/operations entries remains necessary; no invented capabilities were seeded.
+Task-bound lexical knowledge retrieval rejects zero-relevance matches and derives visibility
+from durable conversation/task state and the requester's current role/account status. Public
+entries describe real features, tone, safe preferences and community standards. Sourced staff
+entries cover role boundaries, campaigns/events/announcements evidence requirements and release/
+operations limitations. Static knowledge explicitly does not invent an active campaign, event,
+announcement, deployment, bug resolution or model health. Existing human-maintained bodies were
+not overwritten. New entries and their baseline revisions were added by migration 99.
 
-### Context limits
+`context.loaded` audits record channel, knowledge slugs/versions, preference count and constitution
+loading, not raw prompts or private preference values. Live acceptance confirmed this path ran
+for an ordinary authenticated member DM before its provider rejected generation for billing.
 
-`APINEX_CONTEXT_BYTE_LIMIT` and `COARENA_CONTEXT_BYTE_LIMIT` are optional server-only byte ceilings, default 32000. These are conservative byte limits, **not provider-tokenizer measurements or verified model context-window sizes**. Provider context errors are separately classified as permanent `context_limit_exceeded` failures.
+## Context and reasoning limits
 
-Latest 14 messages are considered; each excerpt is bounded and explicitly marked if cut. Whole-request limiting preserves immutable system instructions and the current task, discards older evidence/history when necessary, and never cuts a tool exchange or JSON document in half. No generated summary is invented. If mandatory content/tool state cannot fit, the task fails honestly. Knowledge evidence includes source/version/update time and an excerpt-truncated indicator.
+The authorized conversation loader requests at most 60 messages. The latest 14 are individual
+excerpts, capped at 2,000 characters each and marked when truncated. Up to five relevant older
+quotations form a deterministic chronological **extractive recap**, with direction/timestamp.
+It is labelled incomplete/untrusted and is never persisted. Corrections remain quoted evidence,
+not inferred new permanent facts. Unrelated older messages do not enter the recap.
 
-## Deployment evidence
+`APINEX_CONTEXT_BYTE_LIMIT` and `COARENA_CONTEXT_BYTE_LIMIT` default to 32,000 UTF-8 JSON bytes,
+including schemas and conservative overhead. These are not claims of exact model token windows.
+Pruning retains instructions, explicit retrieved preference/knowledge evidence and the current
+task; expendable older history goes first. Tool calls/results and JSON documents are not cut in
+half. Oversized mandatory state and provider context failures fail non-retryably.
 
-Project: existing `ltyymanoidagwsapgiql`. Connector migration calls succeeded:
+Member/public requests receive channel-permitted tool schemas. Actual tool execution separately
+checks channel, bound conversation/profile, autonomy and approvals. Administrator tasks retain
+approval-requiring schemas so requests can be escalated instead of silently executed. Publication
+obeys registry flags, configured tool/permission approval lists and `require_approval_for_publish`.
 
-- `operator_intelligence` → repository migration **96**.
-- `operator_knowledge_legacy_isolation` → repository migration **97**.
+## Research provenance
 
-The connector returned null migration versions, so none are invented here. Local timestamp filenames and connector history must be reconciled before a bulk CLI migration push. Do not blindly reapply CREATE TABLE statements.
+Authorized catalog search and the fixed Wikipedia search endpoint retain source references.
+External snippets are untrusted evidence, not instructions or verified current news. Unknown
+publication and event dates are explicitly unknown. `research.save` requires an HTTPS source,
+validates supplied ISO dates, stores publication and event dates separately, records retrieval
+time and uncertainty, and always saves `unverified` regardless of a model's claimed confidence.
+Storage success is never represented as factual verification. Current approval policy still
+applies before publication. This is not an unrestricted URL crawler or comprehensive news feed.
 
-Production read checks confirmed:
-- anonymous memory RPC EXECUTE: false;
-- authenticated self-memory RPC EXECUTE: true;
-- authenticated conversation-context and task-knowledge EXECUTE: false;
-- revision-table RLS: true, 7 baseline snapshots;
-- one active retention cron job;
-- legacy retrieval joins yielded **zero staff-only entries**, and nonsense queries yielded zero matches;
-- existing active constitution **2026.11.3** preserved; version label returned by actual backend RPC;
-- memory table initially contained zero records and remained empty (no production user preferences fabricated for testing).
+## Deployed artifacts and migrations
 
-Migration 97 protects the **currently deployed worker** too: the old unscoped knowledge search can return only public relevant entries until the new task-bound worker is released. New worker/gateway/prompt protections remain in tracked source and generated bundle; they are not claimed as deployed. No function or client was released in this pass. No Vercel changes.
+Existing Supabase project: `ltyymanoidagwsapgiql`; no new backend/project or data reset.
 
-## Verification results
+- Migration 95: voice reservation limits (earlier stage, preserved).
+- Migrations 96–97: owner-only preferences, scoped context, knowledge/version/constitution controls,
+  expiry job and legacy knowledge isolation — applied.
+- Migration 98: atomic task-ID-specific claiming and release-verification ledger — applied and
+  tested with real PostgreSQL/PGlite. Members cannot execute claims or write release ledgers.
+- Migration 99: distinct research dates/uncertainty and sourced knowledge coverage — applied.
 
-- `npm run test:intelligence`: **PASS**, 17 substantive checks / 18 including the PostgreSQL suite parent.
-  - Real PostgreSQL engine via pinned PGlite 0.5.16: migration execution, cross-user/public/executive isolation, invalid-memory rejection, correction/deduplication, expiry/deletion, legacy-memory exclusion, admin authorization, version conflicts, relevant/visibility-filtered retrieval, atomic constitution publication, grants.
-  - Runtime tests: constitution loading/order, lower-trust injection placement, public defense-in-depth, long-context omission, mandatory-context failure, tool/profile/conversation refusal, publication-policy enforcement, research storage vs verification.
-- Combined provider + voice + intelligence run: **34 tests passed** (including suite parents), no failures.
-- `npm run typecheck`: **PASS**.
-- `npx deno check` for worker and voice: **PASS**.
-- `npm run test:sql`: **PASS**, 90 migrations parsed (not a full deployment of all historical migrations).
-- `npm run test:db-types`: **PASS** after updating new table/column contracts (including Stage 2 voice ledger drift).
-- `npm run test:backend-surface`, `npm run test:signatures`, `npm run test:operator`, `npm run test:secrets`: **PASS**.
-- `npm run lint`: **PASS**, zero errors; one existing unused-constant warning in `lib/api/moviebox.ts`.
-- `npm run build`: **PASS**, Expo web export.
-- `git diff --check`: **PASS**.
+Connector migration responses returned null versions. Reconcile migration history before any bulk
+CLI push; do not reapply CREATE TABLE statements blindly.
 
-PGlite tests use a minimal existing-schema fixture and a test identity resolver, not production JWTs, the entire historical schema or simultaneous production workers. Injection tests verify assembly and actual permission refusals; they do not prove that an LLM never hallucinates or follows a malicious instruction. Real provider conversations, model-based factuality evaluations, full-role UI testing, physical Android and production task execution remain unverified.
+Client source `ad4bb1e8d53585f28ed4f75f6066e9fe75b5f799` is deployed READY/PROMOTED to
+**https://hallyuapp.vercel.app**, deployment `dpl_3BY9rjHtGmf6hTTfzCtJmiC4k7mw` in the existing project.
+The new memory, knowledge and revision-history UI is included. Later commits changed backend/tests,
+not that client UI.
 
-## Files changed in Stage 3
+Worker source is pinned to `b6bf6352b2616e074bae4754fdf265a57fbf25c4`, bundle SHA-256
+`a886956e1e790c1578376e06485aa5b48b4988e5494014f22fca4104aaf86180`.
+Voice source is pinned to `ad4bb1e8d53585f28ed4f75f6066e9fe75b5f799`, bundle SHA-256
+`89a4bbfa3a75ac77344fba704a80a9ca498fa5a1ab6bae1c13bec0cecec907aa`.
+The client only enables new voice controls when the endpoint reports `contract_version: 2`.
+Voice generation/device acceptance is not established by this Stage 3 release.
 
-- `supabase/migrations/20261124000000_96_operator_intelligence.sql`
-- `supabase/migrations/20261124000001_97_operator_knowledge_legacy_isolation.sql`
-- `supabase/functions/_shared/operator/context.ts`
-- `supabase/functions/_shared/operator/prompt.ts`
-- `supabase/functions/_shared/operator/providers.ts` (context-error classification)
-- `supabase/functions/_shared/operator/tools.ts`
-- `supabase/functions/operator-worker/index.ts`
-- `supabase/functions/_bundles/operator-worker.js` (regenerated)
-- `supabase/types/database.ts`
-- `lib/api/intelligence.ts`
-- `app/settings/nari-memory.tsx`
-- `app/settings/nari-knowledge.tsx`
-- `app/settings/index.tsx`
-- `scripts/test-intelligence-db.mjs`
-- `scripts/test-intelligence-runtime.mjs`
-- `scripts/test-provider-runtime.mjs`
-- `package.json`, `bun.lock` (pinned test dependency, regression commands)
-- `docs/NARI_INTELLIGENCE.md`, `docs/IDEAL_PROJECT.md`, `docs/NARI_TOOL_INVENTORY.md`
+Deployment transport caveat: this connector's static remote-import entrypoint failed to boot.
+The active entrypoints instead fetch the exact public GitHub API bundle at cold start, require
+an exact SHA-256 match, then execute that reviewed self-contained bundle. There are no dynamic
+user URLs, branch tracking or secret-bearing source files. Missing/altered source fails closed.
+Reproduce these entrypoints with `scripts/operator-release-entrypoint.mjs`.
+This introduces a GitHub cold-start availability/rate-limit dependency. A conventional direct
+Supabase CLI bundle deployment is preferable when deployment credentials are available. Do not
+remove digest checks or substitute an unpinned branch URL. The first failed import release was
+replaced, not reported as a successful runtime deployment.
 
-## Completion matrix and remaining release gates
+The updated worker also returned HTTP 200 with `claimed: 0` in a targeted no-work probe
+(request 690). This verifies startup/worker auth, not generation, and did not claim unrelated work.
 
-| Capability | Status |
-|---|---|
-| Preference lifecycle, isolation, revision/constitution transactions | Complete and tested locally; production schema/grants verified |
-| New worker prompt/context pipeline and gateway restrictions | Implemented but not production-verified/deployed |
-| Member memory and admin knowledge/settings UI | Implemented and web-build tested; not deployed or interaction-tested |
-| Research source preservation and honest verification status | Implemented and runtime-tested; external Wikipedia/provider path unverified |
-| Live reasoning uses new memory/knowledge correctly | Not production-verified |
-| General free-text semantic memory, generated historical summaries, model factuality evaluation suite | Not implemented |
+## Actual live acceptance
 
-No missing Supabase permission prevented this stage. Remaining worker/client release and live verification are unfinished release work, not fabricated external blockers. Prior provider billing/account verification and voice-model configuration remain unresolved from earlier stages.
+Release ledger: `operator_acceptance_run`, run `b46b7b61-0dfd-4e27-b4fd-e6ea1418aa98`.
+Temporary verifier source is in `supabase/functions/operator-acceptance/index.ts`; its deployed
+endpoint was removed after testing. No credentials were returned or committed.
 
-Release prerequisites: reconcile applied migration history; review/deploy the generated worker and matching settings client through the existing pipeline; verify a permitted saved preference in a real conversation, a separate user's isolation, public-thread exclusion, updated knowledge/constitution selection and context-failure behavior. Do not silently switch reasoning providers to make tests pass. Stage 4 must retain these scope/approval gates while auditing tools, queues, scheduling and campaigns.
+Passed using two real temporary Supabase auth identities and ordinary signed-in RPCs:
 
-Rollback: preserve user memory and knowledge revision rows. Roll back reviewed worker/client artifacts only if they retain the privacy guards; do not restore broad unscoped context queries. Disable the new UI if needed instead of dropping tables, resetting production or deleting user data.
+- Authentication → actual `register_profile` → correct profile identity.
+- Owner memory persistence and cross-user isolation.
+- Correction/deduplication and deletion.
+- Member refusal for knowledge edits.
+- Admin-only fixture knowledge creation, update, stale-version conflict and two revisions.
+- Active versioned constitution loading.
+- Ordinary DM → durable task → deployed worker context loading, with one saved preference.
+- Fixture cleanup: no fixture auth users or fixture knowledge remained; existing members and
+  their content were not removed.
 
-## Stage 3 closure work — continuation (not a production sign-off)
+The configured APINEX `gpt-6-luna` call failed with **`billing_error`**. No provider was switched,
+no second credit pool was used and no generated answer was fabricated. The ledger's `finished`
+state means the verifier finished, not that every product acceptance criterion passed.
 
-The following supersedes the earlier local implementation gaps, but **does not** change the
-production deployment status above:
+Two earlier verifier runs failed because their fixture setup assumed profile creation on auth
+insert. The verifier was corrected to the app's actual separate `register_profile` flow. Their
+cleanup passed. These failed setup attempts remain visible in the ledger.
 
-- Admin knowledge settings now expose the latest 20 immutable revisions, including source URL,
-  visibility, timestamp and body. Reads use the existing admin-only revision RLS.
-- Context loading requests at most 60 messages from the authorized conversation. The latest 14
-  remain individual excerpts. Up to five relevant older quotations form a deterministic,
-  chronological **extractive recap**, labelled incomplete/untrusted and never persisted. It does
-  not claim semantic summarization or recall beyond that bounded window. Corrections remain
-  quotations rather than being turned into inferred permanent preferences.
-- Context pruning retains the explicitly saved preference/knowledge evidence block and drops
-  expendable older history first. Oversized mandatory evidence still fails closed.
-- Member/public tasks receive only tool schemas permitted for their channel; execution checks
-  remain in place. Admin tasks retain approval-required schemas so approval requests still work.
-- Worker wake requests can target one queued task atomically instead of accidentally claiming
-  unrelated work. This depends on **migration 98, not yet applied**. Deploying that worker before
-  applying the migration is unsafe.
-- Voice status adds `contract_version: 2`; the matching client only enables the new controls for
-  that contract, avoiding requests against an older deployed voice endpoint.
-- A temporary `operator-acceptance` release-verifier source and service-only run ledger were
-  prepared. **Neither is deployed or executed.** The verifier creates isolated test users, tests
-  ordinary member RPCs, and attempts a real configured-provider DM. It must receive further live
-  schema/cleanup review before deployment. It does not constitute evidence of provider success.
-  The verifier promotes only a newly created fixture user, restores that fixture role, and
-  attempts fixture-only cleanup in `finally`; it must never be pointed at existing member IDs.
+## Evaluation and automated tests
 
-Verification after these changes:
+- Full `npm run check`: pass after migration 99 (static/type/regression gates).
+- Intelligence suite: **24 reported tests**, including PostgreSQL parent and evaluation checks.
+- Provider contract suite: **6 reported tests**; voice contract suite: **10 reported tests**.
+  Transport doubles test contracts, not account availability.
+- PostgreSQL/PGlite tests execute migrations 96–99 with a minimal existing-schema fixture and
+  exercise isolation, lifecycle, relevance, conflicts, grants, atomic activation, targeted claims
+  and research provenance. They are not the entire production schema or a concurrency load test.
+- Runtime tests cover lower-trust evidence, recap relevance, explicit evidence retention,
+  mandatory context failure, bound tool refusals, approval checks and distinct source dates.
+- `evaluation.ts` defines bounded live cases for saved recall, sourced product facts, unsupported
+  statistics and injection/refusal. The verifier can run these after a successful baseline DM;
+  actual model cases remain billing-blocked. Lexical graders are regression signals, not proof
+  that a model can never hallucinate.
+- App TypeScript, Deno worker/voice/verifier, SQL/type contracts, lint and bundle generation pass.
+  Lint retains one pre-existing moviebox unused-constant warning.
 
-- TypeScript app check and Deno worker/verifier checks: pass.
-- Intelligence suite: **20 passing** (including relevant recap quotations and evidence retention).
-- Provider contract suite: **6 passing**, voice contract suite: **10 passing**, using HTTP doubles.
-- SQL static checks: **91 migrations / 431 functions**, pass.
-- Database type contracts: **83 tables**, pass. Backend surface check: pass.
-- Lint: zero errors; existing moviebox unused-variable warning remains. Bundles regenerated;
-  `git diff --check` passes.
+The opt-in deployed browser test is `scripts/ci/nari-browser-acceptance.mjs`, dispatched through
+`deploy-web.yml` with `run_live_browser_test=true` on this branch. It tests 360×800 sign-in,
+preference persistence/correction/deletion, member editor refusal and fixture-admin revision UI.
+Live workflow run `44045085580` failed with the annotation **Invalid API key** while making
+its configured Supabase admin request. The job uses the repository's
+`SUPABASE_SERVICE_ROLE_KEY`; no successful browser sign-in or UI assertions are claimed.
+The GitHub integration returned 403 for repository-secret administration earlier in this session;
+no secret values were retrieved or logged to repair this configuration.
 
-Still open: deploy reviewed worker/client safely, apply/test migration 98, exercise the actual
-signed-in UI and real model, and resolve the broader free-text-memory/factuality-evaluation
-requirements. Stage 4 has **not** started. Local tests are not production acceptance evidence.
+## Remaining acceptance gates / recovery
+
+1. Account owner must resolve APINEX billing/credit rejection for the configured model. Then rerun
+   the bounded ordinary-DM and factuality cases. Do not change provider/model as a workaround.
+2. A repository administrator must replace the invalid/unusable `SUPABASE_SERVICE_ROLE_KEY`
+   Actions secret for this same Supabase project, through GitHub's secure repository settings.
+   Then dispatch `deploy-web.yml` on this branch with `deploy_public_site=false` and
+   `run_live_browser_test=true`. Do not paste privileged keys into chat. The test follows actual
+   UI sign-in/profile provisioning and cleans only its temporary fixture.
+3. Physical Android recording/playback and full-duplex voice remain separate Stage 2 gaps.
+
+Rollback preserves preference and revision rows. Revert to reviewed privacy-preserving artifacts
+or disable controls; never restore broad unscoped private retrieval, drop user tables or reset
+production to make a test pass.
