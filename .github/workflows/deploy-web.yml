@@ -28,7 +28,7 @@ on:
       - ".github/workflows/build-apk.yml"
 
 concurrency:
-  group: pages-deploy-${{ github.ref }}
+  group: pages-deploy-${{ github.ref }}-${{ github.event_name }}-${{ inputs.run_live_browser_test || false }}
   cancel-in-progress: true
 
 permissions:
