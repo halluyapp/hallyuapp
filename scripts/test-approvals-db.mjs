@@ -20,6 +20,7 @@ test('exact-action approval SQL contracts in isolated PostgreSQL',async()=>{
       create function operator_audit_write(text,text,uuid,uuid,text,text,text,jsonb) returns void language sql as $$insert into audit values($1,$7)$$;
     `);
     await db.exec(readFileSync('supabase/migrations/20261125000001_101_single_use_approvals.sql','utf8'));
+    await db.exec(readFileSync('supabase/migrations/20261125000002_102_approval_execution_lease.sql','utf8'));
     const actor='10000000-0000-4000-8000-000000000001';
     const task='20000000-0000-4000-8000-000000000001';
     const approval='30000000-0000-4000-8000-000000000001';
@@ -40,15 +41,18 @@ test('exact-action approval SQL contracts in isolated PostgreSQL',async()=>{
     assert.equal((await decide()).status,'approved');
     await assert.rejects(decide(),/already decided/);
     assert.equal(await consume(),false); // not leased/running yet
-    await db.exec(`update operator_task set status='running'`);
+    await db.exec(`update operator_task set status='executing',lease_owner='test-worker',lease_expires_at=now()+interval '120 seconds'`);
     assert.equal(await consume({post_id:'different'}),false);
     assert.equal(await consume({post_id:'target'},'post.delete'),false);
     assert.equal(await consume({post_id:'target'},'post.publish',actor),false);
     assert.equal((await db.query(`select input->>'_approved_action_id' as id from operator_task`)).rows[0].id,approval);
+    await db.exec(`update operator_task set lease_expires_at=now()-interval '1 second'`);
+    assert.equal(await consume(),false);
+    await db.exec(`update operator_task set lease_expires_at=now()+interval '120 seconds'`);
     const once=await Promise.all([consume(),consume()]);
     assert.deepEqual(once.sort(),[false,true]);
     assert.equal((await db.query(`select count(*)::int as n from audit where action='approval.consumed'`)).rows[0].n,1);
-    await reset(); await decide(); await db.exec(`update operator_task set status='running'; update profiles set account_status='suspended'`);
+    await reset(); await decide(); await db.exec(`update operator_task set status='executing',lease_owner='test-worker',lease_expires_at=now()+interval '120 seconds'; update profiles set account_status='suspended'`);
     assert.equal(await consume(),false);
     await db.exec(`update profiles set account_status='active'; update operator_tool set enabled=false`);
     assert.equal(await consume(),false);
@@ -59,7 +63,7 @@ test('exact-action approval SQL contracts in isolated PostgreSQL',async()=>{
     assert.equal((await db.query(`select status from operator_task`)).rows[0].status,'cancelled');
     await reset();assert.equal((await decide('rejected')).status,'rejected');assert.equal(await consume(),false);
     assert.equal((await db.query(`select status from operator_task`)).rows[0].status,'cancelled');
-    await reset();await decide();await db.exec(`update operator_task set status='running'; select set_config('test.role','authenticated',false)`);
+    await reset();await decide();await db.exec(`update operator_task set status='executing',lease_owner='test-worker',lease_expires_at=now()+interval '120 seconds'; select set_config('test.role','authenticated',false)`);
     await assert.rejects(consume(),/service required/);
     assert.equal((await db.query(`select has_function_privilege('authenticated','operator_consume_approval(uuid,uuid,text,jsonb)','execute') as allowed`)).rows[0].allowed,false);
   } finally {await db.close();}

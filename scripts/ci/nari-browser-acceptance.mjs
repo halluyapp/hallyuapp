@@ -37,6 +37,9 @@ try {
   await page.goto(site+'/settings/campaigns');
   await page.getByText('Administrator access required.',{exact:true}).waitFor();
   checks.push('member denied campaign planner');
+  await page.goto(site+'/settings/nari-approvals');
+  await page.getByText('Administrator access required.',{exact:true}).waitFor();
+  checks.push('member denied approval queue');
   await page.goto(site+'/settings/nari-knowledge');
   await fixture('promote');
   await page.reload();
@@ -63,6 +66,10 @@ try {
   await page.getByText(/^Saved version 3/).waitFor();
   await page.getByText('This cancelled campaign is read only in the draft editor.',{exact:true}).waitFor();
   checks.push('independent campaign create, reload, edit and cancel');
+  await page.goto(site+'/settings/nari-approvals');
+  await page.getByRole('button',{name:'Refresh approvals',exact:true}).waitFor({timeout:60000});
+  await page.getByText(/Review the exact target and content below/).waitFor();
+  checks.push('admin approval queue renders; no real proposals decided by this browser test');
   console.log(JSON.stringify({site,checks,status:'pass'}));
 } catch (error) {
   const screen = page ? await page.locator('body').innerText({timeout:3000}).catch(()=> 'unavailable') : 'not opened';
