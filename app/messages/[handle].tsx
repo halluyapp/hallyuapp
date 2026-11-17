@@ -49,6 +49,8 @@ export default function DirectMessageThreadScreen() {
   );
 
   const [messages, setMessages] = useState<DirectMessage[]>([]);
+  const [threadError, setThreadError] = useState('');
+  const threadRequest = useRef(0);
   const [draft, setDraft] = useState('');
   const [attachedDrama, setAttachedDrama] = useState<Drama | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -143,9 +145,16 @@ export default function DirectMessageThreadScreen() {
 
   const loadThread = useCallback(async () => {
     if (!cleanHandle) return;
-    const data = await fetchDirectMessages(cleanHandle);
-    setMessages(data);
-    void markConversationReadOnServer(cleanHandle);
+    const request = ++threadRequest.current;
+    try {
+      const data = await fetchDirectMessages(cleanHandle);
+      if (request !== threadRequest.current) return;
+      setThreadError('');
+      setMessages(previous => [...data, ...previous.filter(m => m.id.startsWith('local-'))]);
+      void markConversationReadOnServer(cleanHandle);
+    } catch (error) {
+      if (request === threadRequest.current) setThreadError(error instanceof Error ? error.message : 'Conversation could not load.');
+    }
   }, [cleanHandle]);
 
   useEffect(() => {
@@ -157,7 +166,7 @@ export default function DirectMessageThreadScreen() {
     const unsubscribe = subscribeDirectMessages(me.id, () => {
       refresh();
     });
-    return () => { unsubscribe(); clearInterval(poll); appState.remove(); };
+    return () => { threadRequest.current++; unsubscribe(); clearInterval(poll); appState.remove(); };
   }, [loadThread, me.id, isOperator]);
 
   // Detect if the user sent the latest DM to Nari and no reply has arrived after 15 seconds,
@@ -315,6 +324,7 @@ export default function DirectMessageThreadScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={56}
       >
+        {!!threadError && <View style={styles.waitBanner}><Text variant="caption" style={{ flex: 1 }}>Could not refresh replies: {threadError}</Text><Pressable accessibilityRole="button" accessibilityLabel="Retry conversation" onPress={() => void loadThread()}><Text tone="accent">Retry</Text></Pressable></View>}
         <FlatList
           ref={listRef}
           data={messages}

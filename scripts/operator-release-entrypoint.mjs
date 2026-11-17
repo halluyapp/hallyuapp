@@ -17,4 +17,4 @@ if (!response.ok) throw new Error('release_source_unavailable');
 const source = await response.text();
 const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source))), b=>b.toString(16).padStart(2,'0')).join('');
 if (digest !== '${sha}') throw new Error('release_integrity_failure');
-new Function(source)();`);
+await import('data:text/javascript;charset=utf-8,' + encodeURIComponent(source));`);

@@ -1,6 +1,6 @@
 // Gemini voice transport only. No reasoning, tool execution, model or endpoint fallback.
 export class VoiceFailure extends Error {
-  constructor(public code: string, public status = 400) { super(code); }
+  constructor(public code: string, public status = 400, public providerDetail?: string) { super(code); }
 }
 export const MAX_AUDIO_BYTES = 4 * 1024 * 1024;
 export function validateAudio(data: unknown, mime: unknown): { data: string; mime_type: string } {
@@ -65,7 +65,9 @@ export async function geminiInteraction(key: string, payload: Record<string, unk
     if (!response.ok) {
       const code = response.status === 401 ? 'invalid_credentials' : response.status === 403 ? 'access_denied'
         : response.status === 429 ? 'quota_or_rate_limit' : response.status >= 500 ? 'provider_unavailable' : 'provider_rejected';
-      throw new VoiceFailure(code, 502);
+      const problem = await response.json().catch(() => null);
+      const detail = `${response.status}:${String(problem?.error?.status ?? '')}:${String(problem?.error?.message ?? '').slice(0,250)}`;
+      throw new VoiceFailure(code, 502, detail);
     }
     const result = await response.json();
     const candidate = result.candidates?.[0];

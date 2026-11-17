@@ -36,6 +36,7 @@ export async function stage5Smoke(run:string,ref:string):Promise<Record<string,u
   const key=Deno.env.get('GEMINI_VOICE_API_KEY')??'',model=Deno.env.get('GEMINI_VOICE_TTS_MODEL')??'';
   const generated=await geminiInteraction(key,{model,input:[{type:'user_input',content:[{type:'text',text:'Hello Nari. Please recommend a Korean drama.'}]}]});
   const audio=outputContent(generated).find((p:any)=>p.type==='audio');check('real_tts_wav',audio?.mime_type==='audio/wav'&&audio.data.length>100);
+  try { await geminiInteraction(key,{model:Deno.env.get('GEMINI_VOICE_STT_MODEL'),input:[{type:'text',text:'Transcribe only.'},{type:'audio',data:audio!.data,mime_type:'audio/wav'}]}); } catch(e) { checks.stt_diagnostic=(e as any).providerDetail ?? String(e); throw e; }
   const transcript=await api('/functions/v1/operator-voice','POST',{action:'transcribe',audio_base64:audio!.data,mime_type:'audio/wav'},token);
   check('real_voice_transcription',transcript.ok&&/drama/i.test(transcript.transcript));checks.transcript=String(transcript.transcript).slice(0,200);
  }catch(e){error=String(e).slice(0,500);}

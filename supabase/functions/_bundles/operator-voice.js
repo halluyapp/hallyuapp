@@ -188,13 +188,15 @@ function errorResponse(message, status = 400) {
 
 // supabase/functions/_shared/operator/voice.ts
 var VoiceFailure = class extends Error {
-  constructor(code, status = 400) {
+  constructor(code, status = 400, providerDetail) {
     super(code);
     this.code = code;
     this.status = status;
+    this.providerDetail = providerDetail;
   }
   code;
   status;
+  providerDetail;
 };
 var MAX_AUDIO_BYTES = 4 * 1024 * 1024;
 function validateAudio(data, mime) {
@@ -279,7 +281,9 @@ async function geminiInteraction(key, payload, signal) {
     });
     if (!response.ok) {
       const code = response.status === 401 ? "invalid_credentials" : response.status === 403 ? "access_denied" : response.status === 429 ? "quota_or_rate_limit" : response.status >= 500 ? "provider_unavailable" : "provider_rejected";
-      throw new VoiceFailure(code, 502);
+      const problem = await response.json().catch(() => null);
+      const detail = `${response.status}:${String(problem?.error?.status ?? "")}:${String(problem?.error?.message ?? "").slice(0, 250)}`;
+      throw new VoiceFailure(code, 502, detail);
     }
     const result = await response.json();
     const candidate = result.candidates?.[0];
