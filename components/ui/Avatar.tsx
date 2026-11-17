@@ -9,6 +9,7 @@ import { Text } from './Text';
 
 interface AvatarProps {
   uri?: string;
+  fallbackSource?: number;
   avatarPath?: string;
   name: string;
   size?: keyof typeof sizes.avatar | number;
@@ -18,7 +19,7 @@ interface AvatarProps {
 
 const HUES = ['#3B2F4A', '#2F3A2A', '#3A2A2A', '#2A3A3A', '#3F352A', '#2A3340', '#4A2F3A'];
 
-export function Avatar({ uri, avatarPath, name, size = 'md', ring, style }: AvatarProps) {
+export function Avatar({ uri, fallbackSource, avatarPath, name, size = 'md', ring, style }: AvatarProps) {
   const px = typeof size === 'number' ? size : sizes.avatar[size];
   const resolvedInput = normalizeMediaUrl(uri);
   const [liveUri, setLiveUri] = useState<string | undefined>(resolvedInput);
@@ -84,6 +85,8 @@ export function Avatar({ uri, avatarPath, name, size = 'md', ring, style }: Avat
           cachePolicy="memory-disk"
           recyclingKey={liveUri}
         />
+      ) : fallbackSource ? (
+        <Image source={fallbackSource} style={{ width: px, height: px }} contentFit="cover" />
       ) : (
         <Text style={{ fontFamily: fonts.semibold, fontSize, lineHeight: fontSize + 4, color: colors.textPrimary }}>{initials(name)}</Text>
       )}

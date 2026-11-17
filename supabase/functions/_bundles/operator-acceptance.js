@@ -327,7 +327,8 @@ async function stage5Smoke(run, ref) {
     const audio = outputContent(generated).find((p) => p.type === "audio");
     check("real_tts_wav", audio?.mime_type === "audio/wav" && audio.data.length > 100);
     try {
-      await geminiInteraction(key, { model: Deno.env.get("GEMINI_VOICE_STT_MODEL"), input: [{ type: "text", text: "Transcribe only." }, { type: "audio", data: audio.data, mime_type: "audio/wav" }] });
+      const direct = await geminiInteraction(key, { model: Deno.env.get("GEMINI_VOICE_STT_MODEL"), input: [{ type: "text", text: "Transcribe only." }, { type: "audio", data: audio.data, mime_type: "audio/wav" }] });
+      checks.stt_direct = outputContent(direct).map((p) => ({ type: p.type, text: String(p.text ?? "").slice(0, 250) }));
     } catch (e) {
       checks.stt_diagnostic = e.providerDetail ?? String(e);
       throw e;

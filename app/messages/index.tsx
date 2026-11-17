@@ -116,18 +116,19 @@ export default function MessagesInboxScreen() {
                 }}
                 style={({ pressed }) => [styles.operatorCard, pressed ? { opacity: 0.85 } : null]}
                 accessibilityRole="button"
-                accessibilityLabel="Open your conversation with Hallyu AI"
+                accessibilityLabel="Open your conversation with Nari"
               >
-                <Avatar uri={operatorThread?.avatarUrl} name="Hallyu AI" size="lg" />
+                <Avatar uri={operatorThread?.avatarUrl} fallbackSource={require('../../public/nari-avatar.png')} name="Nari" size="lg" />
                 <View style={{ flex: 1, gap: 3 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text variant="titleSmall">Hallyu AI</Text>
+                    <Text variant="titleSmall">Nari</Text>
+                    <VerificationSeal tier={operatorThread?.verificationTier} verified={operatorThread?.verified} size={16} />
                     <View style={styles.aiBadge}>
                       <Text style={styles.aiBadgeText}>AI STAFF</Text>
                     </View>
                   </View>
                   <Text variant="bodySmall" tone="secondary" numberOfLines={1}>
-                    {operatorThread?.lastBody || 'Message your Hallyu AI operator directly.'}
+                    {operatorThread?.lastBody || 'Talk to Nari, your AI assistant.'}
                   </Text>
                 </View>
                 <Ionicons name="sparkles" size={18} color={colors.accent} />

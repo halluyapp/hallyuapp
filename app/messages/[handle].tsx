@@ -23,11 +23,12 @@ import {
   sendDirectMessage,
   subscribeDirectMessages,
 } from '../../lib/api/features';
+import { fetchProfileByHandle } from '../../lib/api/feed';
 import { operatorApi, type OperatorActiveModelInfo, type OperatorModelOption } from '../../lib/api/operator';
 import { cancelVoiceNote, startVoiceNote, stopVoiceNote, voiceApi } from '../../lib/api/voice';
 import { timeAgo } from '../../lib/format';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
-import type { DirectMessage, Drama } from '../../lib/model';
+import type { DirectMessage, Drama, User } from '../../lib/model';
 import { hasAdminAccess } from '../../lib/roles';
 
 export default function DirectMessageThreadScreen() {
@@ -40,12 +41,14 @@ export default function DirectMessageThreadScreen() {
   const { state, me, getDrama, getPost, getUser } = useApp();
   const isOperator = cleanHandle.toLowerCase() === 'hallyu.ai';
 
+  const [loadedPeer, setLoadedPeer] = useState<User | null>(null);
+  useEffect(() => { let alive = true; setLoadedPeer(null); void fetchProfileByHandle(cleanHandle).then(data => { if (alive) setLoadedPeer(data?.user ?? null); }).catch(() => {}); return () => { alive = false; }; }, [cleanHandle]);
   const peer = useMemo(
     () =>
-      Object.values(state.users).find(
+      loadedPeer ?? Object.values(state.users).find(
         (u) => u.handle.toLowerCase() === cleanHandle.toLowerCase(),
       ),
-    [state.users, cleanHandle],
+    [state.users, cleanHandle, loadedPeer],
   );
 
   const [messages, setMessages] = useState<DirectMessage[]>([]);
@@ -285,7 +288,7 @@ export default function DirectMessageThreadScreen() {
         <TopBar
           mode="stack"
           title={isOperator ? 'Nari' : peer?.displayName ?? `@${cleanHandle}`}
-          center={isOperator ? <View style={{ alignItems: 'center', gap: 3 }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Avatar uri={peer?.avatarUrl} name="Nari" size={28} /><Text variant="title">Nari</Text><VerificationSeal tier={peer?.verificationTier} verified={peer?.verified} size={18} /></View><Text variant="caption" tone="secondary">Official AI assistant</Text></View> : undefined}
+          center={isOperator ? <View style={{ alignItems: 'center', gap: 3 }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Avatar uri={peer?.avatarUrl} fallbackSource={require('../../public/nari-avatar.png')} name="Nari" size={28} /><Text variant="title">Nari</Text><VerificationSeal tier={peer?.verificationTier} verified={peer?.verified} size={18} /></View><Text variant="caption" tone="secondary">Official AI assistant</Text></View> : undefined}
           subtitle={
             isOperator
               ? activeModel
@@ -333,7 +336,7 @@ export default function DirectMessageThreadScreen() {
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           ListEmptyComponent={
             <View style={{ alignItems: 'center', paddingVertical: space.x8, gap: space.x3 }}>
-              <Avatar uri={peer?.avatarUrl} name={peer?.displayName ?? cleanHandle} size="xl" />
+              <Avatar uri={peer?.avatarUrl} fallbackSource={isOperator ? require('../../public/nari-avatar.png') : undefined} name={isOperator ? 'Nari' : peer?.displayName ?? cleanHandle} size="xl" />
               <Text variant="titleSmall">{peer?.displayName ?? `@${cleanHandle}`}</Text>
               <Text variant="caption" tone="secondary" align="center" style={{ maxWidth: 320 }}>
                 {isOperator
