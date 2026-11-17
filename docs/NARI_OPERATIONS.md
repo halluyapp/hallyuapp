@@ -49,11 +49,13 @@ This is a first delivery within Stage 4, not completion of the stage.
 
 - Existing gateway has 24 handler implementations; every handler still needs a
   passing full-path implementation test and verified application-state readback.
-- Existing approval decision queues the original task, but the worker currently
-  regenerates its plan and the gateway does not consume a single-use exact-action
-  grant. This fails closed (approval-gated actions are requested again), not a
-  completed approval execution flow. Bind action/arguments/target, add expiry,
-  consume once, and revalidate current policy/state before enabling launches.
+- Approval execution now replays a stored exact tool/arguments invocation using an
+  expiring, single-use grant (migrations 101–102; details below), without replanning.
+  Active approver role, task lease/state, current tool enablement, gateway schema,
+  channel, policy and rate limits are rechecked. Target-specific content-version
+  snapshots and atomic mutation guards still need coverage before claiming all
+  high-impact tool workflows complete; approving a target ID is not proof its
+  content has remained unchanged.
 - Existing schedules must gain timezone-aware recurrence, cancellation,
   missed-run recovery and execution history tests before claiming Stage 4 complete.
 - Campaign public launches, scheduled posts, live polls/monthly voting, reminders
@@ -73,3 +75,50 @@ the browser passed member campaign denial and admin draft create/reload/edit/can
 Post-test database checks confirmed fixture cleanup and anonymous RPC denial.
 Full local checks and Expo export passed; the broader GitHub workflow was still
 running when this acceptance was recorded.
+
+## Approval execution — 2026-11-17
+
+Settings → Nari approvals (active admin/CEO only) lists up to 100 real records,
+with proposed tool arguments/targets/content, reason, task, expiry, decision and
+consumption state. Proposals are rendered as untrusted text. A review step precedes
+approve/reject. The client never acquires a service-role key.
+
+`operator_decide_approval` binds an approved task to `_approved_action_id`; only
+pending, unexpired proposals attached to an awaiting task can be approved. Rejection
+cancels that task. Expired decisions persist `expired` and cancel an awaiting task.
+Approval resets retry attempts for the new exact invocation but grants no new tool
+permission. Decision and consumption are audited.
+
+The worker executes the stored tool/arguments directly, not a new model plan. The
+gateway reruns schema, channel, policy and rate checks; then a service-only RPC
+atomically checks task/action/JSON argument equality, active deciding admin, current
+tool enablement, unexpired deadline, active running/executing lease, and unused
+consumption marker. Only then can the handler run. Public posting/publishing,
+polls, deletion, notifications and sensitive moderation always require approval,
+even if the registry flag is omitted. Existing autonomy flags still restrict them.
+
+Consumption is deliberately **at-most-once attempt**, not an exactly-once claim
+across multiple network writes. A crash, timeout or partial handler failure after
+consumption requires audit inspection and a fresh human-reviewed proposal. Do not
+retry the old approval. Consumption does not itself mean the action completed;
+inspect the tool ledger and task result. Every individual handler's target-state
+readback/transactional preconditions remain part of the wider Stage 4 tool audit.
+
+Deployed worker v17, source `f0a43fb`, digest
+`45bc99076750ecc67f725ec249e48d2a4da75a04a8e8ce8d2309029e7492f36a`.
+Migrations 101 and 102 applied. Migration 102 corrects the live worker's
+running→executing transition and requires an unexpired lease. The initial v17
+probe failed closed at consumption; after 102 the same unconsumed fixture proposal
+completed and created one draft. No real post, notification or moderation action
+was used for acceptance.
+
+Live acceptance ledger `9af7cfa3-8068-4c9b-9648-1f33c33f403d` records completed exact
+campaign draft, consumed grant, zero provider calls and zero claims on repeat worker
+delivery. The isolated draft, task/approval and fixture profile were removed;
+audit evidence and the test ledger remain. See NARI_TEST_REPORT.md for test scope.
+
+Browser run `44070130069` passed targeted deployed UI acceptance and fixture cleanup:
+member approval-queue denial and admin queue rendering, alongside the existing
+memory/knowledge/campaign regressions. No real approval proposal was decided by
+that browser test. Final backend checks found no remaining probe profile, task or
+campaign; authenticated users cannot execute grant consumption directly.

@@ -60,3 +60,35 @@ Email confirmation is disabled in production (`mailer_autoconfirm=true`), matchi
 the requested behavior. Password reset links remain intentionally supported.
 Campaign launches/automation/delegation are not claimed implemented by this tranche.
 See [NARI_OPERATIONS.md](NARI_OPERATIONS.md) for remaining Stage 4 gates.
+
+## 2026-11-17 — Stage 4 exact-action approvals
+
+- Migrations **101–102 applied**. Worker **v17 deployed** from `f0a43fb`.
+- Frontend deployment **dpl_9zEWpapXYh1P9FhfY1VAe8NCdRzw** READY/PROMOTED.
+- Full local `npm run check` passed, including four new approval test cases.
+  `test-approvals-db.mjs` executes the actual forward migrations in an isolated
+  PostgreSQL/PGlite dependency harness: active-admin decision, member/service-only
+  denial, expired/rejected proposals, cross-task/action/argument mismatch,
+  revoked approver, disabled tool, missing/stale lease, and racing consumption
+  calls (only one succeeds). This is not a production-availability test.
+- Gateway runtime tests use explicit HTTP/RPC doubles for permission/schema checks,
+  consume-before-write, failed/throwing consumption refusal and mandatory approval
+  for high-impact tools. Worker regression checks exact replay without a model call.
+- Real deployed probe **9af7cfa3-8068-4c9b-9648-1f33c33f403d**:
+  approval decision → worker replay → **one real draft** → completed tool/task.
+  The grant was consumed; provider usage count for this task was **0**.
+  Repeat delivery (pg_net **727**) claimed **0**, so no second draft was created.
+  pg_net **726** contains the successful worker result. Probe **725** previously
+  failed closed because live task state was executing, repaired by migration 102.
+- Probe cleanup removed the isolated campaign, task/approval and fixture profile.
+  No existing account was elevated, no public content posted, no notification sent.
+- GitHub run **44070130069**: **Explicit Nari deployed UI acceptance PASS**,
+  fixture cleanup PASS. New checks cover member denial/admin approval-queue rendering,
+  not approve/reject clicks against real proposals. Backend cleanup verified zero
+  remaining probe profiles/tasks/campaigns and no authenticated execute privilege on
+  grant consumption. The broader workflow was still running when recorded; do not
+  infer an overall workflow pass from its targeted browser steps.
+
+Exact-argument/lease enforcement is complete for the tested draft workflow.
+Do not extrapolate to every high-impact handler's target-content/version safety,
+transactional side effects or all campaign/scheduling/delegation acceptance gates.
