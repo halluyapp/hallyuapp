@@ -13,6 +13,22 @@ import { ensureBackendSessionToken } from './client';
 
 export type OperatorChannel = 'admin_control' | 'member_ai' | 'public_thread';
 
+export interface OperatorModelOption {
+  provider: string;
+  label: string;
+  active_model: string;
+  is_default: boolean;
+  health: string;
+  models: string[];
+}
+
+export interface OperatorActiveModelInfo {
+  provider: string;
+  label: string;
+  model_id: string;
+  health: string;
+}
+
 export interface OperatorProvider {
   provider: string;
   label: string;
@@ -293,6 +309,10 @@ export const operatorApi = {
   policy: () => callOperatorAdmin<{ policy: OperatorPolicy | null }>('policy'),
   updatePolicy: (patch: Partial<Pick<OperatorPolicy, 'autonomy' | 'moderation' | 'notifications' | 'providers'>>) =>
     callOperatorAdmin<{ ok: boolean }>('policy_update', patch as Record<string, unknown>),
+  models: () => callOperatorAdmin<{ models: OperatorModelOption[] }>('models'),
+  activeModel: () => callOperatorAdmin<{ active: OperatorActiveModelInfo | null }>('active_model'),
+  setActiveModel: (provider: string, model: string) =>
+    callOperatorAdmin<{ ok: boolean; result: unknown }>('set_active_model', { provider, model }),
   health: () =>
     callOperatorAdmin<{ providers: OperatorProvider[]; workers: OperatorWorker[]; task_counts: Record<string, number> }>(
       'health',

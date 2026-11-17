@@ -143,7 +143,7 @@ async function restRequest(
   return { ok: true, data: parsed };
 }
 
-async function restInsert(table: string, values: Record<string, unknown>) {
+async function restInsert(table: string, values: Record<string, unknown> | Array<Record<string, unknown>>) {
   return restRequest('POST', table, '', values);
 }
 

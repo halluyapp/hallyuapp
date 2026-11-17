@@ -9,6 +9,7 @@ import { IconButton } from '../../components/ui/IconButton';
 import { Markdown } from '../../components/ui/Markdown';
 import { Poster } from '../../components/ui/Poster';
 import { Screen } from '../../components/ui/Screen';
+import { Sheet } from '../../components/ui/Sheet';
 import { Text } from '../../components/ui/Text';
 import { useToast } from '../../components/ui/Toast';
 import { TopBar } from '../../components/ui/TopBar';
@@ -19,10 +20,12 @@ import {
   sendDirectMessage,
   subscribeDirectMessages,
 } from '../../lib/api/features';
+import { operatorApi, type OperatorActiveModelInfo, type OperatorModelOption } from '../../lib/api/operator';
 import { cancelVoiceNote, startVoiceNote, stopVoiceNote, voiceApi } from '../../lib/api/voice';
 import { timeAgo } from '../../lib/format';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
 import type { DirectMessage, Drama } from '../../lib/model';
+import { hasAdminAccess } from '../../lib/roles';
 
 export default function DirectMessageThreadScreen() {
   const router = useRouter();
@@ -49,6 +52,75 @@ export default function DirectMessageThreadScreen() {
   const [sending, setSending] = useState(false);
   const [voicePhase, setVoicePhase] = useState<'idle' | 'recording' | 'sending'>('idle');
   const listRef = useRef<FlatList<DirectMessage>>(null);
+
+  // Nari Model & Provider selection
+  const [activeModel, setActiveModel] = useState<OperatorActiveModelInfo | null>(null);
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState<OperatorModelOption[]>([]);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelSwitching, setModelSwitching] = useState(false);
+  const canSwitchModel = hasAdminAccess(me.role);
+
+  const loadActiveModel = useCallback(async () => {
+    if (!isOperator) return;
+    try {
+      const res = await operatorApi.activeModel();
+      if (res?.active) {
+        setActiveModel(res.active);
+      }
+    } catch {
+      // Non-admin or offline fallback
+    }
+  }, [isOperator]);
+
+  useEffect(() => {
+    if (isOperator) {
+      void loadActiveModel();
+    }
+  }, [isOperator, loadActiveModel]);
+
+  const openModelSelector = async () => {
+    setModelSheetOpen(true);
+    setModelLoading(true);
+    try {
+      const res = await operatorApi.models();
+      if (res?.models) {
+        setAvailableModels(res.models);
+      }
+    } catch (err) {
+      toast.show({
+        message: err instanceof Error ? err.message : 'Could not fetch model options',
+        tone: 'danger',
+      });
+    } finally {
+      setModelLoading(false);
+    }
+  };
+
+  const handleSelectModel = async (provider: string, model: string) => {
+    if (!canSwitchModel) {
+      toast.show({ message: 'Administrator authority required to switch Nari model.', tone: 'default' });
+      return;
+    }
+    setModelSwitching(true);
+    haptic.medium();
+    try {
+      await operatorApi.setActiveModel(provider, model);
+      toast.show({
+        message: `Switched Nari model to ${provider.toUpperCase()}: ${model}`,
+        tone: 'success',
+      });
+      await loadActiveModel();
+      setModelSheetOpen(false);
+    } catch (err) {
+      toast.show({
+        message: err instanceof Error ? err.message : 'Failed to switch model',
+        tone: 'danger',
+      });
+    } finally {
+      setModelSwitching(false);
+    }
+  };
 
   const loadThread = useCallback(async () => {
     if (!cleanHandle) return;
@@ -152,9 +224,31 @@ export default function DirectMessageThreadScreen() {
         <TopBar
           mode="stack"
           title={peer?.displayName ?? `@${cleanHandle}`}
-          subtitle={isOperator ? 'AI STAFF · disclosed Hallyu AI operator' : undefined}
+          subtitle={
+            isOperator
+              ? activeModel
+                ? `Nari · ${activeModel.label} (${activeModel.model_id})`
+                : 'Nari · AI Staff Operator'
+              : undefined
+          }
           right={
-            peer ? (
+            isOperator ? (
+              <Pressable
+                onPress={() => {
+                  haptic.select();
+                  void openModelSelector();
+                }}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Nari model and provider settings"
+                style={styles.modelHeaderBadge}
+              >
+                <Ionicons name="sparkles" size={13} color={colors.accent} />
+                <Text variant="caption" style={{ color: colors.accent, fontWeight: '700', fontSize: 12 }}>
+                  {activeModel?.label ?? 'Model'}
+                </Text>
+              </Pressable>
+            ) : peer ? (
               <Pressable onPress={() => router.push(`/user/${peer.handle}`)} hitSlop={8} accessibilityRole="link">
                 <Avatar uri={peer.avatarUrl} name={peer.displayName} size="sm" />
               </Pressable>
@@ -320,6 +414,117 @@ export default function DirectMessageThreadScreen() {
         </View>
       </KeyboardAvoidingView>
 
+      {isOperator ? (
+        <Sheet
+          visible={modelSheetOpen}
+          onClose={() => setModelSheetOpen(false)}
+          title="Nari Intelligence & Model"
+          subtitle={
+            canSwitchModel
+              ? 'Select active model provider for Nari operations'
+              : 'Active model and provider specifications'
+          }
+        >
+          <View style={{ gap: space.x3, paddingBottom: insets.bottom + space.x4 }}>
+            <View style={styles.providerNotice}>
+              <Ionicons name="shield-checkmark-outline" size={16} color={colors.accent} />
+              <Text variant="caption" tone="secondary" style={{ flex: 1 }}>
+                Zero cross-provider fallback: Nari preserves provider-isolated credit accounting. Active model changes apply to all subsequent turns.
+              </Text>
+            </View>
+
+            {modelLoading ? (
+              <Text variant="body" tone="secondary" align="center" style={{ paddingVertical: space.x4 }}>
+                Loading provider options...
+              </Text>
+            ) : (
+              availableModels.map((opt) => {
+                const isActiveProvider = activeModel?.provider === opt.provider;
+                return (
+                  <View key={opt.provider} style={styles.providerCard}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.x2 }}>
+                        <Ionicons
+                          name={isActiveProvider ? 'radio-button-on' : 'radio-button-off'}
+                          size={18}
+                          color={isActiveProvider ? colors.accent : colors.textTertiary}
+                        />
+                        <Text variant="titleSmall" style={{ fontWeight: '700' }}>
+                          {opt.label}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.healthChip,
+                          {
+                            backgroundColor:
+                              opt.health === 'healthy' || opt.health === 'ok'
+                                ? 'rgba(52, 211, 153, 0.12)'
+                                : 'rgba(251, 191, 36, 0.12)',
+                          },
+                        ]}
+                      >
+                        <Text
+                          variant="caption"
+                          style={{
+                            color:
+                              opt.health === 'healthy' || opt.health === 'ok' ? colors.success : colors.warning,
+                            fontSize: 11,
+                            fontWeight: '600',
+                          }}
+                        >
+                          {opt.health.toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text variant="caption" tone="tertiary">
+                      Available routes:
+                    </Text>
+
+                    <View style={{ gap: space.x2 }}>
+                      {opt.models.map((mod) => {
+                        const isCurrent = isActiveProvider && activeModel?.model_id === mod;
+                        return (
+                          <Pressable
+                            key={mod}
+                            disabled={!canSwitchModel || modelSwitching}
+                            onPress={() => handleSelectModel(opt.provider, mod)}
+                            style={[styles.modelRow, isCurrent && styles.modelRowSelected]}
+                          >
+                            <View style={{ flex: 1 }}>
+                              <Text variant="body" style={{ fontWeight: isCurrent ? '700' : '500' }}>
+                                {mod}
+                              </Text>
+                              <Text variant="caption" tone="secondary">
+                                {opt.provider === 'coarena'
+                                  ? 'Coarena verified gateway'
+                                  : 'APINEX direct inference route'}
+                              </Text>
+                            </View>
+                            {isCurrent ? (
+                              <View style={styles.activeTag}>
+                                <Text variant="caption" style={{ color: colors.accent, fontWeight: '700' }}>
+                                  ACTIVE
+                                </Text>
+                              </View>
+                            ) : canSwitchModel ? (
+                              <Text variant="caption" tone="secondary">
+                                Tap to switch
+                              </Text>
+                            ) : null}
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </View>
+        </Sheet>
+      ) : null}
+
       <DramaPickerSheet
         visible={pickerOpen}
         onClose={() => setPickerOpen(false)}
@@ -411,5 +616,57 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  modelHeaderBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: space.x2,
+    paddingVertical: 4,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(225, 29, 72, 0.12)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(225, 29, 72, 0.3)',
+  },
+  providerNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.x2,
+    backgroundColor: colors.surface2,
+    padding: space.x3,
+    borderRadius: radius.md,
+  },
+  providerCard: {
+    backgroundColor: colors.surface1,
+    padding: space.x3,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    gap: space.x2,
+  },
+  healthChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+  },
+  modelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: space.x2,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+  },
+  modelRowSelected: {
+    borderColor: colors.accent,
+    backgroundColor: 'rgba(225, 29, 72, 0.08)',
+  },
+  activeTag: {
+    backgroundColor: 'rgba(225, 29, 72, 0.18)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.full,
   },
 });

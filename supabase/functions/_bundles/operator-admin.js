@@ -364,6 +364,28 @@ Deno.serve(async (request) => {
         const usage = await admin.from("operator_provider_usage").select("provider,outcome,input_tokens,output_tokens,total_tokens,latency_ms,created_at").order("created_at", { ascending: false }).limit(200);
         return jsonResponse({ providers: result.data ?? [], recent_usage: usage.data ?? [] });
       }
+      case "set_active_model": {
+        const provider = String(body.provider ?? "");
+        const model = String(body.model ?? "");
+        if (!provider || !model) return errorResponse("provider and model required", 400);
+        const rpcRes = await admin.rpc("operator_set_active_model", {
+          p_provider: provider,
+          p_model: model,
+          p_actor: caller.profileId
+        });
+        if (rpcRes.error) return errorResponse(rpcRes.error.message, 400);
+        return jsonResponse({ ok: true, result: rpcRes.data });
+      }
+      case "models": {
+        const rpcRes = await admin.rpc("operator_list_models");
+        if (rpcRes.error) return errorResponse(rpcRes.error.message, 500);
+        return jsonResponse({ models: rpcRes.data ?? [] });
+      }
+      case "active_model": {
+        const rpcRes = await admin.rpc("operator_get_active_model");
+        if (rpcRes.error) return errorResponse(rpcRes.error.message, 500);
+        return jsonResponse({ active: rpcRes.data ?? null });
+      }
       case "tools": {
         const result = await admin.from("operator_tool").select("name,description,family,permission,read_only,approval_required,rate_limit_per_min,timeout_ms,enabled").order("family", { ascending: true });
         return jsonResponse({ tools: result.data ?? [] });
