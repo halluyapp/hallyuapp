@@ -225,7 +225,7 @@ Deno.serve(async (request) => {
       const user = { auth: String(created.id), profile: "", token: "" };
       users.push(user);
       await api(`/rest/v1/operator_acceptance_run?id=eq.${run}`, "PATCH", { fixture_user_ids: users.map((entry) => entry.auth) });
-      const profiles = await api(`/rest/v1/profiles?select=id&auth_sub=eq.${encodeURIComponent(user.auth)}`);
+      const profiles = await api(`/rest/v1/profiles?select=id&id=eq.${encodeURIComponent(user.auth)}`);
       if (!profiles?.[0]?.id) throw new Error("test_profile_provisioning_failed");
       user.profile = profiles[0].id;
       const signed = await api("/auth/v1/token?grant_type=password", "POST", { email, password });
