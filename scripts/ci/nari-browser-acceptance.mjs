@@ -17,7 +17,7 @@ try {
   await page.getByLabel('Password',{exact:true}).fill(password);
   await page.getByRole('button',{name:'Sign in with email',exact:true}).click();
   await page.waitForURL((target)=>!target.pathname.includes('sign-in'),{timeout:60000});
-  checks.push('real email sign-in');
+  checks.push('ordinary email signup auto-confirmed by backend fixture; real email sign-in');
   assert.ok((await fixture('inspect')).profile_id);
   await page.goto(site+'/settings/nari-memory');
   await page.getByRole('button',{name:'thriller',exact:true}).click({timeout:60000});
@@ -34,6 +34,10 @@ try {
   await page.goto(site+'/settings/nari-knowledge');
   await page.getByText('Administrator access required.',{exact:true}).waitFor();
   checks.push('member denied knowledge editor');
+  await page.goto(site+'/settings/campaigns');
+  await page.getByText('Administrator access required.',{exact:true}).waitFor();
+  checks.push('member denied campaign planner');
+  await page.goto(site+'/settings/nari-knowledge');
   await fixture('promote');
   await page.reload();
   await page.getByLabel('Unique slug',{exact:true}).fill(slug,{timeout:60000});
@@ -43,6 +47,22 @@ try {
   await page.getByText('Revision history (latest 20)',{exact:true}).waitFor();
   await page.getByText(/Saved version 1/).waitFor();
   checks.push('admin saved knowledge and rendered revision history');
+  await page.goto(site+'/settings/campaigns');
+  await page.getByLabel('Campaign name',{exact:true}).fill(slug,{timeout:60000});
+  await page.getByLabel('Campaign objective',{exact:true}).fill('Fixture objective');
+  await page.getByLabel('IANA timezone',{exact:true}).fill('Africa/Lagos');
+  await page.getByLabel('Campaign start',{exact:true}).fill('2026-12-01T18:00:00+01:00');
+  await page.getByRole('button',{name:'Save campaign draft (version 0)',exact:true}).click();
+  await page.getByText(/^Saved version 1/).waitFor();
+  await page.reload();
+  await page.getByRole('button',{name:`${slug} · draft · v1`,exact:true}).click({timeout:60000});
+  await page.getByLabel('Campaign objective',{exact:true}).fill('Corrected fixture objective');
+  await page.getByRole('button',{name:'Save campaign draft (version 1)',exact:true}).click();
+  await page.getByText(/^Saved version 2/).waitFor();
+  await page.getByRole('button',{name:'Cancel campaign draft',exact:true}).click();
+  await page.getByText(/^Saved version 3/).waitFor();
+  await page.getByText('This cancelled campaign is read only in the draft editor.',{exact:true}).waitFor();
+  checks.push('independent campaign create, reload, edit and cancel');
   console.log(JSON.stringify({site,checks,status:'pass'}));
 } catch (error) {
   const screen = page ? await page.locator('body').innerText({timeout:3000}).catch(()=> 'unavailable') : 'not opened';

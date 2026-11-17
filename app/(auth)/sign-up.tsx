@@ -54,12 +54,8 @@ export default function SignUp() {
     setBusyMode('email');
     setError(null);
     try {
-      const outcome = await auth.signUp(email, password, name.trim());
-      if (outcome === 'verify') {
-        router.replace({ pathname: '/(auth)/verify', params: { email: email.trim().toLowerCase() } });
-      } else {
-        router.replace('/');
-      }
+      await auth.signUp(email, password, name.trim());
+      router.replace('/');
     } catch (e) {
       const err = e instanceof AuthError ? e : new AuthError('unknown', e instanceof Error ? e.message : 'Sign-up failed — try again.');
       setError(err);

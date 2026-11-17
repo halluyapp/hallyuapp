@@ -3082,6 +3082,10 @@ export type Database = {
           name: string;
           kind: string;
           status: string;
+          description: string;
+          objective: string;
+          timezone: string;
+          version: number;
           starts_at: string;
           ends_at: string;
           payload: Json;
@@ -3094,6 +3098,10 @@ export type Database = {
           name: string;
           kind: string;
           status?: string;
+          description?: string;
+          objective?: string;
+          timezone?: string;
+          version?: number;
           starts_at?: string;
           ends_at?: string;
           payload?: Json;
@@ -3106,6 +3114,10 @@ export type Database = {
           name?: string;
           kind?: string;
           status?: string;
+          description?: string;
+          objective?: string;
+          timezone?: string;
+          version?: number;
           starts_at?: string;
           ends_at?: string;
           payload?: Json;
@@ -4030,6 +4042,10 @@ export type Database = {
     };
     Views: Record<never, never>;
     Functions: {
+      operator_campaign_save: {
+        Args: { p_id: string | null; p_expected_version: number; p_name: string; p_kind: string; p_description: string; p_objective: string; p_timezone: string; p_starts_at: string | null; p_ends_at: string | null; p_status: string };
+        Returns: Json;
+      };
       operator_my_memory: {
         Args: { p_key?: string | null; p_value?: string | null; p_delete?: boolean };
         Returns: Json;

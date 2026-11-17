@@ -125,6 +125,7 @@ export default function Settings() {
         {signedIn && <SettingsGroup title="Nari intelligence">
           <SettingsRow icon="bookmark-outline" label="Nari memory" detail="Review, correct or forget saved preferences" onPress={() => router.push('/settings/nari-memory')} />
           {hasAdminAccess(me.role) && <SettingsRow icon="library-outline" label="Nari knowledge & constitution" detail="Versioned facts, sources and organisational policy" onPress={() => router.push('/settings/nari-knowledge')} />}
+          {hasAdminAccess(me.role) && <SettingsRow icon="calendar-outline" label="Campaign planner" detail="Independent campaign drafts, dates and objectives" onPress={() => router.push('/settings/campaigns')} />}
         </SettingsGroup>}
         <SettingsGroup title={t('settings.account')}>
           {signedIn ? (

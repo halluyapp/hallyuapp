@@ -59,10 +59,9 @@ interface AuthValue {
   restoreSession: () => Promise<boolean>;
   signInWithGoogle: (preferredName?: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, displayName: string) => Promise<'signedIn' | 'verify'>;
+  signUp: (email: string, password: string, displayName: string) => Promise<'signedIn'>;
   sendReset: (email: string) => Promise<void>;
   updatePassword: (password: string) => Promise<void>;
-  resendVerification: (email: string) => Promise<void>;
   continueAsGuest: () => void;
   signOut: () => Promise<void>;
   deleteAccount: () => Promise<void>;
@@ -187,7 +186,7 @@ function mapSupabaseEmailError(err: { message?: string; status?: number }): Auth
     return new AuthError('credentials', 'Incorrect email or password.');
   }
   if (/email not confirmed/i.test(msg)) {
-    return new AuthError('unverified', 'Check your inbox to verify your email address first, or try Gmail login.');
+    return new AuthError('unverified', 'This account cannot sign in yet. Contact support for help with an older unconfirmed account.');
   }
   if (/already registered|user already exists/i.test(msg)) {
     return new AuthError('exists', 'An account with that email already exists. Sign in instead.');
@@ -570,7 +569,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password,
       options: {
         data: { display_name: name, full_name: name },
-        emailRedirectTo: authRedirectUrl(),
       },
     });
     if (error) throw mapSupabaseEmailError(error);
@@ -589,8 +587,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return 'signedIn' as const;
     }
 
-    track('auth.signup', { provider: 'email', verify: true });
-    return 'verify' as const;
+    // Auto-confirm is enabled. Never strand a user in an email-link waiting room
+    // or claim success without a backend session. Existing accounts can sign in.
+    throw new AuthError('credentials', 'No active session was returned. Sign in with your email and password, or try creating the account again.');
   }, [completeBackendProvisioning]);
 
   const sendReset = useCallback(async (email: string) => {
@@ -609,18 +608,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { error } = await supabaseAuth.auth.updateUser({ password });
     if (error) throw mapSupabaseEmailError(error);
     setRecoveryPending(false);
-  }, []);
-
-  const resendVerification = useCallback(async (email: string) => {
-    const address = email.trim().toLowerCase();
-    if (!address.includes('@')) throw new AuthError('unknown', 'That email address does not look right.');
-    if (!supabase || !supabaseAuth) throw new AuthError('unknown', NO_MAIL);
-    const { error } = await supabaseAuth.auth.resend({
-      type: 'signup',
-      email: address,
-      options: { emailRedirectTo: authRedirectUrl() },
-    });
-    if (error) throw mapSupabaseEmailError(error);
   }, []);
 
   const continueAsGuest = useCallback(() => {
@@ -696,13 +683,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signUp,
       sendReset,
       updatePassword,
-      resendVerification,
       continueAsGuest,
       signOut,
       deleteAccount,
       clearRecovery: () => setRecoveryPending(false),
     }),
-    [status, user, recoveryPending, provisioningError, retryProfileProvisioning, restoreSession, signInWithGoogle, signIn, signUp, sendReset, updatePassword, resendVerification, continueAsGuest, signOut, deleteAccount],
+    [status, user, recoveryPending, provisioningError, retryProfileProvisioning, restoreSession, signInWithGoogle, signIn, signUp, sendReset, updatePassword, continueAsGuest, signOut, deleteAccount],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

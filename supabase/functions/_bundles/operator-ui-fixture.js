@@ -102,6 +102,12 @@ async function cleanup(run) {
     if (auth.user_metadata?.nari_ui_fixture !== run.id) throw new Error("fixture_cleanup_identity_mismatch");
     const profiles = await api(`/rest/v1/profiles?select=id&auth_sub=eq.${user}`);
     for (const profile of profiles) {
+      const created = await api(`/rest/v1/operator_audit?select=resource_id&actor_profile_id=eq.${profile.id}&action=eq.campaign.created&resource_type=eq.campaign`);
+      for (const action of created) {
+        if (/^[0-9a-f-]{36}$/.test(action.resource_id)) {
+          await api(`/rest/v1/operator_campaign?id=eq.${action.resource_id}&name=eq.${encodeURIComponent(run.report.slug)}`, "DELETE");
+        }
+      }
       await api(`/rest/v1/operator_memory?scope=eq.member&scope_id=eq.${profile.id}`, "DELETE");
       await api(`/rest/v1/profiles?id=eq.${profile.id}`, "DELETE");
     }
@@ -139,12 +145,15 @@ Deno.serve(async (request) => {
       const id = crypto.randomUUID();
       const report = { kind: "ui_fixture", github_run_id: identity.runId, github_attempt: identity.runAttempt, slug: `nari-ui-${id}`, expires_at: new Date(Date.now() + 20 * 6e4).toISOString() };
       await api("/rest/v1/operator_acceptance_run", "POST", { id, state: "running", report });
-      const email = `nari.ui.${id}@example.invalid`;
+      const email = `nari.ui.${id}@example.com`;
       const password = crypto.randomUUID() + "Aa7!";
       let user;
       try {
-        user = await api("/auth/v1/admin/users", "POST", { email, password, email_confirm: true, user_metadata: { full_name: "Nari UI Acceptance", nari_ui_fixture: id } });
+        const signup = await api("/auth/v1/signup", "POST", { email, password, data: { full_name: "Nari UI Acceptance", nari_ui_fixture: id } });
+        user = signup.user ?? signup;
+        if (!user?.id) throw new Error("fixture_signup_user_missing");
         await api(`/rest/v1/operator_acceptance_run?id=eq.${id}`, "PATCH", { fixture_user_ids: [user.id] });
+        if (!signup.access_token || !user.email_confirmed_at) throw new Error("email_signup_requires_confirmation");
         const signed = await api("/auth/v1/token?grant_type=password", "POST", { email, password });
         const profileId = await api("/rest/v1/rpc/register_profile", "POST", { p_handle: `nariui${id.slice(0, 8)}`, p_display_name: "Nari UI Acceptance" }, signed.access_token);
         const profiles = await api(`/rest/v1/profiles?select=id&auth_sub=eq.${user.id}`);
