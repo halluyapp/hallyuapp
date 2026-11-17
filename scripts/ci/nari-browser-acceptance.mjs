@@ -40,6 +40,9 @@ try {
   await page.goto(site+'/settings/nari-approvals');
   await page.getByText('Administrator access required.',{exact:true}).waitFor();
   checks.push('member denied approval queue');
+  await page.goto(site+'/settings/nari-status');
+  await page.getByText('Administrator access required.',{exact:true}).waitFor();
+  checks.push('member denied live operations status');
   await page.goto(site+'/settings/nari-knowledge');
   await fixture('promote');
   await page.reload();
@@ -91,6 +94,32 @@ try {
   await page.getByRole('button',{name:'Cancel this announcement',exact:true}).first().click();
   await page.getByRole('button',{name:'Cancel this announcement',exact:true}).waitFor({state:'hidden'});
   checks.push('independent weekly schedule exact-text approval, persisted history and both future occurrences cancelled');
+  // Review-only browser ballot check: actual launch/voting is tested in rollback-only SQL
+  // so no public test ballot ever appears in the community feed.
+  await page.getByRole('button',{name:'New campaign',exact:true}).click();
+  await page.getByLabel('Campaign name',{exact:true}).fill(slug);
+  await page.getByRole('button',{name:'vote',exact:true}).click();
+  await page.getByRole('button',{name:'Save campaign draft (version 0)',exact:true}).click();
+  await page.getByText(/^Saved version 1/).waitFor();
+  await page.getByLabel('Ballot question',{exact:true}).fill('Fixture monthly drama voting review');
+  await page.getByLabel('Ballot choices (one per line, 2–4)',{exact:true}).fill('Drama A\nDrama B');
+  await page.getByLabel('Ballot closes at',{exact:true}).fill(new Date(Date.now()+48*3600_000).toISOString());
+  await page.getByLabel('Monthly drama vote month (optional YYYY-MM-01)',{exact:true}).fill(new Date().toISOString().slice(0,7)+'-01');
+  await page.getByRole('button',{name:'Review public ballot launch',exact:true}).click();
+  await page.getByText(/^Approve public ballot:/).waitFor();
+  await page.getByRole('button',{name:'Back (refresh report after an uncertain result)',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh campaign performance',exact:true}).click();
+  await page.getByText(/Persisted votes: 0/).waitFor();
+  await page.getByRole('button',{name:'Review campaign cancellation',exact:true}).click();
+  await page.getByRole('button',{name:'Confirm cancel campaign',exact:true}).click();
+  await page.getByText('Verified in backend.',{exact:true}).waitFor();
+  checks.push('monthly drama ballot exact review without public launch, real aggregate report and independent campaign cancellation');
+  await page.goto(site+'/settings/nari-status');
+  await page.getByRole('button',{name:'Refresh live operator status',exact:true}).click({timeout:60000});
+  await page.getByText('checked at',{exact:true}).waitFor();
+  await page.getByText('scheduler',{exact:true}).waitFor();
+  await page.getByText('specialist activity',{exact:true}).waitFor();
+  checks.push('admin live backend scheduler, provider, usage, specialist and error status rendered');
   await page.goto(site+'/settings/nari-approvals');
   await page.getByRole('button',{name:'Refresh approvals',exact:true}).waitFor({timeout:60000});
   await page.getByText(/Review the exact target and content below/).waitFor();
