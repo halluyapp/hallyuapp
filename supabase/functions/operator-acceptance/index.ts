@@ -1,5 +1,6 @@
 // Temporary release verifier: deploy only for acceptance, invoke with the Vault worker token,
 // then remove the deployed endpoint. Never returns credentials. Fixture users are removed in finally.
+import { reasoningCases, gradeReasoningReply } from '../_shared/operator/evaluation.ts';
 import { adminClient } from '../_shared/supabase.ts';
 import { jsonResponse, errorResponse } from '../_shared/cors.ts';
 const base = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
@@ -91,12 +92,29 @@ Deno.serve(async (request: Request) => {
     checks.live_task = {status:row?.status,error_code:row?.error_code,provider:row?.provider,model:row?.model};
     const audits = await api(`/rest/v1/operator_audit?select=details&task_id=eq.${task}&action=eq.context.loaded`);
     check('deployed_context_loaded',audits.some((entry:any)=>entry.details?.constitution_loaded === true && entry.details?.preferences_supplied === 1));
-    if (row?.status !== 'completed') { checks.real_provider_reasoning = 'blocked:' + (row?.error_code ?? row?.status); }
+    if (row?.status !== 'completed') { checks.real_provider_reasoning = 'blocked:' + (row?.error_code ?? row?.status); checks.reasoning_evaluations = {status:'blocked',cases:reasoningCases.map((entry)=>entry.id),reason:row?.error_code ?? row?.status}; }
     else {
       const replies = await api(`/rest/v1/direct_messages?select=body&recipient_id=eq.${a.profile}&order=created_at.desc&limit=1`);
       check('live_saved_memory_reply',/thriller/i.test(String(replies[0]?.body ?? '')));
       checks.real_provider_reasoning = 'pass';
       checks.reply_excerpt = String(replies[0]?.body ?? '').slice(0,200);
+      const evaluations: Record<string, unknown> = {
+        saved_preference: gradeReasoningReply(reasoningCases[0], String(replies[0]?.body ?? '')),
+      };
+      for (const test of reasoningCases.slice(1)) {
+        const sent = await rpc('send_direct_message',{p_recipient_handle:'hallyu.ai',p_body:test.prompt,p_shared_drama_id:null,p_shared_post_id:null},a.token);
+        const queued = await api(`/rest/v1/operator_task?select=id&conversation_id=eq.${conv}&order=created_at.desc&limit=1`);
+        if (!queued[0]?.id) throw new Error('evaluation_task_missing');
+        const evaluationTask = queued[0].id;
+        await api(`/rest/v1/operator_task?id=eq.${evaluationTask}`,'PATCH',{max_attempts:1});
+        await fetch(base+'/functions/v1/operator-worker',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({task_id:evaluationTask,limit:1}),signal:AbortSignal.timeout(70000)}).catch(()=>null);
+        const state = (await api(`/rest/v1/operator_task?select=status,error_code&id=eq.${evaluationTask}`))[0];
+        if (state?.status !== 'completed') { evaluations[test.id] = {blocked:state?.error_code ?? state?.status}; break; }
+        const answer = (await api(`/rest/v1/direct_messages?select=body&recipient_id=eq.${a.profile}&order=created_at.desc&limit=1`))[0]?.body ?? '';
+        evaluations[test.id] = {...gradeReasoningReply(test,String(answer)),reply_excerpt:String(answer).slice(0,500),inbound_message:sent?.id ?? null};
+      }
+      checks.reasoning_evaluations = evaluations;
+
     }
   } catch (error) { failure = error instanceof Error ? error.message.slice(0,200) : 'acceptance_error'; }
   finally {

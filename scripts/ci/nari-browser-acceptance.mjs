@@ -52,6 +52,10 @@ try {
   await page.getByText(/Saved version 1/).waitFor();
   checks.push('admin saved knowledge and rendered revision history');
   console.log(JSON.stringify({site,checks,status:'pass'}));
+} catch (error) {
+  const message = String(error instanceof Error ? error.message : error).replaceAll(secret, '[redacted]').replaceAll(password, '[redacted]').replaceAll(email, '[fixture-email]').replace(/[\r\n]+/g, ' ').slice(0, 700);
+  console.error('::error title=Nari deployed UI acceptance::' + message);
+  throw new Error(message);
 } finally {
   if (browser) await browser.close();
   unwrap(await admin.from('operator_knowledge').delete().eq('slug',slug));
