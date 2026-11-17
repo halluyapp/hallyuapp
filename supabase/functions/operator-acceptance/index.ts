@@ -23,6 +23,12 @@ Deno.serve(async (request: Request) => {
   const body = await request.json().catch(() => null);
   const run = typeof body?.run_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.run_id) ? body.run_id : null;
   if (!run) return errorResponse('run_id required',400);
+  if (body?.mode === 'voice_models') {
+    const key=Deno.env.get('GEMINI_VOICE_API_KEY')??'';
+    const response=await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100',{headers:{'x-goog-api-key':key},signal:AbortSignal.timeout(15000)});
+    const data=await response.json();
+    return jsonResponse({http_status:response.status,models:(data.models??[]).filter((m:any)=>m.supportedGenerationMethods?.includes('generateContent')).map((m:any)=>({name:m.name,methods:m.supportedGenerationMethods}))});
+  }
   if (body?.mode === 'stage5_smoke') return jsonResponse(await stage5Smoke(run,body.release_ref));
   if (body?.mode === 'stage4_push') return jsonResponse(await verifyStage4Push());
   if (body?.mode === 'stage4_tools') return jsonResponse(await verifyStage4Tools(run));

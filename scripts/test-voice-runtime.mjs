@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 const source = readFileSync('supabase/functions/_shared/operator/voice.ts', 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { validateAudio, textChunks, geminiInteraction, outputContent } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+const { validateAudio, textChunks, geminiInteraction, outputContent, normalizeSpeechAudio } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 const env = { SUPABASE_URL: 'https://test.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'test-server-key', GEMINI_VOICE_API_KEY: 'test-gemini-key', GEMINI_VOICE_STT_MODEL: 'test-stt', GEMINI_VOICE_TTS_MODEL: 'test-tts' };
 globalThis.Deno = { env: { get: (name) => env[name] }, serve: () => {} };
 const { handleVoice } = await import(`data:text/javascript;base64,${Buffer.from(readFileSync('supabase/functions/_bundles/operator-voice.js')).toString('base64')}`);
@@ -18,6 +18,11 @@ test('voice contracts (HTTP doubles; not real Gemini verification)', async (t) =
     await t.test('audio validation rejects unsupported, malformed and oversized input', () => {
       for (const [data, mime] of [['@@@=', 'audio/webm'], ['', 'audio/wav'], ['YQ==', 'text/html'], ['YQ=='.repeat(1500000), 'audio/wav']]) assert.throws(() => validateAudio(data, mime));
       assert.equal(validateAudio('YQ==', 'audio/mp4').mime_type, 'audio/m4a');
+    });
+    await t.test('Gemini PCM speech is wrapped as playable mono 24kHz WAV', () => {
+      const out=normalizeSpeechAudio('AAAAAA==','audio/L16;codec=pcm;rate=24000');
+      const bytes=Buffer.from(out.data,'base64');assert.equal(bytes.subarray(0,4).toString(),'RIFF');assert.equal(bytes.subarray(8,12).toString(),'WAVE');assert.equal(bytes.readUInt32LE(24),24000);assert.equal(bytes.length,48);
+      assert.throws(()=>normalizeSpeechAudio('AAAA','audio/unknown'));
     });
     await t.test('chunking preserves every character including long unbroken text', () => {
       for (const text of ['a'.repeat(20000), 'Hello world. '.repeat(1200)]) {
