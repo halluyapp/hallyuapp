@@ -296,11 +296,11 @@ Deno.serve(async (request) => {
     await fetch(base + "/functions/v1/operator-worker", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ task_id: task, limit: 1 }), signal: AbortSignal.timeout(7e4) }).catch(() => null);
     let row;
     for (let attempt = 0; attempt < 12; attempt++) {
-      row = (await api(`/rest/v1/operator_task?select=status,error_code,provider,model,result&id=eq.${task}`))[0];
+      row = (await api(`/rest/v1/operator_task?select=status,error_code,error_detail,provider,model,result&id=eq.${task}`))[0];
       if (["completed", "failed", "cancelled", "blocked"].includes(row?.status)) break;
       await new Promise((resolve) => setTimeout(resolve, 2e3));
     }
-    checks.live_task = { status: row?.status, error_code: row?.error_code, provider: row?.provider, model: row?.model };
+    checks.live_task = { status: row?.status, error_code: row?.error_code, error_detail: row?.error_code === "bad_response" ? row?.error_detail : void 0, provider: row?.provider, model: row?.model };
     const audits = await api(`/rest/v1/operator_audit?select=details&task_id=eq.${task}&action=eq.context.loaded`);
     check("deployed_context_loaded", audits.some((entry) => entry.details?.constitution_loaded === true && entry.details?.preferences_supplied === 1));
     if (row?.status !== "completed") {
