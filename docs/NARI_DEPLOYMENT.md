@@ -60,3 +60,11 @@ separate acceptance case from standard promoted-admin fixtures.
 Voice422: no usable transcript; do not invent one. Provider404/503/timeouts are
 reported explicitly, with no hidden model change. APINEX billing_error requires
 account credit/access, not a different default. Push sent0/devices0 is not receipt.
+
+## Latest production confirmation
+
+Commit `de7368d58e6eb81a85b5c1dff519882f211ba6f4` deployed as
+`dpl_5mr5AxSowWAuj5XRpXzj2joXjF3T`: READY, production alias assigned.
+This includes auth-hydration DM guards and inbox verification fetch. Browser
+44090174325 confirmed visible request/reply but failed exact response content;
+see the test report. Temporary `operator-acceptance` has been deleted.

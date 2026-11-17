@@ -315,3 +315,26 @@ Unverified registration concurrency, Google/custom OAuth, recovery emails,
 physical receipt and full voice acceptance must not be inferred from local
 contracts or a promoted standard-auth fixture. The original first-admin
 server-controlled protections were preserved, not reset to create a demo admin.
+
+### Final browser and deployment outcome
+
+- First browser run44089156043 failed: a send during session restoration routed
+  to the guest gate. Fixed by refusing guest gating while auth is loading and
+  disabling DM send/voice buttons during restoration.
+- Released fix and inbox verification fetch in commit
+  `de7368d58e6eb81a85b5c1dff519882f211ba6f4`; Vercel
+  `dpl_5mr5AxSowWAuj5XRpXzj2joXjF3T` confirmed READY with production alias.
+- Full `npm run check` PASS again (`/tmp/nari-hydration-fullcheck.log`).
+- Browser rerun44090174325 no longer reached the guest gate. It displayed the
+  member's message **and a visible Nari reply** in the actual thread. It still
+  FAILED the substantive response assertion: the selected reasoning route
+  replied with a generic greeting instead of the requested unique code.
+  Consequently this is evidence of visible delivery, **not** a passing reasoning
+  E2E. Later memory/admin/campaign browser checks were not reached in this run.
+  Fixture cleanup ran; the temporary backend acceptance endpoint is removed.
+- Latest APK workflow44089876724 remained in progress at this observation.
+
+The current reasoning response-quality failure is unresolved, not an external
+credential blocker and not hidden by weakening the assertion. Custom CEO account,
+voice transcription, full browser suite and physical-device acceptance still
+prevent claiming Stage5 complete.
