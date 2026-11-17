@@ -281,8 +281,8 @@ async function stage5Smoke(run, ref) {
     const bytes = await image.arrayBuffer();
     const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
     check("avatar_integrity", digest === "b9b4a43e3fc89e08f919f1b3e1f4d08114f6cb432a4681bb98036f10677452cd");
-    const upload = await admin2.storage.from("media").upload("avatars/nari/portrait-v1.png", bytes, "image/png");
-    if (upload.error) throw new Error("avatar upload failed");
+    const upload = await fetch(base2 + "/storage/v1/object/media/avatars/nari/portrait-v1.png", { method: "POST", headers: { apikey: service2, Authorization: "Bearer " + service2, "Content-Type": "image/png", "x-upsert": "true" }, body: bytes, signal: AbortSignal.timeout(2e4) });
+    if (!upload.ok) throw new Error("avatar upload failed:" + upload.status);
     const staff = (await api2("/rest/v1/operator_staff?active=eq.true&select=profile_id"))[0]?.profile_id;
     if (!staff) throw new Error("staff missing");
     await api2("/rest/v1/profiles?id=eq." + staff, "PATCH", { avatar_path: "avatars/nari/portrait-v1.png", display_name: "Nari" });
