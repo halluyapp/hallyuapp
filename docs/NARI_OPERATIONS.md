@@ -189,3 +189,22 @@ completed by this release.
 Production release: worker 18; frontend `dpl_EZ6kv14espy1KApMTRobUjzuhpw5`
 READY/PROMOTED at https://hallyuapp.vercel.app (commit 3e42676).
 Unsupported aliases and evidence limits are enumerated in NARI_TOOL_INVENTORY.md.
+
+## Verified push prerequisites and publication fix (follow-up)
+
+Migration109 is applied: approved publication clears hidden/deleted timestamps to
+preserve the post state constraint. All eleven atomic branches, including hidden
+publication and notification.send, passed rollback-only production acceptance.
+
+Deployed dispatcher probe returned HTTP200, Web Push configured, **FCM not
+configured**, no queued deliveries and **zero active registered devices**. Physical
+receipt remains blocked on a consenting real-device registration. Sign in on the
+device and enable Settings → Notifications (iPhone Web Push requires Home Screen
+installation). Native Android FCM additionally needs valid server-side
+`FCM_SERVICE_ACCOUNT_JSON`, and Firebase configuration in the installed build.
+Never share the private JSON in chat or source control. Send a targeted test only
+to that consenting user's registered device and confirm lock-screen receipt;
+HTTP200/no pending work is not delivery proof.
+
+Temporary operator-acceptance endpoint used for the 16 live-tool checks and push
+probe was deleted after fixture cleanup; it is not a permanent privileged API.

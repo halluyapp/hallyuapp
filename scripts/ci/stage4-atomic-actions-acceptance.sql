@@ -1,5 +1,5 @@
--- Authorized rollback-only acceptance of every mutating atomic branch except notification.send
--- (notification recipients/preferences/caps are covered by stage4-transactional-acceptance.sql).
+-- Authorized rollback-only acceptance of all eleven mutating atomic branches.
+-- All effects (including transactional wake requests) roll back before returning.
 do $atomic$
 declare actor uuid:=gen_random_uuid(); member_id uuid:=gen_random_uuid(); sub text:='stage4-atomic-'||gen_random_uuid()::text;
  task_id uuid; aid uuid; pid uuid; mid uuid; cid uuid; action text; args jsonb; result jsonb;
@@ -8,7 +8,7 @@ begin
   insert into public.profiles(id,handle,display_name,auth_sub,role,account_status) values(actor,'s4at'||substr(replace(actor::text,'-',''),1,12),'Atomic rollback admin',sub,'admin','active'),(member_id,'s4mt'||substr(replace(member_id::text,'-',''),1,12),'Atomic rollback member','atomic-member-'||member_id::text,'member','active');
   perform set_config('request.jwt.claims',jsonb_build_object('sub',sub,'role','service_role')::text,true);
   result:=public.operator_campaign_save(null,0,'Atomic rollback schedule','campaign','','','UTC',null,null,'draft');cid:=(result->>'id')::uuid;
-  foreach action in array array['post.create','post.publish','poll.create','post.edit','moderation.remove_content','moderation.restore','post.delete','moderation.suspend','moderation.ban','campaign.schedule'] loop
+  foreach action in array array['post.create','post.publish','poll.create','post.edit','moderation.remove_content','moderation.restore','post.delete','moderation.suspend','moderation.ban','notification.send','campaign.schedule'] loop
    args:=case action
     when 'post.create' then jsonb_build_object('body','Rollback-only atomic post','type','post')
     when 'post.publish' then jsonb_build_object('post_id',pid)
@@ -19,7 +19,9 @@ begin
     when 'post.delete' then jsonb_build_object('post_id',pid,'reason','Rollback deletion acceptance')
     when 'moderation.suspend' then jsonb_build_object('profile_id',member_id,'days',1,'reason','Rollback suspension acceptance','rule_code','test','confidence',1)
     when 'moderation.ban' then jsonb_build_object('profile_id',member_id,'reason','Rollback ban acceptance','rule_code','test','confidence',1)
+    when 'notification.send' then jsonb_build_object('title','Rollback notification atomic test','body','Uncommitted test only','audience','followers')
     when 'campaign.schedule' then jsonb_build_object('campaign_id',cid,'version',1,'series_id',gen_random_uuid(),'body','Future rollback announcement','run_at',now()+interval '1 day','timezone','UTC','repeat_days',7,'count',2) end;
+   if action='post.publish' then update public.posts set state='hidden',hidden_at=now() where id=pid;end if;
    task_id:=gen_random_uuid();aid:=gen_random_uuid();
    insert into public.operator_task(id,task_type,status,requester_profile_id) values(task_id,'admin_command','awaiting_approval',actor);
    insert into public.operator_approval(id,task_id,action,status,payload) values(aid,task_id,action,'pending',jsonb_build_object('tool',action,'arguments',args));
@@ -38,4 +40,4 @@ begin
  exception when sqlstate 'ZX105' then null;end;
  if exists(select 1 from public.profiles where id in(actor,member_id)) or exists(select 1 from public.posts where id=pid) or exists(select 1 from public.operator_campaign where id=cid) then raise exception 'atomic cleanup failed';end if;
 end;$atomic$;
-select 'PASS: ten atomic approved-action branches against real schema; all effects rolled back' as acceptance;
+select 'PASS: eleven atomic approved-action branches against real schema; all effects rolled back' as acceptance;

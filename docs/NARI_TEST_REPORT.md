@@ -193,3 +193,88 @@ all race/failure combinations are not established. The 21 retired aliases are
 explicitly not implemented. Draft-only specialists do not independently execute
 tools. Stage5 remains pending. No production public test announcement or push was
 sent by the tests above; rollback tests do not establish external delivery.
+
+## Stage 4 verification gap closure — 2026-11-17, follow-up
+
+**All 27 enabled tools now have real-backend positive-path coverage**, at the
+layers specified below. This supersedes the earlier statement that real-backend
+coverage was outstanding for individual tools. It is still not a claim that all
+27 were driven by a language model, or that destructive public actions were
+committed merely to test them.
+
+### Live gateway, no mocked transport (16/16 PASS)
+
+Reserved ledger `44246f08-f673-4502-8ed2-19695161d685`, pg_net request **740**,
+HTTP200 `ok:true`. Temporary verifier executed the actual shared `executeTool`
+and `recordToolCall`, live registry/schema/limiter, PostgREST and RPC paths.
+Each case checked malformed-JSON refusal, successful result and persisted audit;
+writes were independently queried before cleanup. Wikipedia returned actual
+HTTPS source results, not canned network content.
+
+| Tools | Positive-path evidence |
+|---|---|
+| member.get, member.status | exact isolated profile ID returned |
+| conversation.context | bound conversation RPC returned context |
+| message.reply | persisted outbound message with exact test body |
+| comment.reply | persisted exact-body reply on hidden fixture post |
+| moderation.flag | persisted case targeting fixture post |
+| moderation.queue, moderation.rules | actual backend RPC/policy data |
+| analytics.platform | actual production analytics RPC result |
+| research.search | actual catalog query result array |
+| research.web | nonempty live Wikipedia results with HTTPS source URLs |
+| research.save | persisted item read back as unverified |
+| campaign.create | persisted draft campaign readback |
+| ops.task_list | actual task query result array |
+| ops.task_retry | failed fixture requeued, verified, then immediately cancelled |
+| ops.health | actual providers/workers and observation timestamp |
+
+All isolated profile/conversation/tasks/hidden post/comments/messages/research/
+campaign/moderation fixtures removed. Absence asserted, ledger cleanup **PASS**.
+No public fixture post was created and no notification went to a real member.
+Verifier endpoint was **deleted successfully** after acceptance. Reproducible
+fixture/cleanup procedure: `scripts/ci/stage4-live-tool-fixtures.sql`; verifier
+source: `supabase/functions/operator-acceptance/stage4-tools.ts`. It requires a
+short-lived reserved ledger and Vault worker authentication; never expose tokens.
+
+### Real atomic approved writes (11/11 PASS, rolled back)
+
+Updated `scripts/ci/stage4-atomic-actions-acceptance.sql` passed on production:
+post.create, post.publish, post.edit, post.delete, poll.create,
+moderation.remove_content, moderation.restore, moderation.suspend,
+moderation.ban, notification.send, campaign.schedule. Each used an actual pending
+proposal, authenticated admin decision, execution lease, atomic executor and
+consumed-grant assertion. Verified mutation results and final state, then rolled
+back **all** effects, including transactional wake requests.
+
+The stronger publication test exercises **hidden → active**, not a no-op active
+row. It exposed the need to clear hidden/deleted timestamps. Applied safe forward
+migration **109**, then production acceptance PASS. The local regression asserts
+the old implementation violates the state constraint without consuming approval,
+the patched implementation publishes and clears timestamps, and replay refuses.
+The eleven tools also have gateway/schema tests; destructive/public success is
+verified transactionally, not committed public publication. Earlier worker18
+campaign.schedule live gateway/replay acceptance still applies.
+
+### Push: precise remaining external prerequisites
+
+pg_net **741** called the deployed push-dispatch with service authentication,
+`verify_fcm:true` and `reload_secrets:true`. HTTP200, claimed/sent/failed/invalid
+all **0**; Web Push configured **true**; FCM configured **false** and OAuth verified
+**false**. Database count of active registered devices: **0**. No fake token or
+simulated receipt was used, and no test notification was sent.
+
+Therefore server-side dispatch/no-work path is tested; **physical-device receipt
+is blocked**, not passed. To finish that check, a user must sign in on a real
+device, open Settings → Notifications and enable/register notifications. Web Push
+can use the already configured VAPID path (iPhone: add to Home Screen first).
+Native FCM additionally requires a valid Firebase service-account JSON configured
+server-side as `FCM_SERVICE_ACCOUNT_JSON` (or existing protected build-vault key
+`fcm_service_account_json`); do not paste it into chat or commit it. No credentials
+were invented or rotated. A targeted notification to that consenting test user
+must then be checked on the physical device; provider acceptance alone is not
+receipt proof.
+
+Final local validation: `npm run check` **PASS**, Stage4 **34/34 PASS**, including
+new hidden-publication regression (`/tmp/s4-gap-full-check.log`). Existing lint
+warnings remain warnings, not errors. No frontend/worker redeployment is needed
+for the verifier-only code; migration109 is already applied in production.

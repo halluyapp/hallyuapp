@@ -4,7 +4,7 @@ test('snapshot-bound approval execution locks, revalidates, consumes and mutates
  try{
  await db.exec(`create role anon;create role authenticated;create role service_role;
  create table profiles(id uuid primary key,role text,account_status text,is_ai boolean default false,is_banned boolean default false,suspended_until timestamptz,auth_sub text);
- create table posts(id uuid primary key,author_id uuid,body text,title text,state text,visibility text,type text);
+ create table posts(id uuid primary key,author_id uuid,body text,title text,state text,visibility text,type text,hidden_at timestamptz,deleted_at timestamptz,check((state='hidden')=(hidden_at is not null)),check((state='deleted')=(deleted_at is not null)));
  create table comments(id uuid,author_id uuid,post_id uuid,body text,state text);
  create table moderation_actions(id uuid,target_type text,target_id uuid,action text);
  create table operator_campaign(id uuid,version integer,status text,name text,timezone text);
@@ -21,7 +21,7 @@ test('snapshot-bound approval execution locks, revalidates, consumes and mutates
  for(const f of ['20261125000001_101_single_use_approvals.sql','20261125000002_102_approval_execution_lease.sql','20261125000005_105_atomic_approved_tools.sql'])await db.exec(readFileSync('supabase/migrations/'+f,'utf8'));
  await db.query(`insert into profiles(id,role,account_status) values($1,'admin','active')`,[actor]);
  await db.query(`select set_config('test.actor',$1,false),set_config('test.service','yes',false)`,[actor]);
- await db.query(`insert into posts values($1,$2,'Original','Title','active','public','post')`,[post,actor]);
+ await db.query(`insert into posts(id,author_id,body,title,state,visibility,type) values($1,$2,'Original','Title','active','public','post')`,[post,actor]);
  const args={post_id:post,body:'Approved exact replacement'};
  await db.query(`insert into operator_task(id,status) values($1,'awaiting_approval')`,[task]);
  await db.query(`insert into operator_approval(id,task_id,action,status,payload) values($1,$2,'post.edit','pending',$3)`,[approval,task,JSON.stringify({tool:'post.edit',arguments:JSON.stringify(args)})]);
@@ -40,6 +40,20 @@ test('snapshot-bound approval execution locks, revalidates, consumes and mutates
  assert.equal((await db.query(`select count(*)::int n from audit where action='approved_action.executed'`)).rows[0].n,1);
  // Changing the target back cannot reuse a consumed approval.
  await db.exec(`update posts set body='Original'`);await assert.rejects(execute(),/approval changed/);
+ // The release test must publish a hidden row, not merely no-op an active row.
+ await db.exec(`insert into operator_tool(name,permission,approval_required) values('post.publish','content.write',true);update posts set state='hidden',hidden_at=now()`);
+ const publishTask='50000000-0000-4000-8000-000000000001',publishApproval='60000000-0000-4000-8000-000000000001';
+ await db.query(`insert into operator_task(id,status) values($1,'awaiting_approval')`,[publishTask]);
+ await db.query(`insert into operator_approval(id,task_id,action,status,payload) values($1,$2,'post.publish','pending',$3)`,[publishApproval,publishTask,JSON.stringify({tool:'post.publish',arguments:{post_id:post}})]);
+ await db.query(`select operator_decide_approval($1,'approved',null)`,[publishApproval]);
+ await db.query(`update operator_task set status='executing',lease_owner='fixture',lease_expires_at=now()+interval '2 minutes' where id=$1`,[publishTask]);
+ const publish=()=>db.query(`select operator_execute_approved($1,$2,'post.publish',$3) r`,[publishApproval,publishTask,JSON.stringify({post_id:post})]);
+ await assert.rejects(publish(),/check constraint/);
+ assert.equal((await db.query(`select consumed_at from operator_approval where id=$1`,[publishApproval])).rows[0].consumed_at,null,'failed mutation must not consume grant');
+ await db.exec(readFileSync('supabase/migrations/20261125000009_109_atomic_publish_timestamps.sql','utf8'));
+ assert.equal((await publish()).rows[0].r.verified,true);
+ assert.deepEqual((await db.query(`select state,hidden_at,deleted_at from posts`)).rows[0],{state:'active',hidden_at:null,deleted_at:null});
+ await assert.rejects(publish(),/approval changed/);
  assert.equal((await db.query(`select has_function_privilege('service_role','operator_consume_approval_lease_v102(uuid,uuid,text,jsonb)','execute') a`)).rows[0].a,false);
  assert.equal((await db.query(`select has_function_privilege('authenticated','operator_execute_approved(uuid,uuid,text,jsonb)','execute') a`)).rows[0].a,false);
  }finally{await db.close();}

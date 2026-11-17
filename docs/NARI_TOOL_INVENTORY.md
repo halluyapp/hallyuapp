@@ -69,3 +69,15 @@ These were previously advertised without matching handlers. Migration 107
 disables them without deleting history; gateway tests assert every alias fails
 closed. They are **not implemented**, not successful no-ops. Independent staff
 campaign management uses authenticated RPCs, not these nonexistent tool aliases.
+
+## Follow-up: all enabled tools now have real-backend coverage
+
+See NARI_TEST_REPORT.md “Stage 4 verification gap closure” for the per-tool matrix.
+Sixteen non-approval tools passed the real shared gateway with live registry,
+PostgREST/RPC/external Wikipedia, result checks and persisted audits (ledger
+44246f08-f673-4502-8ed2-19695161d685, request740); fixtures cleaned. All eleven
+high-impact tools, now including notification.send, passed the real atomic
+approval/execute/consume path in a rollback-only production transaction. Migration
+109 corrects timestamp consistency when publishing hidden posts. This supersedes
+the earlier individual-tool backend coverage gap; it does not relabel rolled-back
+public actions as committed publication or prove physical push receipt.
