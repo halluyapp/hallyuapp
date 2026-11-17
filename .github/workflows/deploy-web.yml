@@ -78,16 +78,14 @@ jobs:
 
       - name: Explicit Nari deployed UI acceptance
         if: github.event_name == 'workflow_dispatch' && inputs.run_live_browser_test == true
-        env:
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-            echo "::error::Live Nari UI verification blocked: repository SUPABASE_SERVICE_ROLE_KEY secret is not configured or unavailable to this workflow. No fixture account created."
-            exit 1
-          fi
           npm install --no-save --legacy-peer-deps playwright
           npx playwright install --with-deps chromium
           node scripts/ci/nari-browser-acceptance.mjs
+
+      - name: Clean temporary Nari UI fixture (also after browser failure)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_live_browser_test == true
+        run: node scripts/ci/nari-fixture-client.mjs cleanup
 
       - name: Ensure the backend catalog is populated (sync through the gateway)
         run: |

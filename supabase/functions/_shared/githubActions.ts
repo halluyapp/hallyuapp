@@ -6,6 +6,7 @@ export interface GitHubActionsIdentity {
   ref: string;
   workflow: string;
   runId: string;
+  runAttempt?: string;
 }
 
 function decodeJsonPart(value: string, label: string): Record<string, unknown> {
@@ -19,23 +20,24 @@ function decodeJsonPart(value: string, label: string): Record<string, unknown> {
   }
 }
 
-async function jwks(issuer: string): Promise<JsonWebKey[]> {
+async function jwks(issuer: string): Promise<(JsonWebKey & { kid?: string })[]> {
   const response = await fetch(`${issuer}/.well-known/jwks`, { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error('GitHub OIDC key service is unavailable');
-  const body = await response.json() as { keys?: JsonWebKey[] };
+  const body = await response.json() as { keys?: (JsonWebKey & { kid?: string })[] };
   if (!Array.isArray(body.keys)) throw new Error('GitHub OIDC returned no keys');
   return body.keys;
 }
 
 /** Verify RS256 against the published JWK selected by the unverified header's key id. */
-export async function verifyGitHubActionsToken(token: string, repository: string): Promise<GitHubActionsIdentity> {
+export interface GitHubActionsScope { audience: string; workflowFile: string; ref: string; repositoryId: string }
+export async function verifyGitHubActionsToken(token: string, repository: string, scope?: GitHubActionsScope): Promise<GitHubActionsIdentity> {
   const [encodedHeader, encodedPayload, encodedSignature] = token.split('.');
   if (!encodedHeader || !encodedPayload || !encodedSignature || token.split('.').length !== 3) throw new Error('invalid GitHub OIDC token');
   const header = decodeJsonPart(encodedHeader, 'header');
   const payload = decodeJsonPart(encodedPayload, 'payload');
   const issuer = 'https://token.actions.githubusercontent.com';
-  const audience = Deno.env.get('GITHUB_ACTIONS_OIDC_AUDIENCE') ?? 'hallyu-release-maintenance';
-  const requiredRef = Deno.env.get('GITHUB_RELEASE_REF');
+  const audience = scope?.audience ?? Deno.env.get('GITHUB_ACTIONS_OIDC_AUDIENCE') ?? 'hallyu-release-maintenance';
+  const requiredRef = scope?.ref ?? Deno.env.get('GITHUB_RELEASE_REF');
   if (header.alg !== 'RS256' || typeof header.kid !== 'string') throw new Error('invalid GitHub OIDC algorithm');
   if (payload.iss !== issuer || payload.repository !== repository || !['push', 'workflow_dispatch'].includes(String(payload.event_name))) {
     throw new Error('GitHub OIDC issuer, repository, or event is not authorized');
@@ -43,7 +45,13 @@ export async function verifyGitHubActionsToken(token: string, repository: string
   if (typeof payload.ref !== 'string' || !payload.ref.startsWith('refs/heads/') || (requiredRef && payload.ref !== requiredRef)) {
     throw new Error('GitHub OIDC branch is not authorized for release maintenance');
   }
-  if (payload.job_workflow_ref !== `${repository}/.github/workflows/build-apk.yml@${payload.ref}`) {
+  if (scope && (String(payload.repository_id) !== scope.repositoryId || payload.event_name !== 'workflow_dispatch' ||
+      !/^\d+$/.test(String(payload.run_id)) || !/^\d+$/.test(String(payload.run_attempt)))) {
+    throw new Error('GitHub OIDC fixture run is not authorized');
+  }
+  const workflow = scope ? payload.workflow_ref : payload.job_workflow_ref;
+  const expectedWorkflow = scope ? `${repository}/.github/workflows/${scope.workflowFile}@${payload.ref}` : `${repository}/.github/workflows/build-apk.yml@${payload.ref}`;
+  if (workflow !== expectedWorkflow) {
     throw new Error('GitHub OIDC workflow is not the APK publisher');
   }
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
@@ -58,5 +66,5 @@ export async function verifyGitHubActionsToken(token: string, repository: string
   const signature = Uint8Array.from(atob(encodedSignature.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
   const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', cryptoKey, signature, new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`));
   if (!valid) throw new Error('invalid GitHub OIDC signature');
-  return { repository, ref: payload.ref, workflow: payload.job_workflow_ref, runId: String(payload.run_id ?? '') };
+  return { repository, ref: payload.ref, workflow: String(workflow), runId: String(payload.run_id ?? ''), runAttempt: String(payload.run_attempt ?? '') };
 }

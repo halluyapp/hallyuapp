@@ -12,7 +12,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const FUNCTIONS = ['operator-admin', 'operator-worker', 'operator-voice', 'operator-acceptance'];
+const FUNCTIONS = ['operator-admin', 'operator-worker', 'operator-voice', 'operator-acceptance', 'operator-ui-fixture'];
 const HEADER = `// GENERATED FILE — do not edit by hand.
 // Source: supabase/functions/%s/index.ts (plus its imports from supabase/functions/_shared).
 // Regenerate with: node scripts/build-operator-bundles.mjs
