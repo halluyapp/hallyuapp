@@ -986,6 +986,19 @@ async function verifyStage4Tools(run) {
     return { ok: false, checks, error: String(e).slice(0, 500) };
   }
 }
+async function verifyStage4Push() {
+  const base2 = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  const headers = { apikey: key, Authorization: "Bearer " + key, "Content-Type": "application/json" };
+  for (const path of ["push_tokens?select=id&disabled_at=is.null&limit=1", "notification_deliveries?select=id&status=eq.queued&limit=1"]) {
+    const response2 = await fetch(base2 + "/rest/v1/" + path, { headers, signal: AbortSignal.timeout(15e3) });
+    if (!response2.ok) throw new Error("push preflight unavailable");
+    if ((await response2.json()).length) throw new Error("push preflight: real devices or queued delivery; use targeted device acceptance instead");
+  }
+  const response = await fetch(base2 + "/functions/v1/push-dispatch", { method: "POST", headers, body: JSON.stringify({ limit: 1, verify_fcm: true, reload_secrets: true }), signal: AbortSignal.timeout(45e3) });
+  const data = await response.json().catch(() => null);
+  return { ok: response.ok, http_status: response.status, dispatch: data, physical_device_receipt: "blocked:no registered device; no test notification sent" };
+}
 
 // supabase/functions/_shared/operator/evaluation.ts
 var reasoningCases = [
@@ -1039,6 +1052,7 @@ Deno.serve(async (request) => {
   const body = await request.json().catch(() => null);
   const run = typeof body?.run_id === "string" && /^[0-9a-f-]{36}$/i.test(body.run_id) ? body.run_id : null;
   if (!run) return errorResponse("run_id required", 400);
+  if (body?.mode === "stage4_push") return jsonResponse(await verifyStage4Push());
   if (body?.mode === "stage4_tools") return jsonResponse(await verifyStage4Tools(run));
   const reserved = await api("/rest/v1/operator_acceptance_run", "POST", { id: run, state: "running" }).catch(() => null);
   if (!reserved) return errorResponse("run already exists or ledger unavailable", 409);

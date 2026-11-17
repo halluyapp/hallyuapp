@@ -58,3 +58,19 @@ export async function verifyStage4Tools(run: string): Promise<Record<string, unk
   return {ok:true,checks};
  }catch(e){return {ok:false,checks,error:String(e).slice(0,500)};}
 }
+
+// Verify deployed dispatch + provider authentication without inventing a device token.
+// Refuses to run if a real device or pending delivery could receive a test message.
+export async function verifyStage4Push(): Promise<Record<string,unknown>> {
+ const base=(Deno.env.get('SUPABASE_URL')??'').replace(/\/$/,'');
+ const key=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')??'';
+ const headers={apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'};
+ for(const path of ['push_tokens?select=id&disabled_at=is.null&limit=1','notification_deliveries?select=id&status=eq.queued&limit=1']){
+  const response=await fetch(base+'/rest/v1/'+path,{headers,signal:AbortSignal.timeout(15000)});
+  if(!response.ok)throw new Error('push preflight unavailable');
+  if((await response.json()).length)throw new Error('push preflight: real devices or queued delivery; use targeted device acceptance instead');
+ }
+ const response=await fetch(base+'/functions/v1/push-dispatch',{method:'POST',headers,body:JSON.stringify({limit:1,verify_fcm:true,reload_secrets:true}),signal:AbortSignal.timeout(45000)});
+ const data=await response.json().catch(()=>null);
+ return {ok:response.ok,http_status:response.status,dispatch:data,physical_device_receipt:'blocked:no registered device; no test notification sent'};
+}
