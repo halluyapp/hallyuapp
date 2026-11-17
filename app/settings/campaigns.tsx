@@ -6,6 +6,7 @@ import { Text } from '../../components/ui/Text';
 import { TextField } from '../../components/ui/TextField';
 import { TopBar } from '../../components/ui/TopBar';
 import { campaignsApi, type CampaignDraft } from '../../lib/api/campaigns';
+import { CampaignSchedule } from '../../components/operator/CampaignSchedule';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
 import { hasAdminAccess } from '../../lib/roles';
@@ -25,7 +26,7 @@ export default function CampaignSettings() {
     if (!allowed) return;
     const current = epoch.current;
     setBusy(true); setNotice('');
-    try { const rows = await campaignsApi.list(); if (current === epoch.current) setEntries(rows); }
+    try { const rows = await campaignsApi.list(); if (current === epoch.current) { setEntries(rows); setEntry(selected => selected.id ? rows.find(row => row.id === selected.id) ?? selected : selected); } }
     catch (err) { if (current === epoch.current) setNotice(err instanceof Error ? err.message : 'Campaigns unavailable'); }
     finally { if (current === epoch.current) setBusy(false); }
   }, [allowed]);
@@ -50,7 +51,7 @@ export default function CampaignSettings() {
   return <Screen header={<TopBar mode="stack" title="Campaign planner" />}><ScrollScreen keyboard>
     <View style={{ padding: space.x4, gap: space.x3 }}>
       {!allowed ? <Text>Administrator access required.</Text> : <>
-        <Text>Create and edit campaign plans without Nari. Saving a draft does not schedule announcements, open voting or send reminders. Launch and automated execution are not available here yet.</Text>
+        <Text>Create and edit campaign plans without Nari. Saving a draft does not schedule announcements, open voting or send reminders. Save first, then explicitly review and approve public announcement posts below. Poll/vote collection is not implemented by this planner.</Text>
         {!!notice && <Text>{notice}</Text>}
         <Button label="Refresh campaigns" loading={busy} onPress={() => void load()} />
         {entries.map((row) => <Button key={row.id} label={`${row.name} · ${row.status} · v${row.version}`} variant="secondary" disabled={busy} onPress={() => { setEntry(row); setNotice(''); }} />)}
@@ -69,6 +70,7 @@ export default function CampaignSettings() {
           <Button label={`Save campaign draft (version ${entry.version})`} disabled={busy || !entry.name.trim()} loading={busy} onPress={() => void save()} />
           {!!entry.id && <Button label="Cancel campaign draft" variant="danger" disabled={busy} onPress={() => void save(true)} />}
         </> : <Text>This {entry.status} campaign is read only in the draft editor.</Text>}
+        {!!entry.id && <CampaignSchedule key={`${identity}:${entry.id}`} campaign={entry} onChanged={load} />}
       </>}
     </View>
   </ScrollScreen></Screen>;

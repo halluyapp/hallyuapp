@@ -92,3 +92,35 @@ See [NARI_OPERATIONS.md](NARI_OPERATIONS.md) for remaining Stage 4 gates.
 Exact-argument/lease enforcement is complete for the tested draft workflow.
 Do not extrapolate to every high-impact handler's target-content/version safety,
 transactional side effects or all campaign/scheduling/delegation acceptance gates.
+
+### Independent campaign announcements — local checkpoint
+
+- `npm run check`: PASS after scheduler implementation and database type updates;
+  two pre-existing lint warnings remain (memory hook dependency, moviebox constant).
+- `node --test scripts/test-campaign-schedule-db.mjs`: PASS, exact migration 103
+  functions executed in isolated PGlite PostgreSQL with narrow dependency fixtures.
+  Covers admin denial, member RLS read denial, malformed timezone, stale campaign
+  version, immutable idempotent replay/content mismatch, cancellation permission
+  and repeat cancellation, one persisted exact-body post, repeat sweep no-op,
+  role/campaign revocation, >24h missed run, publication-audit failure rollback,
+  and direct client insert/sweep privilege denial. A PostgreSQL calendar-expression
+  test verifies the DST offset change, not full production DST scheduling.
+- `npm run typecheck`: PASS; new scheduler component integrated into campaign editor.
+- Not claimed: production migration/deployment, browser acceptance of the new
+  controls, multi-connection locking proof, full real post-trigger integration,
+  notification preference/quiet-hour/cap acceptance, or complete Stage 4.
+
+
+### Scheduler production migration / transactional acceptance
+
+- Applied `campaign_announcements_103` to existing project `ltyymanoidagwsapgiql`;
+  verified table exists and `hallyu-campaign-announcements` cron is active alongside
+  unchanged operator/memory jobs.
+- Real-schema rollback-only acceptance: **PASS** for profile identity, exact
+  schedule/replay, idempotent cancellation, actual post triggers/readback, no second
+  post on repeat sweep, completed lifecycle and client insert/sweep ACL denial.
+  An explicit exception rolls back the entire fixture subtransaction; post/profile/
+  campaign/occurrence absence asserted afterward. Final occurrence count: **0**.
+- The rollback test is not committed public publication or proof of external push
+  delivery. No member announcements were published. UI/browser release evidence
+  and two-connection concurrency acceptance are not yet recorded here.

@@ -39,7 +39,7 @@
     "test:downloads": "node --test scripts/ci/downloads-check.mjs",
     "test:release-retention": "node --test scripts/test-release-retention.mjs",
     "test:storage-cleanup": "node --test scripts/test-storage-cleanup.mjs",
-    "test:approvals": "node --test scripts/test-approvals-db.mjs scripts/test-approvals-runtime.mjs",
+    "test:approvals": "node --test scripts/test-approvals-db.mjs scripts/test-approvals-runtime.mjs scripts/test-campaign-schedule-db.mjs",
     "test:campaigns": "node --test scripts/test-campaigns.mjs",
     "test:operator": "node scripts/verify-operator.mjs",
     "test:auth-repairs": "node --test scripts/test-auth-repairs.mjs",

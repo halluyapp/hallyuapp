@@ -66,6 +66,31 @@ try {
   await page.getByText(/^Saved version 3/).waitFor();
   await page.getByText('This cancelled campaign is read only in the draft editor.',{exact:true}).waitFor();
   checks.push('independent campaign create, reload, edit and cancel');
+  // All fixture occurrences are at least 48 hours in the future, cancelled here,
+  // and removed by fixture cleanup even if a later assertion fails. No public test posts.
+  await page.getByRole('button',{name:'New campaign',exact:true}).click();
+  await page.getByLabel('Campaign name',{exact:true}).fill(slug);
+  await page.getByRole('button',{name:'Save campaign draft (version 0)',exact:true}).click();
+  await page.getByText(/^Saved version 1/).waitFor();
+  const announcement='Rollback-safe browser schedule fixture: '+slug;
+  await page.getByLabel('Scheduled announcement text',{exact:true}).fill(announcement);
+  await page.getByLabel('First announcement time',{exact:true}).fill(new Date(Date.now()+48*3600_000).toISOString());
+  await page.getByLabel('Schedule timezone',{exact:true}).fill('Africa/Lagos');
+  await page.getByRole('button',{name:'Weekly',exact:true}).click();
+  await page.getByLabel('Number of occurrences (1–31)',{exact:true}).fill('2');
+  await page.getByRole('button',{name:'Review announcement schedule',exact:true}).click();
+  await page.getByText(/^Approve public text:/).waitFor();
+  await page.getByRole('button',{name:'Approve and schedule public posts',exact:true}).click();
+  await page.getByText(/^Approved 2 occurrence/).waitFor();
+  await page.reload();
+  await page.getByRole('button',{name:`${slug} · scheduled · v2`,exact:true}).click({timeout:60000});
+  await page.getByRole('button',{name:'Cancel this announcement',exact:true}).first().waitFor();
+  assert.equal(await page.getByRole('button',{name:'Cancel this announcement',exact:true}).count(),2);
+  await page.getByRole('button',{name:'Cancel this announcement',exact:true}).first().click();
+  await page.getByText(/^Occurrence cancelled/).waitFor();
+  await page.getByRole('button',{name:'Cancel this announcement',exact:true}).first().click();
+  await page.getByRole('button',{name:'Cancel this announcement',exact:true}).waitFor({state:'hidden'});
+  checks.push('independent weekly schedule exact-text approval, persisted history and both future occurrences cancelled');
   await page.goto(site+'/settings/nari-approvals');
   await page.getByRole('button',{name:'Refresh approvals',exact:true}).waitFor({timeout:60000});
   await page.getByText(/Review the exact target and content below/).waitFor();

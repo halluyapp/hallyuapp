@@ -122,3 +122,38 @@ member approval-queue denial and admin queue rendering, alongside the existing
 memory/knowledge/campaign regressions. No real approval proposal was decided by
 that browser test. Final backend checks found no remaining probe profile, task or
 campaign; authenticated users cannot execute grant consumption directly.
+
+### Stage 4 independent announcement scheduler — migration applied, UI release in progress
+
+Migration `20261125000003_103_campaign_announcements.sql` adds admin-approved,
+immutable per-occurrence public posts. The campaign planner now has a separate
+review/approval step, once/daily/weekly recurrence, history and per-occurrence
+cancellation. Publication is under the approving admin, not Nari; neither a model
+nor the operator enabled switch is involved. Campaign poll/vote kinds remain
+planning metadata: this does not implement ballot collection or mass reminders.
+
+Contract: explicit-offset first instant plus named timezone; 1–31 occurrences;
+90-day horizon; at most 100 pending occurrences per campaign / 500 per approver.
+Recurrences preserve local calendar time (PostgreSQL standard-time preference in
+DST gaps/overlaps). The minute cron catches up within 24 hours; older work is
+marked missed. Series UUID retries return the existing schedule only for identical
+content/approver/times; changing a proposal requires a new reviewed UUID. After an
+ambiguous network result, retry the same proposal or inspect history first.
+
+The sweep serializes itself with a transaction advisory lock and locks campaign
+before occurrence, then rechecks campaign status and approver role/account status.
+Post, transactional notification-trigger writes, readback, occurrence completion
+and publication audit share a subtransaction. Failure rolls these back and marks
+the occurrence failed; there is no automatic retry of failed occurrences. Published
+posts are not deleted by cancellation. External delivery is not an exactly-once
+guarantee. The existing follower notification pipeline remains in effect; full
+preference/quiet-hour/cap acceptance is still a separate Stage 4 gate.
+
+Migration 103 (`campaign_announcements_103`) is applied to the existing production
+project. The independent minute cron is active. Real-schema acceptance passed in
+a rollback-only transaction: authenticated-profile identity, schedule and exact
+replay, repeat cancellation, real post insert/triggers/readback, repeated sweep,
+completed lifecycle and client ACL. All fixture rows/posts/audits from that
+transaction were rolled back; final occurrence count was zero. No test announcement
+became visible to members. UI deployment/browser checks are in progress. Remaining
+broader gates: two-connection concurrency and notification-policy integration.

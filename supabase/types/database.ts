@@ -3082,6 +3082,57 @@ export type Database = {
         };
         Relationships: [];
       };
+      operator_campaign_action: {
+        Row: {
+          id: string;
+          campaign_id: string;
+          series_id: string;
+          occurrence: number;
+          repeat_days: number;
+          body: string;
+          timezone: string;
+          run_at: string;
+          approved_by: string | null;
+          approved_at: string;
+          status: string;
+          post_id: string | null;
+          finished_at: string | null;
+          error_code: string | null;
+        };
+        Insert: {
+          id?: string;
+          campaign_id: string;
+          series_id: string;
+          occurrence: number;
+          repeat_days: number;
+          body: string;
+          timezone: string;
+          run_at: string;
+          approved_by?: string | null;
+          approved_at?: string;
+          status?: string;
+          post_id?: string | null;
+          finished_at?: string | null;
+          error_code?: string | null;
+        };
+        Update: {
+          id?: string;
+          campaign_id?: string;
+          series_id?: string;
+          occurrence?: number;
+          repeat_days?: number;
+          body?: string;
+          timezone?: string;
+          run_at?: string;
+          approved_by?: string | null;
+          approved_at?: string;
+          status?: string;
+          post_id?: string | null;
+          finished_at?: string | null;
+          error_code?: string | null;
+        };
+        Relationships: [];
+      };
       operator_campaign: {
         Row: {
           id: string;
@@ -4053,6 +4104,18 @@ export type Database = {
         Returns: boolean;
       };
 
+      operator_campaign_schedule: {
+        Args: { p_campaign: string; p_expected_version: number; p_series: string; p_body: string; p_at: string; p_timezone: string; p_repeat_days?: number; p_count?: number };
+        Returns: Json;
+      };
+      operator_campaign_action_cancel: {
+        Args: { p_action: string };
+        Returns: Json;
+      };
+      operator_campaign_action_sweep: {
+        Args: Record<string, never>;
+        Returns: number;
+      };
       operator_campaign_save: {
         Args: { p_id: string | null; p_expected_version: number; p_name: string; p_kind: string; p_description: string; p_objective: string; p_timezone: string; p_starts_at: string | null; p_ends_at: string | null; p_status: string };
         Returns: Json;
