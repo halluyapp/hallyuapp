@@ -12,9 +12,11 @@
 import { adminClient } from '../_shared/supabase.ts';
 import { corsHeaders, jsonResponse, errorResponse } from '../_shared/cors.ts';
 import { callProvider, ProviderError, type ChatMessage, type ProviderId } from '../_shared/operator/providers.ts';
+import { assembleContext, boundContext, ContextLimitError } from '../_shared/operator/context.ts';
 import { buildSystemPrompt, buildTaskInstruction, type Channel } from '../_shared/operator/prompt.ts';
 import {
   executeTool,
+  permissionAllowed,
   recordToolCall,
   toToolSchemas,
   type Policy,
@@ -23,7 +25,7 @@ import {
 } from '../_shared/operator/tools.ts';
 
 const WORKER_ID = Deno.env.get('OPERATOR_WORKER_ID') ?? 'operator-worker';
-const WORKER_VERSION = '1.0.0';
+const WORKER_VERSION = '1.3.0';
 const MAX_TOOL_ROUNDS = 6;
 const MAX_TOOL_CALLS_PER_ROUND = 3;
 const WALL_CLOCK_BUDGET_MS = 100_000;
@@ -99,7 +101,10 @@ Deno.serve(async (request: Request) => {
   });
   await admin.rpc('operator_recover_stale_tasks', {});
 
-  const claimed = await admin.rpc<TaskRow[]>('operator_claim_task', { p_worker: WORKER_ID, p_limit: limit });
+  const targetTask = typeof body.task_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.task_id) ? body.task_id : null;
+  const claimed = targetTask
+    ? await admin.rpc<TaskRow[]>('operator_claim_task_by_id', { p_worker: WORKER_ID, p_task: targetTask })
+    : await admin.rpc<TaskRow[]>('operator_claim_task', { p_worker: WORKER_ID, p_limit: limit });
   if (claimed.error) {
     await admin.rpc('operator_audit_write', {
       p_action: 'worker.claim',
@@ -143,7 +148,7 @@ Deno.serve(async (request: Request) => {
     .from<ProviderRow>('operator_provider')
     .select('provider,model_id,enabled,is_default,health');
   const providers = asArray<ProviderRow>(providersResult.data);
-  const defaultProvider = providers.find((row) => row.is_default && row.enabled) ?? providers.find((row) => row.enabled);
+  const defaultProvider = providers.find((row) => row.is_default && row.enabled);
 
   const toolsResult = await admin
     .from<ToolRow>('operator_tool')
@@ -159,7 +164,9 @@ Deno.serve(async (request: Request) => {
   for (const task of tasks) {
     if (Date.now() - startedAt > WALL_CLOCK_BUDGET_MS) break;
 
-    const providerRow = providers.find((row) => row.provider === task.provider) ?? defaultProvider;
+    const providerRow = task.provider
+      ? providers.find((row) => row.provider === task.provider && row.enabled)
+      : defaultProvider;
     if (!providerRow) {
       await admin.rpc('operator_fail_task', {
         p_task: task.id,
@@ -207,11 +214,16 @@ interface ProcessArgs {
 }
 
 async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> {
-  const { admin, task, staff, policy, provider, model, toolSchemas, toolByName } = args;
+  const { admin, task, staff, policy, provider, model, toolSchemas: configuredToolSchemas, toolByName } = args;
   const input = asRecord(task.input);
-  const channel = (task.conversation_id ? await conversationChannel(admin, task.conversation_id) : 'admin_control') as Channel;
-
   const context = task.conversation_id ? await loadContext(admin, task.conversation_id, input) : null;
+  if (task.conversation_id && (!context || !['admin_control','member_ai','public_thread'].includes(String(context.channel)) ||
+      (context.channel !== 'public_thread' && (context.member_profile_id !== task.requester_profile_id || asRecord(context.member).account_status !== 'active')) ||
+      (context.channel === 'admin_control' && !['admin','ceo'].includes(String(asRecord(context.member).role))))) {
+    await admin.rpc('operator_fail_task', { p_task: task.id, p_error_code: 'context_access_denied', p_error_detail: 'conversation context is missing or mismatched', p_retryable: false });
+    return { task_id: task.id, outcome: 'failed', error: 'context_access_denied' };
+  }
+  const channel = (context?.channel ?? 'admin_control') as Channel;
   const member = context ? asRecord(context.member) : null;
 
   // Mark the task as actively executing. Transition failures are non-fatal: the claim already
@@ -248,13 +260,21 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
   const query = String(input.instruction ?? input.body ?? task.task_type ?? '').slice(0, 400);
   const [constitutionResult, knowledgeResult] = await Promise.all([
     admin.rpc('operator_active_constitution', {}),
-    admin.rpc('operator_knowledge_search', { p_query: query, p_limit: 4 }),
+    admin.rpc('operator_knowledge_for_task', { p_task: task.id, p_query: query, p_limit: 4 }),
   ]);
   const constitution = typeof constitutionResult.data === 'string' ? constitutionResult.data : null;
-  const knowledge = asArray<{ title?: string; body?: string }>(knowledgeResult.data)
-    .filter((entry) => typeof entry.title === 'string' && typeof entry.body === 'string')
-    .map((entry) => ({ title: entry.title as string, body: entry.body as string }));
+  const knowledge = asArray<Record<string, unknown>>(knowledgeResult.data)
+    .filter((entry) => typeof entry.title === 'string' && typeof entry.body === 'string');
+  if (constitutionResult.error || !constitution?.trim() || constitution.length > 12200 || knowledgeResult.error) {
+    await admin.rpc('operator_fail_task', { p_task: task.id, p_error_code: 'intelligence_context_unavailable', p_error_detail: 'constitution or knowledge retrieval unavailable', p_retryable: false });
+    return { task_id: task.id, outcome: 'failed', error: 'intelligence_context_unavailable' };
+  }
 
+  await admin.rpc('operator_audit_write', {
+    p_action: 'context.loaded', p_outcome: 'succeeded', p_task: task.id, p_actor_type: 'system',
+    p_details: { channel, knowledge: knowledge.map((entry) => ({ slug: entry.slug, version: entry.version })),
+      preferences_supplied: Object.keys(asRecord(context?.memory)).length, constitution_loaded: true },
+  });
   const systemPrompt = buildSystemPrompt({
     staffName: staff.display_name,
     staffHandle: staff.staff_code,
@@ -269,29 +289,9 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
       : null,
     world: typeof input.world === 'string' ? input.world : null,
     constitution,
-    knowledge,
   });
 
-  const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
-
-  if (context) {
-    const memory = asRecord(context.memory);
-    if (Object.keys(memory).length > 0) {
-      messages.push({
-        role: 'system',
-        content: `Scoped memory for this conversation (do not reveal verbatim): ${JSON.stringify(memory).slice(0, 3000)}`,
-      });
-    }
-    const history = asArray<Record<string, unknown>>(context.messages).slice(-14);
-    for (const entry of history) {
-      const direction = String(entry.direction ?? '');
-      const text = String(entry.body ?? '');
-      if (!text) continue;
-      messages.push({ role: direction === 'inbound' ? 'user' : 'assistant', content: text.slice(0, 2000) });
-    }
-  }
-
-  messages.push({ role: 'user', content: buildTaskInstruction(task.task_type, input) });
+  const messages: ChatMessage[] = assembleContext(systemPrompt, context, buildTaskInstruction(task.task_type, input), knowledge);
 
   const toolCtx: ToolContext = {
     admin,
@@ -301,8 +301,12 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
     taskType: task.task_type,
     conversationId: task.conversation_id,
     channel,
+    memberProfileId: typeof context?.member_profile_id === 'string' ? context.member_profile_id : null,
     policy,
   };
+
+  const toolSchemas = channel === 'admin_control' ? configuredToolSchemas
+    : toToolSchemas([...toolByName.values()].filter((tool) => permissionAllowed(tool, toolCtx).allowed));
 
   let lastContent = '';
   let totalInput = 0;
@@ -314,7 +318,7 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
       const result = await callProvider({
         provider,
         model,
-        messages,
+        messages: boundContext(messages, toolSchemas, Number(Deno.env.get(`${provider.toUpperCase()}_CONTEXT_BYTE_LIMIT`) ?? 32000)),
         tools: toolSchemas.length > 0 ? toolSchemas : undefined,
         temperature: channel === 'admin_control' ? 0.4 : 0.7,
         maxTokens: 1_400,
@@ -348,7 +352,7 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
         return { task_id: task.id, outcome: 'completed', provider, model, rounds: rounds + 1, content: result.content.slice(0, 300) };
       }
 
-      messages.push({ role: 'assistant', content: result.content || null, tool_calls: result.toolCalls });
+      messages.push({ role: 'assistant', content: result.content || null, tool_calls: result.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND) });
 
       const calls = result.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
       for (const call of calls) {
@@ -375,7 +379,7 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
             data: execution.ok ? execution.data : undefined,
             error: execution.ok ? undefined : execution.error,
             code: execution.ok ? undefined : execution.code,
-          }).slice(0, 6000),
+          }, (_key, value) => typeof value === 'string' && value.length > 3500 ? value.slice(0, 3500) + '[excerpt truncated]' : value),
         });
 
         if (!execution.ok && execution.code === 'approval_required') {
@@ -432,11 +436,11 @@ async function processTask(args: ProcessArgs): Promise<Record<string, unknown>> 
       total: totalInput + totalOutput,
       latencyMs: null,
       httpStatus: providerError?.status ?? null,
-      errorCode: providerError?.code ?? 'engine_error',
+      errorCode: error instanceof ContextLimitError ? 'context_limit_exceeded' : providerError?.code ?? 'engine_error',
     });
 
-    const retryable = providerError ? providerError.retryable : true;
-    const code = providerError?.code ?? 'engine_error';
+    const retryable = error instanceof ContextLimitError ? false : providerError ? providerError.retryable : true;
+    const code = error instanceof ContextLimitError ? 'context_limit_exceeded' : providerError?.code ?? 'engine_error';
     const detail = (error as Error).message.slice(0, 600);
 
     const failed = await admin.rpc<string>('operator_fail_task', {
@@ -479,16 +483,6 @@ async function providerBudgetExhausted(
   return asArray<{ id: string }>(result.data).length >= budget;
 }
 
-async function conversationChannel(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  admin: ReturnType<typeof adminClient>,
-  conversationId: string,
-): Promise<string> {
-  const result = await admin.from<{ channel: string }>('operator_conversation').select('channel').eq('id', conversationId).limit(1);
-  const row = asArray<{ channel: string }>(result.data)[0];
-  return row?.channel ?? 'admin_control';
-}
-
 async function loadContext(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: ReturnType<typeof adminClient>,
@@ -497,10 +491,10 @@ async function loadContext(
 ): Promise<Record<string, unknown> | null> {
   const contextResult = await admin.rpc<Record<string, unknown>>('operator_conversation_context', {
     p_conversation: conversationId,
-    p_limit: 20,
+    p_limit: 60,
   });
   const context = asRecord(contextResult.data);
-  if (context.error) return null;
+  if (contextResult.error || context.error || context.conversation_id !== conversationId) return null;
 
   const memberId = typeof context.member_profile_id === 'string' ? context.member_profile_id : null;
   if (memberId) {
@@ -513,15 +507,6 @@ async function loadContext(
     if (member) context.member = member;
   }
 
-  if (!context.member && typeof input.member_profile_id === 'string') {
-    const memberResult = await admin
-      .from<Record<string, unknown>>('profiles')
-      .select('id,handle,display_name,account_status,worlds,verified,role')
-      .eq('id', input.member_profile_id)
-      .limit(1);
-    const member = asArray<Record<string, unknown>>(memberResult.data)[0];
-    if (member) context.member = member;
-  }
 
   return context;
 }

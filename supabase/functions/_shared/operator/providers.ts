@@ -127,15 +127,19 @@ export async function providerCredential(provider: ProviderId): Promise<string> 
  * Classify a provider failure. A 403 with an HTML body is an edge/WAF block, not a credential
  * problem: treating it as `auth_error` permanently failed good tasks (and hid the real cause).
  */
-function classifyStatus(status: number, body: string): { code: string; retryable: boolean } {
+export function classifyStatus(status: number, body: string): { code: string; retryable: boolean } {
   const looksLikeHtml = /^\s*</.test(body);
+  if (status === 400 && /context[_ ]length|context[_ ]window|maximum context|too many tokens/i.test(body)) return { code: 'context_limit_exceeded', retryable: false };
   if (status === 401) return { code: 'auth_error', retryable: false };
   if (status === 403) {
     return looksLikeHtml
       ? { code: 'provider_blocked', retryable: true }
-      : { code: 'auth_error', retryable: false };
+      : { code: 'permission_denied', retryable: false };
   }
   if (status === 402) return { code: 'billing_error', retryable: false };
+  if (/insufficient_quota|billing_hard_limit|credit.*exhaust/i.test(body)) return { code: 'billing_error', retryable: false };
+  if (status === 404) return { code: 'model_unavailable', retryable: false };
+  if (status === 422) return { code: 'unsupported_capability', retryable: false };
   if (status === 429) return { code: 'rate_limited', retryable: true };
   if (status === 408 || status === 504) return { code: 'timeout', retryable: true };
   if (status >= 500) return { code: 'provider_unavailable', retryable: true };
@@ -174,6 +178,7 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
   let response: Response;
+  let text: string;
   try {
     response = await fetch(`${runtime.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -185,6 +190,8 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+    // Keep the deadline active while reading the body, not just response headers.
+    text = await response.text();
   } catch (error) {
     clearTimeout(timer);
     const aborted = error instanceof Error && error.name === 'AbortError';
@@ -199,7 +206,6 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
   clearTimeout(timer);
   const latencyMs = Date.now() - startedAt;
 
-  const text = await response.text().catch(() => '');
   if (!response.ok) {
     const { code, retryable } = classifyStatus(response.status, text);
     throw new ProviderError(
@@ -222,6 +228,12 @@ export async function callProvider(request: ChatRequest): Promise<ChatResult> {
   const first = choices[0] ?? {};
   const message = (first.message ?? {}) as Record<string, unknown>;
   const rawToolCalls = Array.isArray(message.tool_calls) ? (message.tool_calls as ToolCall[]) : [];
+  if (!choices.length || (typeof message.content !== 'string' && !rawToolCalls.length) ||
+      rawToolCalls.some((call) => !call || call.type !== 'function' ||
+        typeof call.id !== 'string' || !call.id || typeof call.function?.name !== 'string' ||
+        !call.function.name || typeof call.function.arguments !== 'string')) {
+    throw new ProviderError(request.provider, 'invalid completion message', response.status, 'bad_response', false);
+  }
   const usageRaw = (payload.usage ?? {}) as Record<string, number>;
   const input = Number(usageRaw.prompt_tokens ?? 0) || 0;
   const output = Number(usageRaw.completion_tokens ?? 0) || 0;
@@ -256,12 +268,20 @@ export async function probeProvider(provider: ProviderId, model: string): Promis
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: controller.signal,
       });
+      if (response.ok) {
+        const payload = await response.json();
+        if (!Array.isArray(payload?.data)) return { ok: false, status: response.status, detail: 'bad_response: missing model list' };
+        const listed = payload.data.some((entry: { id?: unknown }) => entry?.id === model);
+        return { ok: listed, status: response.status, detail: listed
+          ? `model listed (${model}); generation and capabilities unverified`
+          : `model_unavailable: ${model} is not listed` };
+      }
+      const text = (await response.text()).slice(0, 160);
+      const failure = classifyStatus(response.status, text);
+      return { ok: false, status: response.status, detail: `${failure.code}: HTTP ${response.status}` };
     } finally {
       clearTimeout(timer);
     }
-    if (response.ok) return { ok: true, status: response.status, detail: `models ok (${model})` };
-    const text = (await response.text().catch(() => '')).slice(0, 160);
-    return { ok: false, status: response.status, detail: text || `HTTP ${response.status}` };
   } catch (error) {
     if (error instanceof ProviderError) return { ok: false, status: error.status, detail: `${error.code}: ${error.message.slice(0, 160)}` };
     return { ok: false, status: 0, detail: (error as Error).message.slice(0, 160) };

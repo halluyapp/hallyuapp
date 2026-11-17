@@ -9,7 +9,7 @@
 | 2 | Backend foundation: 19 `operator_*` tables, RLS, functions, seed | ✅ applied live (migrations 79–81) |
 | 3 | Provider adapters: isolated APINEX + Coarena, no fallback | ✅ done |
 | 4 | Central intelligence engine + model-selection controller | ✅ done (`operator-worker`) |
-| 5 | Secure tool gateway: 23 tools, schema/permission/rate-limit/audit | ✅ done (`tools.ts`) |
+| 5 | Secure tool gateway: 24 tools, schema/permission/rate-limit/audit | ✅ done (`tools.ts`) |
 | 6 | 24/7 operations: event triggers, durable queue, pg_cron scheduler, recovery, health | ✅ done (migrations 82–83) |
 | 7 | Premium Control Centre: 10 screens wired to real endpoints | ✅ done (`OperatorControlCentre.tsx`) |
 | 8 | Validation: type contract, surface checks, acceptance verifier | ✅ done (`scripts/verify-operator.mjs`) |
@@ -34,7 +34,7 @@ tasks, claims up to five tasks with `FOR UPDATE SKIP LOCKED`, builds a channel-a
 replays scoped memory and recent history, then runs a bounded tool loop (6 rounds, 3 calls/round,
 100 s wall clock). It records usage on every provider call and audits every completion/failure.
 
-**Phase 5 — tool gateway.** Each of the 23 tools has a JSON schema, a permission, a read-only flag,
+**Phase 5 — tool gateway.** Each of the 24 tools has a JSON schema, a permission, a read-only flag,
 an approval flag, and a per-minute rate limit. `executeTool` validates, authorises, rate-limits, and
 times out. `recordToolCall` writes the real `operator_tool_call` row.
 

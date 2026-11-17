@@ -15,6 +15,7 @@ import { SUPABASE_ANON_KEY, SUPABASE_URL } from '../../constants/keys';
 import { ensureBackendSessionToken } from './client';
 
 export interface VoiceStatus {
+  contract_version?: number;
   configured: boolean;
   stt_ready?: boolean;
   tts_ready?: boolean;
@@ -47,7 +48,7 @@ export class VoiceError extends Error {
   }
 }
 
-async function callVoice<T>(payload: Record<string, unknown>): Promise<T> {
+async function callVoice<T>(payload: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     throw new VoiceError('This build has no backend connection configured.', 0);
   }
@@ -58,6 +59,7 @@ async function callVoice<T>(payload: Record<string, unknown>): Promise<T> {
 
   const response = await fetch(`${SUPABASE_URL}/functions/v1/operator-voice`, {
     method: 'POST',
+    signal,
     headers: {
       'Content-Type': 'application/json',
       apikey: SUPABASE_ANON_KEY,
@@ -82,39 +84,21 @@ async function callVoice<T>(payload: Record<string, unknown>): Promise<T> {
     throw new VoiceError(message, response.status);
   }
 
-  return (parsed ?? ({} as T)) as T;
+  if (!parsed) throw new VoiceError('Invalid voice response.', 502);
+  return parsed as T;
 }
 
 export const voiceApi = {
-  /** Whether the server holds the Gemini voice secret. Never returns the key itself. */
   status: () => callVoice<VoiceStatus>({ action: 'status' }),
-  /** Status plus a real round-trip to Gemini, so "configured" is proven, not assumed. */
-  healthProbe: () => callVoice<VoiceStatus>({ action: 'status', probe: true }),
-  transcribe: (audioBase64: string, mimeType: string) =>
-    callVoice<{ ok: boolean; transcript?: string; voice_model?: string; error?: string }>({
-      action: 'transcribe',
-      audio_base64: audioBase64,
-      mime_type: mimeType,
-    }),
-  /** Spoken reply. Degrades honestly: tts_synthesized=false means read the text instead. */
-  synthesize: (text: string, voiceName?: string) =>
-    callVoice<{
-      ok: boolean;
-      tts_synthesized: boolean;
-      degraded_to_text: boolean;
-      audio_base64: string | null;
-      audio_mime_type: string | null;
-      voice_model?: string;
-      fallback_reason?: string | null;
-    }>({ action: 'synthesize', text, voice_name: voiceName }),
-  /** Transcribe (or accept a transcript) and hand the turn to the same Nari DM. */
-  turn: (input: { audioBase64?: string; mimeType?: string; transcript?: string }) =>
-    callVoice<VoiceTurnResponse>({
-      action: 'voice_turn',
-      audio_base64: input.audioBase64,
-      mime_type: input.mimeType,
-      transcript: input.transcript,
-    }),
+  transcribe: (audioBase64: string, mimeType: string, signal?: AbortSignal) =>
+    callVoice<{ ok: boolean; transcript?: string; voice_model?: string }>({
+      action: 'transcribe', audio_base64: audioBase64, mime_type: mimeType,
+    }, signal),
+  synthesize: (messageId: string, chunkIndex = 0, signal?: AbortSignal) =>
+    callVoice<{ ok: boolean; message_id: string; chunk_index: number; chunk_count: number;
+      audio_base64: string; audio_mime_type: string }>({
+      action: 'synthesize', message_id: messageId, chunk_index: chunkIndex,
+    }, signal),
 };
 
 // ── Recording ────────────────────────────────────────────────────────────────────────────────
@@ -129,6 +113,9 @@ interface WebRecorderState {
   startedAt: number;
   mimeType: string;
 }
+
+let recordingTimer: ReturnType<typeof setTimeout> | null = null;
+function clearRecordingTimer() { if (recordingTimer) clearTimeout(recordingTimer); recordingTimer = null; }
 
 let nativeRecording: Audio.Recording | null = null;
 let nativeStartedAt = 0;
@@ -148,12 +135,17 @@ export async function startVoiceNote(): Promise<void> {
       throw new VoiceError('This browser cannot record audio.', 501);
     }
     const stream = await nav.mediaDevices.getUserMedia({ audio: true });
-    const recorder = new MediaRecorderCtor(stream);
+    let recorder: any;
+    try { recorder = new MediaRecorderCtor(stream); } catch (error) {
+      stream.getTracks().forEach((track: any) => track.stop()); throw error;
+    }
     const chunks: any[] = [];
     recorder.ondataavailable = (event: any) => {
       if (event?.data?.size) chunks.push(event.data);
     };
-    recorder.start();
+    try { recorder.start(); } catch (error) {
+      stream.getTracks().forEach((track: any) => track.stop()); throw error;
+    }
     webRecorder = {
       recorder,
       stream,
@@ -161,6 +153,7 @@ export async function startVoiceNote(): Promise<void> {
       startedAt: Date.now(),
       mimeType: String(recorder.mimeType || 'audio/webm'),
     };
+    recordingTimer = setTimeout(() => void cancelVoiceNote(), 60000);
     return;
   }
 
@@ -170,10 +163,17 @@ export async function startVoiceNote(): Promise<void> {
   }
   await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
   const recording = new Audio.Recording();
-  await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-  await recording.startAsync();
+  try {
+    await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+    await recording.startAsync();
+  } catch (error) {
+    await recording.stopAndUnloadAsync().catch(() => {});
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
+    throw error;
+  }
   nativeRecording = recording;
   nativeStartedAt = Date.now();
+  recordingTimer = setTimeout(() => void cancelVoiceNote(), 60000);
 }
 
 function mimeTypeFromUri(uri: string): string {
@@ -198,15 +198,18 @@ function base64FromBytes(bytes: Uint8Array): string {
 }
 
 export async function stopVoiceNote(): Promise<VoiceClip> {
+  clearRecordingTimer();
   if (webRecorder) {
     const { recorder, stream, chunks, startedAt, mimeType } = webRecorder;
     webRecorder = null;
-    const stopped = new Promise<void>((resolve) => {
-      recorder.onstop = () => resolve();
-    });
-    recorder.stop();
-    await stopped;
-    stream?.getTracks?.().forEach((track: any) => track.stop());
+    try {
+      const stopped = new Promise<void>((resolve, reject) => {
+        recorder.onstop = () => resolve();
+        recorder.onerror = () => reject(new VoiceError('Recording failed.', 422));
+      });
+      recorder.stop();
+      await stopped;
+    } finally { stream?.getTracks?.().forEach((track: any) => track.stop()); }
 
     const BlobCtor = (globalThis as any).Blob;
     const blob = new BlobCtor(chunks, { type: mimeType });
@@ -222,13 +225,13 @@ export async function stopVoiceNote(): Promise<VoiceClip> {
   const recording = nativeRecording;
   if (!recording) throw new VoiceError('No voice note is recording.', 409);
   nativeRecording = null;
-  await recording.stopAndUnloadAsync();
-  await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+  try { await recording.stopAndUnloadAsync(); }
+  finally { await Audio.setAudioModeAsync({ allowsRecordingIOS: false }); }
   const uri = recording.getURI();
   if (!uri) throw new VoiceError('The recording produced no audio.', 422);
-  const audioBase64 = await FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
+  let audioBase64: string;
+  try { audioBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }); }
+  finally { await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {}); }
   if (!audioBase64) throw new VoiceError('The recording produced no audio.', 422);
   return {
     audioBase64,
@@ -238,6 +241,7 @@ export async function stopVoiceNote(): Promise<VoiceClip> {
 }
 
 export async function cancelVoiceNote(): Promise<void> {
+  clearRecordingTimer();
   if (webRecorder) {
     const { recorder, stream } = webRecorder;
     webRecorder = null;
@@ -257,5 +261,7 @@ export async function cancelVoiceNote(): Promise<void> {
   } catch {
     // already unloaded
   }
+  const uri = recording.getURI();
+  if (uri) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
   await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
 }

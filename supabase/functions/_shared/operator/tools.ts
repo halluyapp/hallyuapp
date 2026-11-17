@@ -42,6 +42,7 @@ export interface ToolContext {
   taskType: string;
   conversationId: string | null;
   channel: string;
+  memberProfileId?: string | null;
   policy: Policy;
 }
 
@@ -219,7 +220,7 @@ const handlers: Record<string, Handler> = {
   },
 
   'message.reply': async (ctx, input) => {
-    const conversationId = str(input, 'conversation_id') || ctx.conversationId || '';
+    const conversationId = boundConversationId(ctx, input) ?? '';
     const body = str(input, 'body').trim();
     if (!conversationId) return fail('missing_conversation', 'no conversation id available');
     if (!body) return fail('empty_body', 'reply body is empty');
@@ -532,7 +533,9 @@ const handlers: Record<string, Handler> = {
           snippet: String(row.snippet ?? '').replace(/<[^>]+>/g, '').trim(),
           url: `https://en.wikipedia.org/wiki/${encodeURIComponent((row.title as string).replace(/ /g, '_'))}`,
         }));
-      return { ok: true, data: { source: 'wikipedia', query, results } };
+      return { ok: true, data: { source: 'wikipedia', query, results, retrieved_at: new Date().toISOString(),
+        trust: 'untrusted_external_content', publication_date: null, event_date: null,
+        limitation: 'Search snippets are not verified news or evidence of an event date.' } };
     } catch (error) {
       return fail('web_search_failed', (error as Error).message.slice(0, 200));
     } finally {
@@ -541,17 +544,21 @@ const handlers: Record<string, Handler> = {
   },
 
   'research.save': async (ctx, input) => {
+    const sourceUrl = str(input, 'source_url', '').trim();
+    try { if (new URL(sourceUrl).protocol !== 'https:') return fail('source_required', 'a source HTTPS URL is required'); }
+    catch { return fail('source_required', 'a source HTTPS URL is required'); }
     const inserted = await restInsert('operator_research_item', {
       topic: str(input, 'topic'),
       headline: str(input, 'headline'),
       summary: str(input, 'summary', '') || null,
       source_name: str(input, 'source_name', '') || null,
-      source_url: str(input, 'source_url', '') || null,
-      verification: str(input, 'verification', 'unverified'),
+      source_url: sourceUrl,
+      verification: 'unverified',
       world: str(input, 'world', '') || null,
     });
     if (!inserted.ok) return fail('save_failed', inserted.error ?? 'save failed');
-    return { ok: true, data: { item: firstRow(inserted.data), verified: true } };
+    return { ok: true, data: { item: firstRow(inserted.data), saved: true, verified: false,
+      note: 'Storage success is not fact verification. Preserve source links and obtain configured approval before publication.' } };
   },
 
   'campaign.create': async (ctx, input) => {
@@ -734,7 +741,15 @@ const READ_ONLY_PERMISSIONS = new Set([
 ]);
 
 export function permissionAllowed(tool: ToolRow, ctx: ToolContext): { allowed: boolean; reason?: string } {
-  if (tool.approval_required) {
+  // A model in a member/public conversation cannot acquire operator authority via prompt injection.
+  const conversationalTools = new Set(['conversation.context', 'message.reply', 'research.search', 'research.web']);
+  if (ctx.channel !== 'admin_control' && !conversationalTools.has(tool.name) &&
+      !(ctx.channel === 'member_ai' && ['member.get', 'member.status'].includes(tool.name))) {
+    return { allowed: false, reason: 'privileged_tool_requires_admin_channel' };
+  }
+  if (tool.approval_required || ctx.policy.approval_required?.includes(tool.name) ||
+      ctx.policy.approval_required?.includes(tool.permission) ||
+      (tool.name === 'post.publish' && ctx.policy.autonomy?.require_approval_for_publish === true)) {
     return { allowed: false, reason: 'approval_required' };
   }
   if (READ_ONLY_PERMISSIONS.has(tool.permission)) return { allowed: true };
@@ -793,7 +808,7 @@ export async function rateLimitExceeded(ctx: ToolContext, tool: ToolRow): Promis
 function boundConversationId(ctx: ToolContext, input: Record<string, unknown>): string | null {
   const supplied = str(input, 'conversation_id').trim();
   if (supplied && ctx.conversationId && supplied !== ctx.conversationId) return null;
-  return ctx.conversationId ?? (supplied || null);
+  return ctx.conversationId ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +870,13 @@ export async function executeTool(
     return finish(fail(permission.reason === 'approval_required' ? 'approval_required' : 'permission_denied', permission.reason ?? 'not permitted'));
   }
 
+  if (['conversation.context', 'message.reply'].includes(tool.name) && !boundConversationId(ctx, input)) {
+    return finish(fail('conversation_not_bound', 'conversation does not match this task'));
+  }
+  if (ctx.channel !== 'admin_control' && ['member.get', 'member.status'].includes(tool.name) &&
+      (!ctx.memberProfileId || input.profile_id !== ctx.memberProfileId)) {
+    return finish(fail('member_not_bound', 'profile does not match this conversation'));
+  }
   if (await rateLimitExceeded(ctx, tool)) {
     return finish(fail('rate_limited', `${tool.name} exceeded its per-task rate limit`));
   }

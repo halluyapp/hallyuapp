@@ -12,7 +12,7 @@ import { VideoAccessSheet } from '../../components/video/VideoAccessSheet';
 import { VerificationApplySheet } from '../../components/recognition/VerificationApplyModal';
 import { VerificationSeal } from '../../components/recognition/VerificationSeal';
 import { space } from '../../constants/theme';
-import { hasModeratorAccess } from '../../lib/roles';
+import { hasAdminAccess, hasModeratorAccess } from '../../lib/roles';
 import { getInstalledVersionLabel } from '../../lib/appUpdater';
 import { useAuth } from '../../lib/auth';
 import { useApp } from '../../lib/hooks';
@@ -122,6 +122,10 @@ export default function Settings() {
           </SettingsGroup>
         ) : null}
 
+        {signedIn && <SettingsGroup title="Nari intelligence">
+          <SettingsRow icon="bookmark-outline" label="Nari memory" detail="Review, correct or forget saved preferences" onPress={() => router.push('/settings/nari-memory')} />
+          {hasAdminAccess(me.role) && <SettingsRow icon="library-outline" label="Nari knowledge & constitution" detail="Versioned facts, sources and organisational policy" onPress={() => router.push('/settings/nari-knowledge')} />}
+        </SettingsGroup>}
         <SettingsGroup title={t('settings.account')}>
           {signedIn ? (
             <>

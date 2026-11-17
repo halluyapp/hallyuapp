@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SpokenMessage } from '../../components/operator/SpokenMessage';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -51,6 +53,20 @@ export default function DirectMessageThreadScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [voicePhase, setVoicePhase] = useState<'idle' | 'recording' | 'sending'>('idle');
+  const voiceRequest = useRef<AbortController | null>(null);
+  const [spokenEnabled, setSpokenEnabled] = useState(false);
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void AsyncStorage.getItem(`nari-spoken:${me.id}`).then((value) => { if (active) setSpokenEnabled(value === 'true'); });
+    if (isOperator) void voiceApi.status().then((status) => { if (active) setVoiceAvailable(status.configured && status.contract_version === 2); }).catch(() => {});
+    return () => { active = false; };
+  }, [isOperator, me.id]);
+  useEffect(() => {
+    if (voicePhase !== 'recording') return;
+    const timer = setTimeout(() => { void cancelVoiceNote(); setVoicePhase('idle'); toast.show({ message: 'Recording limit reached. Please record a shorter note.', tone: 'danger' }); }, 59000);
+    return () => clearTimeout(timer);
+  }, [voicePhase, toast]);
   const listRef = useRef<FlatList<DirectMessage>>(null);
 
   // Nari Model & Provider selection
@@ -219,9 +235,11 @@ export default function DirectMessageThreadScreen() {
     haptic.light();
     try {
       const clip = await stopVoiceNote();
-      const result = await voiceApi.turn({ audioBase64: clip.audioBase64, mimeType: clip.mimeType });
+      voiceRequest.current = new AbortController();
+      const result = await voiceApi.transcribe(clip.audioBase64, clip.mimeType, voiceRequest.current.signal);
       if (result.transcript) {
-        toast.show({ message: `Heard: ${result.transcript}`, tone: 'success' });
+        setDraft(result.transcript);
+        toast.show({ message: 'Transcript ready. Edit it, then tap Send.', tone: 'success' });
       }
       await loadThread();
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
@@ -236,11 +254,13 @@ export default function DirectMessageThreadScreen() {
   };
 
   const handleCancelVoice = async () => {
+    voiceRequest.current?.abort();
     await cancelVoiceNote();
     setVoicePhase('idle');
   };
 
   useEffect(() => () => {
+    voiceRequest.current?.abort();
     void cancelVoiceNote();
   }, []);
 
@@ -387,6 +407,7 @@ export default function DirectMessageThreadScreen() {
                     </Text>
                   )}
                 </View>
+                {!mine && isOperator && spokenEnabled && voiceAvailable && <SpokenMessage messageId={m.id} />}
                 <Text variant="caption" tone="tertiary" style={{ fontSize: 10, marginHorizontal: 4 }}>
                   {timeAgo(m.createdAt)}
                 </Text>
@@ -405,6 +426,10 @@ export default function DirectMessageThreadScreen() {
           </View>
         ) : null}
 
+        {isOperator && voiceAvailable && <Pressable accessibilityRole="switch" accessibilityState={{ checked: spokenEnabled }} accessibilityLabel="Spoken response controls" onPress={() => {
+          setSpokenEnabled(!spokenEnabled); void AsyncStorage.setItem(`nari-spoken:${me.id}`, String(!spokenEnabled));
+        }}><Text variant="caption">Spoken responses: {spokenEnabled ? 'on' : 'off'} · Voice notes, not live calls</Text></Pressable>}
+        {voicePhase === 'sending' && <Pressable onPress={() => void handleCancelVoice()} accessibilityRole="button"><Text variant="caption">Cancel transcription</Text></Pressable>}
         {voicePhase === 'recording' ? (
           <View style={styles.voiceBanner}>
             <Ionicons name="mic" size={14} color={colors.danger} />
@@ -454,7 +479,7 @@ export default function DirectMessageThreadScreen() {
           {isOperator ? (
             <IconButton
               icon={voicePhase === 'recording' ? 'stop' : 'mic-outline'}
-              label={voicePhase === 'recording' ? 'Send voice note to Nari' : 'Send a voice note to Nari'}
+              label={voicePhase === 'recording' ? 'Transcribe voice note' : 'Record a voice note for Nari'}
               tone={voicePhase === 'recording' ? 'danger' : 'default'}
               filled
               disabled={voicePhase === 'sending'}

@@ -3142,12 +3142,116 @@ export type Database = {
         };
         Relationships: [];
       };
+      operator_acceptance_run: {
+        Row: {
+          id: string;
+          state: 'running' | 'finished' | 'failed';
+          fixture_user_ids: string[];
+          report: Json | null;
+          created_at: string;
+          finished_at: string | null;
+        };
+        Insert: {
+          id: string;
+          state: 'running' | 'finished' | 'failed';
+          fixture_user_ids?: string[];
+          report?: Json | null;
+          created_at?: string;
+          finished_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          state?: 'running' | 'finished' | 'failed';
+          fixture_user_ids?: string[];
+          report?: Json | null;
+          created_at?: string;
+          finished_at?: string | null;
+        };
+        Relationships: [];
+      };
+      operator_voice_request: {
+        Row: {
+          id: string;
+          actor_id: string;
+          action: 'transcribe' | 'synthesize';
+          model: string;
+          outcome: 'reserved' | 'succeeded' | 'failed';
+          usage: Json | null;
+          error_code: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          actor_id: string;
+          action: 'transcribe' | 'synthesize';
+          model: string;
+          outcome?: 'reserved' | 'succeeded' | 'failed';
+          usage?: Json | null;
+          error_code?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          actor_id?: string;
+          action?: 'transcribe' | 'synthesize';
+          model?: string;
+          outcome?: 'reserved' | 'succeeded' | 'failed';
+          usage?: Json | null;
+          error_code?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      operator_knowledge_revision: {
+        Row: {
+          id: string;
+          knowledge_id: string;
+          version: number;
+          title: string;
+          body: string;
+          source_url: string | null;
+          visibility: 'public' | 'staff';
+          tags: string[];
+          is_active: boolean;
+          edited_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          knowledge_id: string;
+          version: number;
+          title: string;
+          body: string;
+          source_url?: string | null;
+          visibility: 'public' | 'staff';
+          tags: string[];
+          is_active: boolean;
+          edited_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          knowledge_id?: string;
+          version?: number;
+          title?: string;
+          body?: string;
+          source_url?: string | null;
+          visibility?: 'public' | 'staff';
+          tags?: string[];
+          is_active?: boolean;
+          edited_by?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       operator_knowledge: {
         Row: {
           id: string;
           slug: string;
           title: string;
           body: string;
+          visibility: 'public' | 'staff';
+          source_url: string | null;
           tags: string[];
           world: string | null;
           version: number;
@@ -3160,6 +3264,8 @@ export type Database = {
           slug: string;
           title: string;
           body: string;
+          visibility?: 'public' | 'staff';
+          source_url?: string | null;
           tags?: string[];
           world?: string | null;
           version?: number;
@@ -3172,6 +3278,8 @@ export type Database = {
           slug?: string;
           title?: string;
           body?: string;
+          visibility?: 'public' | 'staff';
+          source_url?: string | null;
           tags?: string[];
           world?: string | null;
           version?: number;
@@ -3913,6 +4021,30 @@ export type Database = {
     };
     Views: Record<never, never>;
     Functions: {
+      operator_my_memory: {
+        Args: { p_key?: string | null; p_value?: string | null; p_delete?: boolean };
+        Returns: Json;
+      };
+      operator_knowledge_edit: {
+        Args: { p_slug: string; p_title: string; p_body: string; p_source_url: string | null; p_visibility: string; p_tags: string[]; p_expected_version: number; p_active?: boolean };
+        Returns: number;
+      };
+      operator_constitution_publish: {
+        Args: { p_version: string; p_body: string };
+        Returns: string;
+      };
+      operator_knowledge_for_task: {
+        Args: { p_task: string; p_query: string; p_limit?: number };
+        Returns: { slug: string; title: string; body: string; version: number; source_url: string | null; updated_at: string; score: number }[];
+      };
+      operator_memory_expire: {
+        Args: Record<string, never>;
+        Returns: number;
+      };
+      operator_voice_reserve: {
+        Args: { p_actor: string; p_action: string; p_model: string };
+        Returns: string;
+      };
       airing_titles: {
         Args: { p_limit?: number; p_offset?: number; p_world?: string };
         Returns: Json[];

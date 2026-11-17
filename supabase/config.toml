@@ -149,3 +149,7 @@ verify_jwt = true
 [db.seed]
 enabled = true
 sql_paths = ["./seed.sql"]
+
+# Session JWT is verified by PostgREST inside the handler (GoTrue and custom OAuth).
+[functions.operator-voice]
+verify_jwt = false
