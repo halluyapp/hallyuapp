@@ -217,3 +217,29 @@ production to make a test pass.
 
 Stage 3 remains incomplete pending full live reasoning and browser acceptance.
 Stages 4–5 are not claimed complete.
+
+### Final switch acceptance — 2026-11-17 (supersedes pending entries above)
+
+- Frontend `dpl_CaYcKt5rdFzjGEZ1hNEtBmW67BWt` is **READY / PROMOTED**,
+  serving `2f0c6d9` at https://hallyuapp.vercel.app.
+- GitHub run **44050027798**, commit `ee4b331`: **Explicit Nari deployed UI
+  acceptance PASS**, fixture cleanup PASS, full static/type/SQL/runtime gate PASS.
+  Real 360×800 browser checked email sign-in, memory save/reload/correct/delete,
+  member rejection from knowledge editing, admin save and revision rendering.
+  The overall workflow failed later during Pages export; it is not a green deployment run.
+- Backend run **c8a3ca17-6491-47bc-a3d8-7ae93ebd47b1**, pg_net response **712**:
+  HTTP 200, actual Coarena/gpt-6-luna worker completed; saved preference reply
+  was `thriller`. All four reasoning evaluations passed: saved preference,
+  sourced features, unsupported statistics, retrieval injection. Identity,
+  cross-user memory isolation, correction/deletion, knowledge access/revisions/
+  conflict checks, active constitution, loaded context, fixture cleanup passed.
+- Earlier two v16 malformed-response failures remain valid reliability findings;
+  a later passing acceptance run does not establish an error-free upstream SLA.
+  Provider validation remains fail-closed; no fallback or invented replies added.
+- Temporary `operator-acceptance` endpoint removed after the successful run.
+- Local `npm run check` passed; local Expo Pages-path export and HTML enhancement
+  also passed. CI Pages export failure is not reproduced locally and is unresolved.
+
+This closes the model-switch/browser-key-dependency acceptance work. It does not
+claim full five-stage delivery: live voice/device acceptance, full-duplex voice,
+and the remaining Stage 4–5 work are not completed by this change.
