@@ -151,3 +151,45 @@ Scheduler release follow-up:
   by browser tests. The broader workflow was still running at this checkpoint;
   these targeted results do not assert its overall outcome. Do not count the
   first old-bundle browser attempt as a scheduler UI pass.
+
+
+## Stage 4 integrated release evidence — 2026-11-17
+
+- `npm run check`: PASS after final changes (`/tmp/stage4-final-check.log`);
+  Stage4 suite **34 passed**, including all 27 schema/gateway tools, all 21
+  disabled aliases, atomic approvals, ballot/scheduler SQL, specialist bounds and
+  delivery claim revalidation. Transport is mocked in the 27-tool gateway suite;
+  local PostgreSQL tests use PGlite with explicit schema fixtures.
+- Existing Supabase project: migrations 104–108 successfully applied.
+- `scripts/ci/stage4-transactional-acceptance.sql`: real-schema rollback PASS:
+  monthly ballot identity/privacy/vote update/replay/closure/report; admin status;
+  stale-target refusal and single-use exact approval; notification opt-out/block/
+  cap/dedup/quiet hours. Fixtures rolled back and absence asserted.
+- `scripts/ci/stage4-atomic-actions-acceptance.sql`: production rollback PASS for
+  ten atomic approved action branches; final deleted post, suspended+banned
+  fixture member and two scheduled occurrences verified, all rolled back.
+- Worker 18 deployment ACTIVE, immutable 3e42676 bundle digest recorded in inventory.
+  Real provider acceptance `dcd767cb-0369-4844-a9a5-cc364cb555d3`: completed operations
+  specialist and orchestrator, Coarena/gpt-6-luna, two successful usage records
+  (2500 + 4206 tokens), validated depth-one draft, zero tool calls. No fallback.
+  Isolated task/profile deleted, audit/usage retained; ledger cleanup PASS.
+- Atomic replay acceptance `b6f45cb3-81af-4dce-b9c3-8e08e84f1389`: pg_net 732/733,
+  HTTP200, campaign.schedule completed with two future occurrences, consumed
+  grant, zero provider calls; second wake claimed zero. Only fixtures deleted,
+  ledger cleanup PASS. Explicit authenticated wake was used for deterministic
+  acceptance; this alone is not proof of every automatic dispatch path.
+- Vercel `dpl_EZ6kv14espy1KApMTRobUjzuhpw5`: READY/PROMOTED 3e42676.
+- GitHub browser run **44077058310** against production: targeted Nari deployed UI
+  step PASS; fixture cleanup step PASS. Includes member denial of live status,
+  monthly-ballot exact launch review (not publication), persisted aggregate report,
+  cancellation and real admin status, plus prior approval/scheduler regressions.
+  Overall broader workflow was still running when these targeted results were read.
+
+### Remaining verification / unavailable scope
+
+Not a blanket Stage4 completion certificate: real-backend end-to-end acceptance
+for each of the 27 individual tools, physical-device external push delivery, and
+all race/failure combinations are not established. The 21 retired aliases are
+explicitly not implemented. Draft-only specialists do not independently execute
+tools. Stage5 remains pending. No production public test announcement or push was
+sent by the tests above; rollback tests do not establish external delivery.

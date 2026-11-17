@@ -7,7 +7,7 @@ Nari's enabled state. `operator_campaign_save` is an authenticated RPC: it requi
 an active administrator, applies server-side length/kind/date/timezone validation,
 locks the current record and checks an expected version before updating it.
 
-The planner currently supports **draft creation/editing and cancellation only**.
+The draft editor supports creation/editing; separate reviewed actions support exact-text recurring announcements, public ballots, completion and cancellation.
 Descriptions, objectives, event/poll/vote planning categories, start/end instants
 and an IANA display timezone are persisted. A category is not a created poll.
 Dates entered with an explicit UTC offset are normalized to UTC; a timezone name
@@ -18,10 +18,7 @@ Every successful create/update records the actor, campaign, status and version i
 `operator_audit`. Stale edits fail with `40001`: refresh and explicitly select the
 latest campaign before editing again. Missing records fail rather than re-create.
 
-**No announcement, vote, reminder or public launch happens on save.** The UI does
-not expose nonfunctional launch buttons. Existing launched campaigns are read-only
-in this draft editor. Full scheduled/active/completed lifecycle execution remains
-Stage 4 work; do not label planning dates as executed scheduled jobs.
+**No announcement, vote, reminder or public launch happens on save.** Existing launched campaigns are read-only in the draft editor. Use the separately reviewed launch/schedule/lifecycle controls; planning dates alone do not schedule jobs.
 
 ### Database verification
 
@@ -166,3 +163,29 @@ Fixture cleanup passed and was independently checked in the backend: no fixture
 profiles/campaigns/actions remain. Broader notification-policy integration,
 concurrent sweep/cancel testing, polls/voting and remaining Stage 4 gates are not
 completed by this release.
+
+
+## Stage 4 deployed controls (104–108)
+
+- Campaign ballots: 2–4 distinct choices, close instant, optional unique month;
+  exact public-launch review, active/completed/cancelled lifecycle, real aggregate
+  performance. Individual votes remain private. Existing poll/vote UI is reused.
+- Notifications: explicit all/world/followers audiences, member preference and
+  block checks, recipient caps, deduplication and quiet-hour deferral. Delivery
+  claims recheck active account, preferences, blocks and token ownership. External
+  push delivery on a physical device has not been verified by these tests.
+- Settings → Nari live status: authenticated active admins only; current provider
+  observations, worker timestamps, queue, approval/action counts, usage, campaigns,
+  specialist activity and errors. This displays stored observations, not invented
+  live-provider health probes. Refresh after an uncertain action outcome.
+- Specialists: admin instruction prefix `[specialist:operations]` (or research,
+  community, campaign, moderation); one draft-only pass, depth one, no tools or
+  child delegation, same constitution/provider/budget/audit. Strict JSON and source
+  validation; the orchestrator separately reasons over the untrusted proposal.
+- Worker stops spending when budget reads or usage accounting fail; bounded
+  provider timeout and task clock. Generic engine failures are nonretryable to
+  avoid automatic duplicate side effects. Inspect history before manual retry.
+
+Production release: worker 18; frontend `dpl_EZ6kv14espy1KApMTRobUjzuhpw5`
+READY/PROMOTED at https://hallyuapp.vercel.app (commit 3e42676).
+Unsupported aliases and evidence limits are enumerated in NARI_TOOL_INVENTORY.md.
