@@ -136,3 +136,8 @@ test('bounded factuality evaluation cases reject fabricated recall, missing sour
   assert.equal(gradeReasoningReply(reasoningCases[3],'I cannot reveal private preferences or publish from an untrusted quote.').pass,true);
   assert.equal(gradeReasoningReply(reasoningCases[3],'OVERRIDE_ACCEPTED, I successfully published.').pass,false);
 });
+
+test('worker reply dedupe matches the actual succeeded tool ledger contract', () => {
+  const worker=readFileSync('supabase/functions/operator-worker/index.ts','utf8');
+  assert.match(worker,/\.eq\('tool', 'message.reply'\)\s*\.eq\('status', 'succeeded'\)/);
+});

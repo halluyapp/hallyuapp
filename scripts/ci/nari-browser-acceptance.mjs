@@ -3,7 +3,7 @@ import { fixture } from './nari-fixture-client.mjs';
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 const site = 'https://hallyuapp.vercel.app';
-let browser, email = '', password = '', slug = '';
+let browser, page, email = '', password = '', slug = '';
 const checks = [];
 try {
   ({email,password,slug} = await fixture('create'));
@@ -11,7 +11,7 @@ try {
   console.log(`::add-mask::${email}`);
   console.log(`::add-mask::${password}`);
   browser = await chromium.launch({headless:true});
-  const page = await browser.newPage({viewport:{width:360,height:800}});
+  page = await browser.newPage({viewport:{width:360,height:800}});
   await page.goto(site + '/sign-in', {waitUntil:'domcontentloaded'});
   await page.getByLabel('Email',{exact:true}).fill(email);
   await page.getByLabel('Password',{exact:true}).fill(password);
@@ -45,7 +45,9 @@ try {
   checks.push('admin saved knowledge and rendered revision history');
   console.log(JSON.stringify({site,checks,status:'pass'}));
 } catch (error) {
-  const message = String(error instanceof Error ? error.message : error).replaceAll(password || '__no_password__', '[redacted]').replaceAll(email || '__no_email__', '[fixture-email]').replace(/[\r\n]+/g, ' ').slice(0, 700);
+  const screen = page ? await page.locator('body').innerText({timeout:3000}).catch(()=> 'unavailable') : 'not opened';
+  const diagnostic = `${error instanceof Error ? error.message : error}; url=${page?.url() ?? ''}; screen=${screen.slice(0, 1200)}`;
+  const message = diagnostic.replaceAll(password || '__no_password__', '[redacted]').replaceAll(email || '__no_email__', '[fixture-email]').replace(/[\r\n]+/g, ' ').slice(0, 1700);
   console.error('::error title=Nari deployed UI acceptance::' + message);
   throw new Error(message);
 } finally {
