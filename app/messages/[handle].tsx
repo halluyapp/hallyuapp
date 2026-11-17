@@ -19,6 +19,7 @@ import {
   sendDirectMessage,
   subscribeDirectMessages,
 } from '../../lib/api/features';
+import { cancelVoiceNote, startVoiceNote, stopVoiceNote, voiceApi } from '../../lib/api/voice';
 import { timeAgo } from '../../lib/format';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
 import type { DirectMessage, Drama } from '../../lib/model';
@@ -46,6 +47,7 @@ export default function DirectMessageThreadScreen() {
   const [attachedDrama, setAttachedDrama] = useState<Drama | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [voicePhase, setVoicePhase] = useState<'idle' | 'recording' | 'sending'>('idle');
   const listRef = useRef<FlatList<DirectMessage>>(null);
 
   const loadThread = useCallback(async () => {
@@ -96,6 +98,53 @@ export default function DirectMessageThreadScreen() {
       setSending(false);
     }
   };
+
+  // Voice notes exist for the Nari thread: the Edge Function transcribes the clip and hands the
+  // turn to this same DM, so Nari's answer arrives here through the ordinary subscription.
+  const handleVoice = async () => {
+    if (voicePhase === 'sending') return;
+    if (voicePhase === 'idle') {
+      try {
+        await startVoiceNote();
+        haptic.medium();
+        setVoicePhase('recording');
+      } catch (err) {
+        toast.show({
+          message: err instanceof Error ? err.message : 'Could not start recording',
+          tone: 'danger',
+        });
+      }
+      return;
+    }
+
+    setVoicePhase('sending');
+    haptic.light();
+    try {
+      const clip = await stopVoiceNote();
+      const result = await voiceApi.turn({ audioBase64: clip.audioBase64, mimeType: clip.mimeType });
+      if (result.transcript) {
+        toast.show({ message: `Heard: ${result.transcript}`, tone: 'success' });
+      }
+      await loadThread();
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
+    } catch (err) {
+      toast.show({
+        message: err instanceof Error ? err.message : 'The voice note could not be sent',
+        tone: 'danger',
+      });
+    } finally {
+      setVoicePhase('idle');
+    }
+  };
+
+  const handleCancelVoice = async () => {
+    await cancelVoiceNote();
+    setVoicePhase('idle');
+  };
+
+  useEffect(() => () => {
+    void cancelVoiceNote();
+  }, []);
 
   return (
     <Screen
@@ -212,6 +261,24 @@ export default function DirectMessageThreadScreen() {
           </View>
         ) : null}
 
+        {voicePhase === 'recording' ? (
+          <View style={styles.voiceBanner}>
+            <Ionicons name="mic" size={14} color={colors.danger} />
+            <Text variant="caption" tone="secondary" style={{ flex: 1 }}>
+              Recording… tap stop to hand this to Nari.
+            </Text>
+            <Pressable
+              onPress={() => void handleCancelVoice()}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel voice note"
+            >
+              <Text variant="caption" tone="accent">
+                Cancel
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         <View style={[styles.composerBar, { paddingBottom: Math.max(insets.bottom, space.x2) }]}>
           <IconButton
             icon="film-outline"
@@ -219,6 +286,16 @@ export default function DirectMessageThreadScreen() {
             filled
             onPress={() => setPickerOpen(true)}
           />
+          {isOperator ? (
+            <IconButton
+              icon={voicePhase === 'recording' ? 'stop' : 'mic-outline'}
+              label={voicePhase === 'recording' ? 'Send voice note to Nari' : 'Send a voice note to Nari'}
+              tone={voicePhase === 'recording' ? 'danger' : 'default'}
+              filled
+              disabled={voicePhase === 'sending'}
+              onPress={() => requireMember('send voice notes', () => void handleVoice())}
+            />
+          ) : null}
           <TextInput
             value={draft}
             onChangeText={setDraft}
@@ -292,6 +369,16 @@ const styles = StyleSheet.create({
     gap: space.x2,
     paddingHorizontal: space.margin,
     paddingVertical: space.x2,
+    backgroundColor: colors.surface1,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderSubtle,
+  },
+  voiceBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.x2,
+    paddingHorizontal: space.margin,
+    paddingVertical: 6,
     backgroundColor: colors.surface1,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.borderSubtle,
