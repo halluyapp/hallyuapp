@@ -3709,6 +3709,9 @@ export type Database = {
           source_name: string;
           source_url: string;
           published_at: string;
+          event_at: string | null;
+          uncertainty: string | null;
+          retrieved_at: string;
           verification: string;
           world: string;
           used_in_post_id: string;
@@ -3722,6 +3725,9 @@ export type Database = {
           source_name?: string;
           source_url?: string;
           published_at?: string;
+          event_at?: string | null;
+          uncertainty?: string | null;
+          retrieved_at?: string;
           verification?: string;
           world?: string;
           used_in_post_id?: string;
@@ -3735,6 +3741,9 @@ export type Database = {
           source_name?: string;
           source_url?: string;
           published_at?: string;
+          event_at?: string | null;
+          uncertainty?: string | null;
+          retrieved_at?: string;
           verification?: string;
           world?: string;
           used_in_post_id?: string;

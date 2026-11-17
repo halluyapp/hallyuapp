@@ -547,6 +547,12 @@ const handlers: Record<string, Handler> = {
     const sourceUrl = str(input, 'source_url', '').trim();
     try { if (new URL(sourceUrl).protocol !== 'https:') return fail('source_required', 'a source HTTPS URL is required'); }
     catch { return fail('source_required', 'a source HTTPS URL is required'); }
+    const dates: Record<string, string | null> = {};
+    for (const key of ['published_at', 'event_at']) {
+      const value = str(input, key, '').trim();
+      if (value && (!/^\d{4}-\d{2}-\d{2}T/.test(value) || !Number.isFinite(Date.parse(value)))) return fail('invalid_date', `${key} must be a source-supported ISO timestamp`);
+      dates[key] = value ? new Date(value).toISOString() : null;
+    }
     const inserted = await restInsert('operator_research_item', {
       topic: str(input, 'topic'),
       headline: str(input, 'headline'),
@@ -554,6 +560,9 @@ const handlers: Record<string, Handler> = {
       source_name: str(input, 'source_name', '') || null,
       source_url: sourceUrl,
       verification: 'unverified',
+      ...dates,
+      retrieved_at: new Date().toISOString(),
+      uncertainty: str(input, 'uncertainty', 'Source claims have not been independently verified.').slice(0, 1000),
       world: str(input, 'world', '') || null,
     });
     if (!inserted.ok) return fail('save_failed', inserted.error ?? 'save failed');

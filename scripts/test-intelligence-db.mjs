@@ -39,6 +39,14 @@ test('intelligence migration and real PostgreSQL isolation/lifecycle', async (t)
       assert.equal((await db.query("select has_function_privilege('authenticated','operator_claim_task_by_id(text,uuid)','execute') as allowed")).rows[0].allowed,false);
       assert.equal((await db.query("select relrowsecurity from pg_class where relname='operator_acceptance_run'")).rows[0].relrowsecurity,true);
     });
+    await db.exec(`create table operator_research_item(id uuid primary key default gen_random_uuid(),published_at timestamptz); create table operator_tool(name text primary key,input_schema jsonb); insert into operator_tool values('research.save','{"type":"object","properties":{},"required":["topic","headline"]}'::jsonb);`);
+    await db.exec(readFileSync('supabase/migrations/20261124000003_99_operator_research_provenance.sql','utf8'));
+    await t.test('research provenance migration keeps separate dates and sources knowledge revisions', async () => {
+      const schema = (await db.query("select input_schema from operator_tool where name='research.save'")).rows[0].input_schema;
+      assert.ok(schema.required.includes('source_url'));
+      assert.ok(schema.properties.event_at && schema.properties.published_at);
+      assert.equal((await db.query("select count(*)::int as n from operator_knowledge where slug in ('staff-roles-boundaries','campaign-events-evidence') and visibility='staff' and source_url like 'https://github.com/%'")).rows[0].n,2);
+    });
     const actor = async (id) => db.query("select set_config('test.actor',$1,false)", [id]);
     const memory = async (key = null, value = null, remove = false) => (await db.query('select operator_my_memory($1,$2,$3) as data', [key,value,remove])).rows[0].data;
     const context = async (id) => (await db.query('select operator_conversation_context($1,20) as data',[id])).rows[0].data;
@@ -83,14 +91,14 @@ test('intelligence migration and real PostgreSQL isolation/lifecycle', async (t)
       await actor(ADMIN); assert.equal((await edit('public',0)).rows[0].version,1);
       await assert.rejects(edit('public',0), /knowledge_version_conflict/);
       assert.equal((await edit('staff',1,'Updated drama features.')).rows[0].version,2);
-      assert.equal((await db.query('select count(*)::integer as count from operator_knowledge_revision')).rows[0].count,2);
+      assert.equal((await db.query("select count(*)::integer as count from operator_knowledge_revision r join operator_knowledge k on k.id=r.knowledge_id where k.slug='features'")).rows[0].count,2);
     });
     await t.test('task retrieval filters internal knowledge and zero-relevance matches', async () => {
       const search = async (q) => (await db.query('select * from operator_knowledge_for_task($1,$2,4)',[TASK,q])).rows;
-      assert.deepEqual(await search('drama features'),[]); // staff-only never leaks to members
-      assert.deepEqual((await db.query("select * from operator_knowledge_search('drama features',4)")).rows,[]);
+      assert.equal((await search('drama features')).some((entry)=>entry.slug==='features'),false); // staff-only never leaks to members
+      assert.equal((await db.query("select * from operator_knowledge_search('drama features',4)")).rows.some((entry)=>entry.slug==='features'),false);
       await edit('public',2);
-      assert.equal((await search('How do I track dramas?'))[0].version,3);
+      assert.equal((await search('How do I track dramas?')).find((entry)=>entry.slug==='features').version,3);
       assert.deepEqual(await search('zqxnonexistent'),[]);
     });
     await t.test('constitution publication atomic, unique, admin-only and retains versions', async () => {

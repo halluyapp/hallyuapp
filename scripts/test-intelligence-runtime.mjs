@@ -104,3 +104,22 @@ test('context bounding preserves explicit preferences ahead of expendable histor
   assert.ok(bounded.some((message)=>message.name === 'nari_retrieved_evidence' && message.content.includes('thriller')));
   assert.match(bounded.at(-1).content, /saved genre/);
 });
+
+test('research stores publication date separately from event date, keeps uncertainty and rejects malformed dates', async () => {
+  const original = globalThis.fetch;
+  const tool = {name:'research.save',permission:'research.write',enabled:true,approval_required:false,timeout_ms:1000,input_schema:{type:'object'}};
+  const ctx = {channel:'admin_control',taskId:null,policy:{autonomy:{research:true}}};
+  try {
+    globalThis.fetch = async (_url, options) => {
+      const row = JSON.parse(options.body);
+      assert.equal(row.published_at,'2026-11-01T00:00:00.000Z');
+      assert.equal(row.event_at,'2026-12-01T00:00:00.000Z');
+      assert.equal(row.uncertainty,'Announced, subject to change.');
+      assert.equal(row.verification,'unverified');
+      return new Response(JSON.stringify([{id:'fixture',...row}]), {status:201});
+    };
+    const args = {topic:'release',headline:'Source announcement',source_url:'https://example.com/source',published_at:'2026-11-01T00:00:00Z',event_at:'2026-12-01T00:00:00Z',uncertainty:'Announced, subject to change.'};
+    assert.equal((await executeTool(ctx,tool,JSON.stringify(args))).ok,true);
+    assert.equal((await executeTool(ctx,tool,JSON.stringify({...args,event_at:'tomorrow'}))).code,'invalid_date');
+  } finally { globalThis.fetch = original; }
+});

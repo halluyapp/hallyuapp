@@ -76,6 +76,19 @@ jobs:
       - name: Fetch client-safe backend values (GitHub-OIDC → gateway)
         run: node scripts/ci/ci-gateway-client.mjs client-env
 
+      - name: Explicit Nari deployed UI acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.run_live_browser_test == true
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::Live Nari UI verification blocked: repository SUPABASE_SERVICE_ROLE_KEY secret is not configured or unavailable to this workflow. No fixture account created."
+            exit 1
+          fi
+          npm install --no-save --legacy-peer-deps playwright
+          npx playwright install --with-deps chromium
+          node scripts/ci/nari-browser-acceptance.mjs
+
       - name: Ensure the backend catalog is populated (sync through the gateway)
         run: |
           sync() {
