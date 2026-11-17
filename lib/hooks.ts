@@ -114,6 +114,9 @@ export function useRequireMember() {
   const router = useRouter();
   return useCallback(
     (reason: string, run: () => void) => {
+      // Session restoration is not a guest decision. Do not redirect a signed-in
+      // member to signup while their persisted session is still hydrating.
+      if (auth.status === 'loading') return;
       if (auth.status === 'signedIn') run();
       else router.push({ pathname: '/(auth)/gate', params: { reason } });
     },

@@ -111,3 +111,22 @@ Email signup no longer requests a confirmation redirect or routes users to a
 verification waiting room. Production already has auto-confirm enabled; ordinary
 signup's immediate confirmed session was checked by the deployed fixture. Password
 recovery remains intact. Source, deployment and test IDs: NARI_TEST_REPORT.md.
+
+## Stage5 integration handover (2026-11-17)
+
+Current authoritative integration map: [NARI_ARCHITECTURE.md](NARI_ARCHITECTURE.md).
+Release/source versions, configuration names and rollback:
+[NARI_DEPLOYMENT.md](NARI_DEPLOYMENT.md). Completion matrix and real acceptance
+boundaries: [NARI_TEST_REPORT.md](NARI_TEST_REPORT.md), Stage5 section. Exact
+Firebase requirements: [NARI_FCM_SETUP.md](NARI_FCM_SETUP.md).
+
+Priority fixes implemented: DM history overload compatibility, array/envelope
+parsing, realtime-independent refresh and Retry, outbound delivery verification,
+visible approval notices, authoritative admin identity resolution, independent
+campaign navigation, Nari-only inbox name and portrait/verification display.
+Existing app/project/data/admins were preserved.
+
+Stage5 is **not fully accepted**: real STT still returns empty text, full voice
+and physical Android/notification receipt remain unproven, APINEX has a billing
+block, and live full-duplex voice is not implemented. A successful build or
+configured flag does not override those results.

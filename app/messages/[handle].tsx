@@ -26,6 +26,7 @@ import {
 import { fetchProfileByHandle } from '../../lib/api/feed';
 import { operatorApi, type OperatorActiveModelInfo, type OperatorModelOption } from '../../lib/api/operator';
 import { cancelVoiceNote, startVoiceNote, stopVoiceNote, voiceApi } from '../../lib/api/voice';
+import { useAuth } from '../../lib/auth';
 import { timeAgo } from '../../lib/format';
 import { haptic, useApp, useRequireMember } from '../../lib/hooks';
 import type { DirectMessage, Drama, User } from '../../lib/model';
@@ -36,6 +37,7 @@ export default function DirectMessageThreadScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const requireMember = useRequireMember();
+  const auth = useAuth();
   const { handle: rawHandle } = useLocalSearchParams<{ handle: string }>();
   const cleanHandle = (rawHandle ?? '').trim().replace(/^@/, '');
   const { state, me, getDrama, getPost, getUser } = useApp();
@@ -502,7 +504,7 @@ export default function DirectMessageThreadScreen() {
               label={voicePhase === 'recording' ? 'Transcribe voice note' : 'Record a voice note for Nari'}
               tone={voicePhase === 'recording' ? 'danger' : 'default'}
               filled
-              disabled={voicePhase === 'sending'}
+              disabled={auth.status === 'loading' || voicePhase === 'sending'}
               onPress={() => requireMember('send voice notes', () => void handleVoice())}
             />
           ) : null}
@@ -526,7 +528,7 @@ export default function DirectMessageThreadScreen() {
           />
           <Pressable
             onPress={() => requireMember('send messages', () => void handleSend())}
-            disabled={sending || (!draft.trim() && !attachedDrama)}
+            disabled={auth.status === 'loading' || sending || (!draft.trim() && !attachedDrama)}
             style={[
               styles.sendBtn,
               !draft.trim() && !attachedDrama ? { opacity: 0.4 } : null,

@@ -278,3 +278,40 @@ Final local validation: `npm run check` **PASS**, Stage4 **34/34 PASS**, includi
 new hidden-publication regression (`/tmp/s4-gap-full-check.log`). Existing lint
 warnings remain warnings, not errors. No frontend/worker redeployment is needed
 for the verifier-only code; migration109 is already applied in production.
+
+## Stage5 integration release evidence (2026-11-17)
+
+**Final acceptance is not complete.** This matrix separates verified behavior
+from outstanding acceptance instead of treating deployment as feature proof.
+
+| Area | Status | Evidence / boundary |
+|---|---|---|
+| Legacy/new DM history, visible persisted staff text | Complete and tested | Authenticated production smoke: legacy2arg and paginated3arg calls PASS; migration110 applied |
+| Campaign authorization | Complete and tested | Real member denied403, same fixture promoted server-side receives campaigns; custom CEO account not tested |
+| Avatar/profile installation | Complete and tested | Source hash verified, Storage installed, profile named Nari; bundled fallback and authoritative verification fetch added |
+| Refreshed inbox/thread appearance | Implemented but not production-verified | Typecheck passes; latest inbox profile-fetch refinement awaits pipeline deployment |
+| Worker delivery/recovery and approval notices | Implemented but not production-verified | Local gates pass; completion now requires sent outbound message; new real browser scenario must pass |
+| Tool backend operations | Complete and tested | 16 live gateway tools plus11 atomic transactional rollback mutations; not27 live gateway E2Es |
+| Specialist delegation | Complete and tested | Prior real ledger dcd767cb-0369-4844-a9a5-cc364cb555d3 and replay b6f45cb3-81af-4dce-b9c3-8e08e84f1389 |
+| Dedicated Gemini TTS generation | Complete and tested | Repeated real WAV results; not proof of physical speaker playback |
+| STT / full voice workflow | Implemented but not production-verified | Model returned empty text; endpoint422 no_speech_detected; ledger0644c866-4577-46a2-ad60-9feb0540fd0a |
+| Live full-duplex voice | Not implemented | UI/status do not claim availability |
+| APINEX success/recovery with funded account | Blocked by external credentials/access | Real billing_error; no silent fallback |
+| Physical FCM notification receipt | Blocked by external credentials/access | No Firebase service account/registered device; prior dispatch741 devices0/sent0 |
+| Custom CEO login / physical Android / microphone performance | Implemented but not production-verified | Standard auth/admin fixtures do not establish these workflows |
+| Production web release8752e59 | Complete and tested | Vercel dpl_GRcPM4anjmH3Q1ce14C3YRiWJiFS READY, production alias assigned; build result only |
+
+Smoke request753's fixture was cleaned successfully. Temporary production
+`operator-acceptance` function deleted after collecting results. No real member
+messages were used for these isolated probes. Admin roles were not weakened.
+
+Final full local `npm run check` PASS (`/tmp/nari-final-check.log`), including11
+voice contracts. Latest inbox-only refinement `npm run typecheck` PASS. Existing
+lint warnings are not represented as new failures. Real browser workflow
+44089156043 and APK workflow44089035941 were still running when this section was
+written; record their actual outcomes before accepting release.
+
+Unverified registration concurrency, Google/custom OAuth, recovery emails,
+physical receipt and full voice acceptance must not be inferred from local
+contracts or a promoted standard-auth fixture. The original first-admin
+server-controlled protections were preserved, not reset to create a demo admin.

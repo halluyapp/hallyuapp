@@ -81,3 +81,11 @@ approval/execute/consume path in a rollback-only production transaction. Migrati
 109 corrects timestamp consistency when publishing hidden posts. This supersedes
 the earlier individual-tool backend coverage gap; it does not relabel rolled-back
 public actions as committed publication or prove physical push receipt.
+
+## Stage5 coverage boundary
+
+Integration release does not expand the prior16 real gateway +11 transactional
+atomic tests into27 full gateway E2Es. Public/destructive rollback verification
+remains distinct from committed public changes. Admin controls and the independent
+campaign planner are mapped in NARI_ARCHITECTURE.md. Delivery checks and visible
+approval notices are documented in NARI_OPERATIONS.md.

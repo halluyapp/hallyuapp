@@ -13,6 +13,7 @@ import { TopBar } from '../../components/ui/TopBar';
 import { VerificationSeal } from '../../components/recognition/VerificationSeal';
 import { colors, fonts, radius, space } from '../../constants/theme';
 import { fetchConversations, subscribeDirectMessages } from '../../lib/api/features';
+import { fetchProfileByHandle } from '../../lib/api/feed';
 import { useAuth } from '../../lib/auth';
 import { timeAgo } from '../../lib/format';
 import { haptic, useApp } from '../../lib/hooks';
@@ -26,6 +27,13 @@ export default function MessagesInboxScreen() {
   const [threads, setThreads] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+  const [operatorProfile, setOperatorProfile] = useState<User | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (auth.status === 'signedIn') void fetchProfileByHandle('hallyu.ai').then(data => { if (alive) setOperatorProfile(data?.user ?? null); }).catch(() => {});
+    else setOperatorProfile(null);
+    return () => { alive = false; };
+  }, [auth.status]);
 
   // The executive's primary conversation with Hallyu AI lives here, in Direct Messages — not in
   // the Admin Console. The staff profile is a normal peer, so the thread is a real DM thread.
@@ -118,11 +126,11 @@ export default function MessagesInboxScreen() {
                 accessibilityRole="button"
                 accessibilityLabel="Open your conversation with Nari"
               >
-                <Avatar uri={operatorThread?.avatarUrl} fallbackSource={require('../../public/nari-avatar.png')} name="Nari" size="lg" />
+                <Avatar uri={operatorProfile?.avatarUrl ?? operatorThread?.avatarUrl} fallbackSource={require('../../public/nari-avatar.png')} name="Nari" size="lg" />
                 <View style={{ flex: 1, gap: 3 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <Text variant="titleSmall">Nari</Text>
-                    <VerificationSeal tier={operatorThread?.verificationTier} verified={operatorThread?.verified} size={16} />
+                    <VerificationSeal tier={operatorProfile?.verificationTier ?? operatorThread?.verificationTier} verified={operatorProfile?.verified ?? operatorThread?.verified} size={16} />
                     <View style={styles.aiBadge}>
                       <Text style={styles.aiBadgeText}>AI STAFF</Text>
                     </View>

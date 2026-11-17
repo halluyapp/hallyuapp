@@ -1,3 +1,33 @@
+# Current integration evidence — 2026-11-17
+
+This section supersedes historical Stage2 deployment/transport statements below.
+Production operator-voice v9 is deployed from cbef61f. Dedicated Gemini
+`generateContent` is the default; `GEMINI_VOICE_STT_TRANSPORT=interactions` is an
+explicit opt-in, not an automatic fallback. Current STT model is
+`gemini-3.5-transcribe`; TTS is `gemini-2.5-flash-preview-tts`.
+
+Real authenticated production probes repeatedly generated WAV speech successfully.
+PCM-to-WAV byte lengths/sample-rate headers also pass the local contract test.
+**Transcription is not accepted:** smoke ledger
+`0644c866-4577-46a2-ad60-9feb0540fd0a` received empty text directly from the
+configured STT model and the authenticated endpoint correctly returned422
+`no_speech_detected`. Earlier explicit models returned retired-model404,
+timeout or provider503 high demand. No fallback or fabricated transcript was used.
+All isolated fixture cleanup checks passed.
+
+Microphone capture, actual speaker playback, cancellation and low-end Android
+resource use remain physical-device acceptance gaps. Live voice is not
+implemented. Configuration status deliberately retains readiness=false rather
+than presenting configuration as proof. No additional Google credential is
+known to be missing: an actual successful STT provider result is still required.
+
+`npm run check` passes, including all11 voice runtime contracts. Real generated
+audio is not equivalent to a successful recording→transcript→reasoning→playback
+workflow. See NARI_DEPLOYMENT.md for deployment/recovery.
+
+---
+## Historical implementation notes (superseded where noted above)
+
 # Nari voice — Stage 2 implementation and release notes
 
 ## Scope and honest status

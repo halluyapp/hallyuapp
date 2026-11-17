@@ -208,3 +208,21 @@ HTTP200/no pending work is not delivery proof.
 
 Temporary operator-acceptance endpoint used for the 16 live-tool checks and push
 probe was deleted after fixture cleanup; it is not a permanent privileged API.
+
+## Stage5 troubleshooting and delivery checks
+
+AI Operator → Campaigns now links to the independent campaign planner. A provider
+outage must not prevent a qualified administrator from opening that planner.
+A403 must be diagnosed against the authenticated active database profile, not
+fixed by removing the server role requirement.
+
+Worker core1.4.1 checks outbound `delivery_status=sent` before marking DM reply
+work complete. Delivery exceptions propagate; approval-required work adds a
+visible staff notice rather than appearing to reply with no text. DM history
+supports existing APK2arg and current3arg pagination, with foreground/polling
+recovery when realtime is unavailable. Check task/audit/delivery and history
+errors separately when diagnosing invisible responses.
+
+See NARI_DEPLOYMENT.md for exact deployed versions/rollback and
+NARI_TEST_REPORT.md for acceptance gaps. For Firebase setup use
+NARI_FCM_SETUP.md; never paste server service-account keys into app code or chat.
