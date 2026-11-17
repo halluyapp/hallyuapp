@@ -188,3 +188,32 @@ no secret values were retrieved or logged to repair this configuration.
 Rollback preserves preference and revision rows. Revert to reviewed privacy-preserving artifacts
 or disable controls; never restore broad unscoped private retrieval, drop user tables or reset
 production to make a test pass.
+
+## Provider switch and authentication verification — 2026-11-17
+
+- Explicit production default: **Coarena / gpt-6-luna**. APINEX is nondefault
+  after billing errors; no automatic cross-provider fallback was introduced.
+  Two earlier real worker acceptance runs completed replies and recalled the
+  fixture's saved genre. This is evidence of generation, not a reliability guarantee.
+- Latest backend run `36cbe159-c651-4c35-9257-caa6ab09218b` finished with
+  identity, memory lifecycle/cross-user isolation, knowledge revisions/conflicts,
+  constitution and deployed-context checks passing, but live reasoning was blocked
+  by `bad_response` (HTTP 200 with an invalid completion/tool response).
+  Consequently the full reasoning acceptance suite is **not passed**.
+- Worker v16 fixes reply deduplication against the real tool ledger column
+  `outcome='succeeded'`. The temporary acceptance endpoint was removed after
+  testing; fixture cleanup passed.
+- Browser run `44047730941` successfully authenticated and cleaned up its fixture,
+  but memory settings fetched before session restoration and did not retry.
+  Commit `2f0c6d9` waits for signed-in auth, reloads on identity changes, and
+  discards stale async results after identity change/unmount. Typecheck and lint
+  passed (lint warnings only). Browser verification of this fix remains pending.
+- The invalid GitHub service-role secret was **not rotated** (secret-management
+  access was denied). The browser fixture no longer depends on that secret:
+  it uses narrowly scoped, short-lived GitHub OIDC. Do not describe the obsolete
+  stored key itself as repaired or usable by other workflows.
+- Frontend deployment `dpl_CaYcKt5rdFzjGEZ1hNEtBmW67BWt` was requested for
+  `2f0c6d9`; last observed state QUEUED, not verified/promoted.
+
+Stage 3 remains incomplete pending full live reasoning and browser acceptance.
+Stages 4–5 are not claimed complete.
